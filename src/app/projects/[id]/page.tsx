@@ -9,6 +9,12 @@ import AnalysisView from "@/components/video/AnalysisView";
 import WorkStandardEditor from "@/components/editor/WorkStandardEditor";
 import ExportDialog from "@/components/editor/ExportDialog";
 import PreviewDialog from "@/components/editor/PreviewDialog";
+import InspectionChecklist from "@/components/editor/InspectionChecklist";
+import VisualInspectionReference from "@/components/editor/VisualInspectionReference";
+import SpeechToText from "@/components/video/SpeechToText";
+import MobileViewer from "@/components/ui/MobileViewer";
+import TrainingManagement from "@/components/dashboard/TrainingManagement";
+import AnalyticsDashboard from "@/components/dashboard/AnalyticsDashboard";
 import { useProjectStore } from "@/store/useProjectStore";
 import { generateDemoWorkStandard, generateDemoAnalysisResult } from "@/lib/demo-data";
 import {
@@ -22,11 +28,17 @@ import {
   Clock,
   Users,
   Send,
+  ClipboardCheck,
+  Eye,
+  Smartphone,
+  GraduationCap,
+  BarChart3,
+  Mic,
 } from "lucide-react";
 import type { AnalysisResult, WorkStandard, ExportOptions, ProjectStatus } from "@/types";
 import { v4 as uuidv4 } from "uuid";
 
-type ViewMode = "video" | "analysis" | "editor";
+type ViewMode = "video" | "analysis" | "editor" | "checklist" | "visual-ref" | "mobile" | "training" | "analytics";
 
 const statusConfig: Record<ProjectStatus, { label: string; color: string; bgColor: string }> = {
   draft: { label: "下書き", color: "#64748b", bgColor: "#f1f5f9" },
@@ -162,6 +174,11 @@ export default function ProjectDetailPage() {
     { mode: "video" as ViewMode, label: "動画", icon: Video },
     { mode: "analysis" as ViewMode, label: "AI分析", icon: Brain },
     { mode: "editor" as ViewMode, label: "編集", icon: FileEdit },
+    { mode: "checklist" as ViewMode, label: "検査チェック", icon: ClipboardCheck },
+    { mode: "visual-ref" as ViewMode, label: "外観基準", icon: Eye },
+    { mode: "training" as ViewMode, label: "トレーニング", icon: GraduationCap },
+    { mode: "mobile" as ViewMode, label: "モバイル", icon: Smartphone },
+    { mode: "analytics" as ViewMode, label: "分析", icon: BarChart3 },
   ];
 
   return (
@@ -315,6 +332,8 @@ export default function ProjectDetailPage() {
                       作業標準書を生成
                     </button>
                   )}
+
+                  <SpeechToText hasAudio={false} />
                 </div>
               </div>
             )}
@@ -358,6 +377,27 @@ export default function ProjectDetailPage() {
                 </button>
               </div>
             )}
+
+            {viewMode === "checklist" && (
+              <InspectionChecklist
+                projectName={currentProject.name}
+                machineModel={currentProject.machineModel || "CRT-320"}
+              />
+            )}
+
+            {viewMode === "visual-ref" && <VisualInspectionReference />}
+
+            {viewMode === "training" && <TrainingManagement />}
+
+            {viewMode === "mobile" && (
+              <MobileViewer
+                sopTitle={currentProject.name}
+                currentStep={0}
+                totalSteps={7}
+              />
+            )}
+
+            {viewMode === "analytics" && <AnalyticsDashboard />}
           </div>
 
           {/* Export Dialog */}
