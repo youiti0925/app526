@@ -18,7 +18,10 @@ import {
 } from "lucide-react";
 import type { AnalysisResult, DetectedScene, StepCategory } from "@/types";
 import { extractFramesFromVideo } from "@/lib/video-utils";
+import { transcribeVideoAudio, isSpeechRecognitionAvailable } from "@/lib/audio-utils";
 import { getSettings } from "@/lib/settings";
+import { formatGlossaryForPrompt } from "@/lib/glossary";
+import type { VideoContext } from "@/components/video/VideoUploader";
 
 interface AnalysisViewProps {
   analysisResult: AnalysisResult | null;
@@ -29,6 +32,7 @@ interface AnalysisViewProps {
   videoFile?: File | null;
   projectName?: string;
   projectCategory?: string;
+  videoContext?: VideoContext | null;
 }
 
 const categoryLabels: Record<StepCategory, { label: string; color: string }> = {
@@ -44,6 +48,7 @@ const categoryLabels: Record<StepCategory, { label: string; color: string }> = {
 const analysisStages = [
   { label: "動画の前処理", icon: ScanSearch, key: "preprocessing" },
   { label: "フレーム抽出", icon: Eye, key: "frame_extraction" },
+  { label: "音声文字起こし", icon: Type, key: "transcription" },
   { label: "AI分析中", icon: Brain, key: "ai_analysis" },
   { label: "結果構成", icon: Zap, key: "structuring" },
 ];
@@ -57,6 +62,7 @@ export default function AnalysisView({
   videoFile,
   projectName,
   projectCategory,
+  videoContext,
 }: AnalysisViewProps) {
   const [currentStage, setCurrentStage] = useState(0);
   const [completedStages, setCompletedStages] = useState<number[]>([]);
@@ -96,8 +102,32 @@ export default function AnalysisView({
       setStageMessage(`${frames.length}フレームを抽出しました`);
       setCompletedStages([0, 1]);
 
-      // Stage 2: AI Analysis
+      // Stage 2: Audio transcription
       setCurrentStage(2);
+      let transcription = "";
+      if (isSpeechRecognitionAvailable()) {
+        setStageMessage("音声を文字起こし中...（動画を高速再生しています）");
+        try {
+          const transcriptionResult = await transcribeVideoAudio(videoFile, {
+            language: "ja-JP",
+            maxDuration: 120,
+            onProgress: (text) => {
+              setStageMessage(`文字起こし中: ${text.substring(0, 60)}${text.length > 60 ? "..." : ""}`);
+            },
+          });
+          transcription = transcriptionResult.text;
+          setStageMessage(transcription ? `文字起こし完了: ${transcription.length}文字` : "音声が検出されませんでした");
+        } catch {
+          setStageMessage("音声文字起こしをスキップしました");
+        }
+      } else {
+        setStageMessage("このブラウザでは音声文字起こしに対応していません（スキップ）");
+      }
+      await new Promise((r) => setTimeout(r, 500));
+      setCompletedStages([0, 1, 2]);
+
+      // Stage 3: AI Analysis
+      setCurrentStage(3);
       setStageMessage("Gemini AIで分析中...（30秒〜1分かかります）");
 
       const response = await fetch("/api/analyze", {
@@ -111,6 +141,9 @@ export default function AnalysisView({
           apiKey: settings.geminiApiKey,
           projectName,
           projectCategory,
+          transcription,
+          videoContext: videoContext || undefined,
+          glossary: formatGlossaryForPrompt() || undefined,
         }),
       });
 
@@ -120,13 +153,13 @@ export default function AnalysisView({
       }
 
       const result = await response.json();
-      setCompletedStages([0, 1, 2]);
+      setCompletedStages([0, 1, 2, 3]);
 
-      // Stage 3: Structuring
-      setCurrentStage(3);
+      // Stage 4: Structuring
+      setCurrentStage(4);
       setStageMessage("分析結果を構成中...");
       await new Promise((r) => setTimeout(r, 500));
-      setCompletedStages([0, 1, 2, 3]);
+      setCompletedStages([0, 1, 2, 3, 4]);
 
       // Complete
       onAnalysisComplete(result as AnalysisResult);

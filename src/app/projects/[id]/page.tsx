@@ -10,6 +10,7 @@ import AnalysisView from "@/components/video/AnalysisView";
 import WorkStandardEditor from "@/components/editor/WorkStandardEditor";
 import ExportDialog from "@/components/editor/ExportDialog";
 import PreviewDialog from "@/components/editor/PreviewDialog";
+import QRCodeDialog from "@/components/editor/QRCodeDialog";
 import InspectionChecklist from "@/components/editor/InspectionChecklist";
 import VisualInspectionReference from "@/components/editor/VisualInspectionReference";
 import SpeechToText from "@/components/video/SpeechToText";
@@ -34,6 +35,7 @@ import {
   Smartphone,
   GraduationCap,
   BarChart3,
+  QrCode,
   Mic,
 } from "lucide-react";
 import type { AnalysisResult, WorkStandard, ExportOptions, ProjectStatus, StepCategory } from "@/types";
@@ -79,8 +81,15 @@ export default function ProjectDetailPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("video");
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
+  const [showQRDialog, setShowQRDialog] = useState(false);
   const [videoTime, setVideoTime] = useState(0);
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoContext, setVideoContext] = useState<{
+    workDescription: string;
+    workerNotes: string;
+    knowledgeTips: string;
+    safetyPoints: string;
+  } | null>(null);
 
   useEffect(() => {
     if (projects.length === 0) initializeDemoData();
@@ -336,10 +345,16 @@ export default function ProjectDetailPage() {
                     </button>
                   )}
                   {currentWorkStandard && (
-                    <button onClick={() => setShowExportDialog(true)} className="btn-secondary flex items-center gap-1.5 text-sm">
-                      <Download className="w-4 h-4" />
-                      エクスポート
-                    </button>
+                    <>
+                      <button onClick={() => setShowQRDialog(true)} className="btn-secondary flex items-center gap-1.5 text-sm">
+                        <QrCode className="w-4 h-4" />
+                        QR
+                      </button>
+                      <button onClick={() => setShowExportDialog(true)} className="btn-secondary flex items-center gap-1.5 text-sm">
+                        <Download className="w-4 h-4" />
+                        エクスポート
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
@@ -388,8 +403,9 @@ export default function ProjectDetailPage() {
                     />
                   ) : (
                     <VideoUploader
-                      onUploadComplete={(file) => {
+                      onUploadComplete={(file, _url, ctx) => {
                         setVideoFile(file);
+                        if (ctx) setVideoContext(ctx);
                         updateProject(projectId, { status: "video-uploaded" });
                       }}
                     />
@@ -450,6 +466,7 @@ export default function ProjectDetailPage() {
                 videoFile={videoFile}
                 projectName={currentProject.name}
                 projectCategory={currentProject.category}
+                videoContext={videoContext}
               />
             )}
 
@@ -518,6 +535,13 @@ export default function ProjectDetailPage() {
                 isOpen={showPreviewDialog}
                 onClose={() => setShowPreviewDialog(false)}
                 workStandard={currentWorkStandard}
+              />
+              <QRCodeDialog
+                isOpen={showQRDialog}
+                onClose={() => setShowQRDialog(false)}
+                projectId={projectId}
+                projectName={currentProject.name}
+                documentNumber={currentWorkStandard.documentNumber}
               />
             </>
           )}
