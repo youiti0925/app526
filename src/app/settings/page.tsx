@@ -3,10 +3,11 @@
 import { useState, useEffect } from "react";
 import Sidebar from "@/components/ui/Sidebar";
 import Header from "@/components/ui/Header";
-import { Settings, Key, Eye, EyeOff, CheckCircle2, AlertCircle, ExternalLink, BookOpen, Plus, Trash2, X } from "lucide-react";
-import { getSettings, saveSettings } from "@/lib/settings";
+import { Settings, Key, Eye, EyeOff, CheckCircle2, AlertCircle, ExternalLink, BookOpen, Plus, Trash2, X, ToggleLeft, ToggleRight, GitBranch, Activity, ArrowLeftRight } from "lucide-react";
+import { getSettings, saveSettings, getFeatureToggles, saveFeatureToggles } from "@/lib/settings";
 import { getGlossary, saveGlossary, type GlossaryEntry } from "@/lib/glossary";
 import CompanyTemplateManager from "@/components/editor/CompanyTemplateManager";
+import type { FeatureToggles } from "@/types";
 
 const categoryLabels: Record<GlossaryEntry["category"], string> = {
   machine: "機械",
@@ -27,12 +28,24 @@ export default function SettingsPage() {
   const [glossary, setGlossary] = useState<GlossaryEntry[]>([]);
   const [showAddTerm, setShowAddTerm] = useState(false);
   const [newTerm, setNewTerm] = useState({ term: "", definition: "", category: "other" as GlossaryEntry["category"], synonyms: "" });
+  const [features, setFeatures] = useState<FeatureToggles>({
+    conditionalBranching: true,
+    sopDriftDetection: true,
+    bidirectionalSync: true,
+  });
 
   useEffect(() => {
     const settings = getSettings();
     setApiKey(settings.geminiApiKey);
     setGlossary(getGlossary());
+    setFeatures(getFeatureToggles());
   }, []);
+
+  const handleToggleFeature = (key: keyof FeatureToggles) => {
+    const updated = { ...features, [key]: !features[key] };
+    setFeatures(updated);
+    saveFeatureToggles(updated);
+  };
 
   const handleSave = () => {
     saveSettings({ geminiApiKey: apiKey.trim() });
@@ -304,6 +317,73 @@ export default function SettingsPage() {
             {/* Company Templates */}
             <div className="card mt-6">
               <CompanyTemplateManager />
+            </div>
+
+            {/* Feature Toggles */}
+            <div className="card mt-6">
+              <div className="flex items-center gap-2 mb-4">
+                <Settings className="w-5 h-5 text-indigo-500" />
+                <h2 className="text-lg font-bold text-slate-900">機能のON/OFF</h2>
+              </div>
+              <p className="text-sm text-slate-500 mb-4">
+                各機能の有効/無効を切り替えられます。無効にした機能はプロジェクト画面のタブに表示されなくなります。
+              </p>
+              <div className="space-y-3">
+                {([
+                  {
+                    key: "conditionalBranching" as keyof FeatureToggles,
+                    label: "条件分岐型作業指示書",
+                    description: "製品バリエーションや条件に応じて、異なるステップを実行する分岐を設定できます",
+                    icon: GitBranch,
+                    color: "#8b5cf6",
+                  },
+                  {
+                    key: "sopDriftDetection" as keyof FeatureToggles,
+                    label: "SOP逸脱検出",
+                    description: "録画された実際の作業とSOPを比較し、手順・時間・工具使用の逸脱を自動検出します",
+                    icon: Activity,
+                    color: "#f97316",
+                  },
+                  {
+                    key: "bidirectionalSync" as keyof FeatureToggles,
+                    label: "動画⇔文書の双方向同期",
+                    description: "動画と文書の対応関係を追跡し、どちらかが更新された際にアラートを出します",
+                    icon: ArrowLeftRight,
+                    color: "#06b6d4",
+                  },
+                ]).map((feature) => {
+                  const Icon = feature.icon;
+                  const isEnabled = features[feature.key];
+                  return (
+                    <div
+                      key={feature.key}
+                      className="flex items-center gap-3 p-3 rounded-lg border"
+                      style={{ borderColor: isEnabled ? feature.color + "40" : "var(--card-border)", background: isEnabled ? feature.color + "08" : "transparent" }}
+                    >
+                      <div
+                        className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ background: isEnabled ? feature.color + "20" : "#f1f5f9" }}
+                      >
+                        <Icon className="w-4.5 h-4.5" style={{ color: isEnabled ? feature.color : "#94a3b8" }} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-sm font-medium text-slate-900">{feature.label}</h3>
+                        <p className="text-xs text-slate-500 mt-0.5">{feature.description}</p>
+                      </div>
+                      <button
+                        onClick={() => handleToggleFeature(feature.key)}
+                        className="flex-shrink-0 transition-colors"
+                      >
+                        {isEnabled ? (
+                          <ToggleRight className="w-8 h-8" style={{ color: feature.color }} />
+                        ) : (
+                          <ToggleLeft className="w-8 h-8 text-slate-300" />
+                        )}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             {/* Data Management */}

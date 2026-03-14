@@ -20,8 +20,13 @@ import AnalyticsDashboard from "@/components/dashboard/AnalyticsDashboard";
 import QuizGenerator from "@/components/editor/QuizGenerator";
 import RevisionDiffViewer from "@/components/editor/RevisionDiffViewer";
 import CompanyTemplateManager from "@/components/editor/CompanyTemplateManager";
+import ConditionalBranchEditor from "@/components/editor/ConditionalBranchEditor";
+import SOPDriftDetector from "@/components/editor/SOPDriftDetector";
+import VideoDocumentSync from "@/components/editor/VideoDocumentSync";
 import { useProjectStore } from "@/store/useProjectStore";
 import { generateDemoWorkStandard, generateDemoAnalysisResult } from "@/lib/demo-data";
+import { getFeatureToggles } from "@/lib/settings";
+import type { BranchPoint, FeatureToggles } from "@/types";
 import {
   ArrowLeft,
   Video,
@@ -43,11 +48,14 @@ import {
   Brain as BrainIcon,
   GitCompare,
   FileText as FileTextIcon,
+  GitBranch,
+  Activity,
+  ArrowLeftRight,
 } from "lucide-react";
 import type { AnalysisResult, WorkStandard, ExportOptions, ProjectStatus, StepCategory } from "@/types";
 import { v4 as uuidv4 } from "uuid";
 
-type ViewMode = "video" | "analysis" | "editor" | "checklist" | "visual-ref" | "mobile" | "training" | "analytics" | "quiz" | "diff" | "templates";
+type ViewMode = "video" | "analysis" | "editor" | "checklist" | "visual-ref" | "mobile" | "training" | "analytics" | "quiz" | "diff" | "templates" | "branching" | "drift" | "sync";
 
 const statusConfig: Record<ProjectStatus, { label: string; color: string; bgColor: string }> = {
   draft: { label: "下書き", color: "#64748b", bgColor: "#f1f5f9" },
@@ -96,6 +104,16 @@ export default function ProjectDetailPage() {
     knowledgeTips: string;
     safetyPoints: string;
   } | null>(null);
+  const [branchPoints, setBranchPoints] = useState<BranchPoint[]>([]);
+  const [featureToggles, setFeatureToggles] = useState<FeatureToggles>({
+    conditionalBranching: true,
+    sopDriftDetection: true,
+    bidirectionalSync: true,
+  });
+
+  useEffect(() => {
+    setFeatureToggles(getFeatureToggles());
+  }, []);
 
   useEffect(() => {
     if (projects.length === 0) initializeDemoData();
@@ -277,18 +295,21 @@ export default function ProjectDetailPage() {
     updateProject(projectId, { status: "published" });
   };
 
-  const modeButtons = [
-    { mode: "video" as ViewMode, label: "動画", icon: Video },
-    { mode: "analysis" as ViewMode, label: "AI分析", icon: Brain },
-    { mode: "editor" as ViewMode, label: "編集", icon: FileEdit },
-    { mode: "checklist" as ViewMode, label: "検査チェック", icon: ClipboardCheck },
-    { mode: "visual-ref" as ViewMode, label: "外観基準", icon: Eye },
-    { mode: "training" as ViewMode, label: "トレーニング", icon: GraduationCap },
-    { mode: "mobile" as ViewMode, label: "モバイル", icon: Smartphone },
-    { mode: "quiz" as ViewMode, label: "クイズ", icon: BrainIcon },
-    { mode: "diff" as ViewMode, label: "差分比較", icon: GitCompare },
-    { mode: "templates" as ViewMode, label: "テンプレート", icon: FileTextIcon },
-    { mode: "analytics" as ViewMode, label: "分析", icon: BarChart3 },
+  const modeButtons: { mode: ViewMode; label: string; icon: typeof Video }[] = [
+    { mode: "video", label: "動画", icon: Video },
+    { mode: "analysis", label: "AI分析", icon: Brain },
+    { mode: "editor", label: "編集", icon: FileEdit },
+    ...(featureToggles.conditionalBranching ? [{ mode: "branching" as ViewMode, label: "条件分岐", icon: GitBranch }] : []),
+    ...(featureToggles.sopDriftDetection ? [{ mode: "drift" as ViewMode, label: "逸脱検出", icon: Activity }] : []),
+    ...(featureToggles.bidirectionalSync ? [{ mode: "sync" as ViewMode, label: "動画同期", icon: ArrowLeftRight }] : []),
+    { mode: "checklist", label: "検査チェック", icon: ClipboardCheck },
+    { mode: "visual-ref", label: "外観基準", icon: Eye },
+    { mode: "training", label: "トレーニング", icon: GraduationCap },
+    { mode: "mobile", label: "モバイル", icon: Smartphone },
+    { mode: "quiz", label: "クイズ", icon: BrainIcon },
+    { mode: "diff", label: "差分比較", icon: GitCompare },
+    { mode: "templates", label: "テンプレート", icon: FileTextIcon },
+    { mode: "analytics", label: "分析", icon: BarChart3 },
   ];
 
   return (
@@ -553,6 +574,59 @@ export default function ProjectDetailPage() {
             )}
 
             {viewMode === "templates" && <CompanyTemplateManager />}
+
+            {viewMode === "branching" && featureToggles.conditionalBranching && currentWorkStandard && (
+              <div className="card">
+                <ConditionalBranchEditor
+                  steps={currentWorkStandard.steps}
+                  branchPoints={branchPoints}
+                  onBranchPointsChange={setBranchPoints}
+                />
+              </div>
+            )}
+
+            {viewMode === "branching" && featureToggles.conditionalBranching && !currentWorkStandard && (
+              <div className="card text-center py-16">
+                <GitBranch className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <h3 className="text-lg font-bold text-slate-900 mb-2">条件分岐には作業標準書が必要です</h3>
+                <p className="text-slate-500">まず作業標準書を生成してください。</p>
+              </div>
+            )}
+
+            {viewMode === "drift" && featureToggles.sopDriftDetection && currentWorkStandard && (
+              <div className="card">
+                <SOPDriftDetector
+                  workStandard={currentWorkStandard}
+                  videoFile={videoFile}
+                />
+              </div>
+            )}
+
+            {viewMode === "drift" && featureToggles.sopDriftDetection && !currentWorkStandard && (
+              <div className="card text-center py-16">
+                <Activity className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <h3 className="text-lg font-bold text-slate-900 mb-2">逸脱検出には作業標準書が必要です</h3>
+                <p className="text-slate-500">まず作業標準書を生成してください。</p>
+              </div>
+            )}
+
+            {viewMode === "sync" && featureToggles.bidirectionalSync && currentWorkStandard && (
+              <div className="card">
+                <VideoDocumentSync
+                  workStandard={currentWorkStandard}
+                  videoFile={videoFile}
+                  onSeekVideo={setVideoTime}
+                />
+              </div>
+            )}
+
+            {viewMode === "sync" && featureToggles.bidirectionalSync && !currentWorkStandard && (
+              <div className="card text-center py-16">
+                <ArrowLeftRight className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <h3 className="text-lg font-bold text-slate-900 mb-2">動画同期には作業標準書が必要です</h3>
+                <p className="text-slate-500">まず作業標準書を生成してください。</p>
+              </div>
+            )}
 
             {viewMode === "analytics" && <AnalyticsDashboard />}
           </div>

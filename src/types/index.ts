@@ -305,3 +305,100 @@ export interface Template {
   presetTools: Partial<ToolItem>[];
   presetQualityCheckpoints: Partial<QualityCheckpoint>[];
 }
+
+// === Feature Toggle System ===
+
+export interface FeatureToggles {
+  conditionalBranching: boolean;
+  sopDriftDetection: boolean;
+  bidirectionalSync: boolean;
+}
+
+export const defaultFeatureToggles: FeatureToggles = {
+  conditionalBranching: true,
+  sopDriftDetection: true,
+  bidirectionalSync: true,
+};
+
+// === Conditional Branching (条件分岐型作業指示書) ===
+
+export interface BranchCondition {
+  id: string;
+  field: string;       // e.g. "connectorType", "modelVariant", "materialType"
+  operator: "equals" | "not-equals" | "includes" | "greater-than" | "less-than";
+  value: string;
+  label: string;       // human-readable label e.g. "コネクタタイプA"
+}
+
+export interface StepBranch {
+  id: string;
+  condition: BranchCondition;
+  steps: string[];     // step IDs to execute when condition is met
+}
+
+export interface BranchPoint {
+  id: string;
+  stepId: string;          // the step where branching occurs
+  description: string;     // e.g. "コネクタタイプによって分岐"
+  variableName: string;    // e.g. "connectorType"
+  variableLabel: string;   // e.g. "コネクタタイプ"
+  branches: StepBranch[];
+  defaultBranch?: string[]; // step IDs for default/fallback path
+}
+
+// === SOP Drift Detection (SOP逸脱検出) ===
+
+export type DriftSeverity = "info" | "minor" | "major" | "critical";
+
+export interface DriftItem {
+  id: string;
+  stepNumber: number;
+  stepTitle: string;
+  field: string;
+  sopValue: string;
+  actualValue: string;
+  severity: DriftSeverity;
+  detectedAt: string;
+  description: string;
+  videoTimestamp?: number;
+}
+
+export interface DriftReport {
+  id: string;
+  projectId: string;
+  createdAt: string;
+  videoFileName?: string;
+  totalDrifts: number;
+  criticalCount: number;
+  majorCount: number;
+  minorCount: number;
+  infoCount: number;
+  items: DriftItem[];
+  overallScore: number;    // 0-100, compliance score
+  status: "analyzing" | "completed" | "reviewed";
+}
+
+// === Bi-directional Video-Document Sync (動画⇔文書の双方向リンク) ===
+
+export interface VideoDocumentLink {
+  id: string;
+  stepId: string;
+  videoTimestamp: { start: number; end: number };
+  documentSection: string;
+  syncStatus: "synced" | "video-updated" | "document-updated" | "conflict";
+  lastVideoHash?: string;
+  lastDocumentHash?: string;
+  lastSyncedAt: string;
+}
+
+export interface SyncAlert {
+  id: string;
+  linkId: string;
+  type: "video-changed" | "document-changed" | "new-video" | "steps-reordered";
+  description: string;
+  stepId: string;
+  stepTitle: string;
+  createdAt: string;
+  resolved: boolean;
+  resolvedAt?: string;
+}
