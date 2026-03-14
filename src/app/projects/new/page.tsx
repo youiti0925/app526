@@ -66,8 +66,8 @@ export default function NewProjectPage() {
     setFormData({ ...formData, tags: formData.tags.filter((t) => t !== tag) });
   };
 
-  const handleCreate = () => {
-    const project = addProject({
+  const handleCreate = async () => {
+    const project = await addProject({
       name: formData.name,
       description: formData.description,
       category: formData.category,

@@ -38,6 +38,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# data (SQLite database & uploaded files)
+/data/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

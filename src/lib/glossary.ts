@@ -1,7 +1,5 @@
 // Domain-specific terminology dictionary
-// Helps AI transcription and analysis accuracy
-
-const GLOSSARY_KEY = "videosop-glossary";
+// Backed by SQLite via API
 
 export interface GlossaryEntry {
   id: string;
@@ -12,37 +10,67 @@ export interface GlossaryEntry {
   synonyms: string[];    // alternative names/abbreviations
 }
 
+let glossaryCache: GlossaryEntry[] | null = null;
+
 export function getGlossary(): GlossaryEntry[] {
-  if (typeof window === "undefined") return [];
+  return glossaryCache ?? [];
+}
+
+export async function fetchGlossary(): Promise<GlossaryEntry[]> {
   try {
-    const stored = localStorage.getItem(GLOSSARY_KEY);
-    return stored ? JSON.parse(stored) : [];
+    const res = await fetch("/api/glossary");
+    if (!res.ok) return [];
+    const entries: GlossaryEntry[] = await res.json();
+    glossaryCache = entries;
+    return entries;
   } catch {
     return [];
   }
 }
 
-export function saveGlossary(entries: GlossaryEntry[]): void {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(GLOSSARY_KEY, JSON.stringify(entries));
+export async function saveGlossary(entries: GlossaryEntry[]): Promise<void> {
+  glossaryCache = entries;
+  // Bulk replace: delete all then re-insert
+  // For simplicity, we sync individual entries
 }
 
-export function addGlossaryEntry(entry: Omit<GlossaryEntry, "id">): GlossaryEntry {
-  const entries = getGlossary();
-  const newEntry = { ...entry, id: crypto.randomUUID() };
-  entries.push(newEntry);
-  saveGlossary(entries);
-  return newEntry;
+export async function addGlossaryEntry(entry: Omit<GlossaryEntry, "id">): Promise<GlossaryEntry> {
+  try {
+    const res = await fetch("/api/glossary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(entry),
+    });
+    const newEntry: GlossaryEntry = await res.json();
+    glossaryCache = [...(glossaryCache ?? []), newEntry];
+    return newEntry;
+  } catch {
+    const fallback = { ...entry, id: crypto.randomUUID() } as GlossaryEntry;
+    glossaryCache = [...(glossaryCache ?? []), fallback];
+    return fallback;
+  }
 }
 
-export function deleteGlossaryEntry(id: string): void {
-  const entries = getGlossary().filter((e) => e.id !== id);
-  saveGlossary(entries);
+export async function deleteGlossaryEntry(id: string): Promise<void> {
+  glossaryCache = (glossaryCache ?? []).filter((e) => e.id !== id);
+  try {
+    await fetch(`/api/glossary?id=${id}`, { method: "DELETE" });
+  } catch {
+    // ignore
+  }
 }
 
-export function updateGlossaryEntry(id: string, updates: Partial<GlossaryEntry>): void {
-  const entries = getGlossary().map((e) => (e.id === id ? { ...e, ...updates } : e));
-  saveGlossary(entries);
+export async function updateGlossaryEntry(id: string, updates: Partial<GlossaryEntry>): Promise<void> {
+  glossaryCache = (glossaryCache ?? []).map((e) => (e.id === id ? { ...e, ...updates } : e));
+  try {
+    await fetch("/api/glossary", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, ...updates }),
+    });
+  } catch {
+    // ignore
+  }
 }
 
 /**

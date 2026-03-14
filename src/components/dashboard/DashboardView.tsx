@@ -42,13 +42,14 @@ const activityIcons: Record<ActivityItem["type"], typeof CheckCircle2> = {
 };
 
 export default function DashboardView() {
-  const { projects, dashboardStats, initializeDemoData } = useProjectStore();
+  const { projects, dashboardStats, initializeDemoData, fetchProjects } = useProjectStore();
 
   useEffect(() => {
-    if (projects.length === 0) {
-      initializeDemoData();
-    }
-  }, [projects.length, initializeDemoData]);
+    fetchProjects().then(() => {
+      const { projects } = useProjectStore.getState();
+      if (projects.length === 0) initializeDemoData();
+    });
+  }, [fetchProjects, initializeDemoData]);
 
   const statCards = [
     {
