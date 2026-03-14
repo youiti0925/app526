@@ -16,6 +16,7 @@ import {
 
 interface VideoPlayerProps {
   videoUrl?: string;
+  videoFile?: File;
   currentTime?: number;
   onTimeUpdate?: (time: number) => void;
   onCapture?: (imageDataUrl: string, timestamp: number) => void;
@@ -23,7 +24,8 @@ interface VideoPlayerProps {
 }
 
 export default function VideoPlayer({
-  videoUrl,
+  videoUrl: videoUrlProp,
+  videoFile,
   currentTime: externalTime,
   onTimeUpdate,
   onCapture,
@@ -37,6 +39,18 @@ export default function VideoPlayer({
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [fileUrl, setFileUrl] = useState<string | undefined>();
+
+  // Create object URL from File if provided
+  useEffect(() => {
+    if (videoFile) {
+      const url = URL.createObjectURL(videoFile);
+      setFileUrl(url);
+      return () => URL.revokeObjectURL(url);
+    }
+  }, [videoFile]);
+
+  const videoUrl = videoUrlProp || fileUrl;
 
   useEffect(() => {
     if (externalTime !== undefined && videoRef.current) {

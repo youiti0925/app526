@@ -1,6 +1,7 @@
 "use client";
 
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import type {
   Project,
   WorkStandard,
@@ -40,7 +41,7 @@ interface ProjectStore {
   initializeDemoData: () => void;
 }
 
-export const useProjectStore = create<ProjectStore>((set, get) => ({
+export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
   projects: [],
   currentProject: null,
   currentWorkStandard: null,
@@ -276,4 +277,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       },
     });
   },
+}), {
+  name: "videosop-projects",
+  partialize: (state) => ({
+    projects: state.projects,
+    dashboardStats: state.dashboardStats,
+  }),
 }));
