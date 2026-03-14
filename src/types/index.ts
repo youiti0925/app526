@@ -205,6 +205,8 @@ export interface SuggestedStep {
   confidence: number;
 }
 
+export type DetailLevel = "sop" | "work-instruction";
+
 export interface ExportOptions {
   format: "pdf" | "excel" | "word" | "html";
   includeImages: boolean;
@@ -215,6 +217,64 @@ export interface ExportOptions {
   orientation: "portrait" | "landscape";
   includeQRCode: boolean;
   includeRevisionHistory: boolean;
+  detailLevel: DetailLevel;
+  companyTemplateId?: string;
+}
+
+export interface CompanyTemplate {
+  id: string;
+  name: string;
+  description: string;
+  category: ProjectCategory;
+  format: "pdf" | "excel" | "word";
+  sections: TemplateSectionConfig[];
+  headerFields: TemplateFieldMapping[];
+  footerText: string;
+  logoUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TemplateSectionConfig {
+  id: string;
+  name: string;
+  enabled: boolean;
+  order: number;
+  type: "header" | "steps" | "safety" | "quality" | "tools" | "revision-history" | "approval" | "custom";
+  customContent?: string;
+}
+
+export interface TemplateFieldMapping {
+  fieldId: string;
+  label: string;
+  source: "auto" | "manual";
+  value?: string;
+}
+
+export interface QuizQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  correctAnswer: number;
+  relatedStepNumber: number;
+  difficulty: "easy" | "medium" | "hard";
+  explanation: string;
+}
+
+export interface RevisionSnapshot {
+  id: string;
+  version: string;
+  date: string;
+  author: string;
+  workStandard: WorkStandard;
+}
+
+export interface StepDiff {
+  stepNumber: number;
+  field: string;
+  oldValue: string;
+  newValue: string;
+  changeType: "added" | "removed" | "modified";
 }
 
 export interface DashboardStats {

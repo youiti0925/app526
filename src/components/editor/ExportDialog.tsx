@@ -16,7 +16,7 @@ import {
   Image,
   Link2,
 } from "lucide-react";
-import type { ExportOptions } from "@/types";
+import type { ExportOptions, CompanyTemplate, DetailLevel } from "@/types";
 
 interface ExportDialogProps {
   isOpen: boolean;
@@ -48,6 +48,23 @@ const templateOptions = [
   { value: "training" as const, label: "教育用", description: "トレーニング・研修向け" },
 ];
 
+const detailLevelOptions = [
+  {
+    value: "sop" as DetailLevel,
+    label: "SOP（管理用）",
+    description: "監査・管理者向け。概要レベルの手順と承認フロー重視",
+    items: ["工程概要", "品質基準", "承認欄", "改訂履歴"],
+  },
+  {
+    value: "work-instruction" as DetailLevel,
+    label: "作業指示書（現場用）",
+    description: "作業者向け。詳細なステップ・写真・注意事項を含む",
+    items: ["詳細手順", "写真・図解", "ポイント・注意", "測定仕様", "使用工具"],
+  },
+];
+
+const COMPANY_TEMPLATES_KEY = "videosop-company-templates";
+
 export default function ExportDialog({ isOpen, onClose, onExport, documentTitle }: ExportDialogProps) {
   const [options, setOptions] = useState<ExportOptions>({
     format: "pdf",
@@ -59,6 +76,17 @@ export default function ExportDialog({ isOpen, onClose, onExport, documentTitle 
     orientation: "portrait",
     includeQRCode: true,
     includeRevisionHistory: true,
+    detailLevel: "work-instruction",
+  });
+  const [companyTemplates, setCompanyTemplates] = useState<CompanyTemplate[]>([]);
+
+  useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem(COMPANY_TEMPLATES_KEY);
+        if (saved) setCompanyTemplates(JSON.parse(saved));
+      } catch { /* ignore */ }
+    }
   });
 
   if (!isOpen) return null;
@@ -107,6 +135,92 @@ export default function ExportDialog({ isOpen, onClose, onExport, documentTitle 
               })}
             </div>
           </div>
+
+          {/* Detail Level Toggle */}
+          <div>
+            <label className="text-sm font-semibold text-slate-700 mb-3 block">出力詳細レベル</label>
+            <div className="grid grid-cols-2 gap-3">
+              {detailLevelOptions.map((level) => {
+                const isSelected = options.detailLevel === level.value;
+                return (
+                  <button
+                    key={level.value}
+                    onClick={() => setOptions({ ...options, detailLevel: level.value })}
+                    className={`p-4 rounded-lg border-2 text-left transition-all ${
+                      isSelected
+                        ? level.value === "sop"
+                          ? "border-purple-500 bg-purple-50"
+                          : "border-green-500 bg-green-50"
+                        : "border-slate-200 hover:border-slate-300"
+                    }`}
+                  >
+                    <p className={`text-sm font-medium ${
+                      isSelected
+                        ? level.value === "sop" ? "text-purple-700" : "text-green-700"
+                        : "text-slate-700"
+                    }`}>
+                      {level.label}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">{level.description}</p>
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {level.items.map((item) => (
+                        <span
+                          key={item}
+                          className="text-xs px-1.5 py-0.5 rounded"
+                          style={{
+                            background: isSelected
+                              ? level.value === "sop" ? "#ede9fe" : "#dcfce7"
+                              : "#f1f5f9",
+                            color: isSelected
+                              ? level.value === "sop" ? "#7c3aed" : "#16a34a"
+                              : "#64748b",
+                          }}
+                        >
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Company Templates */}
+          {companyTemplates.length > 0 && (
+            <div>
+              <label className="text-sm font-semibold text-slate-700 mb-3 block">会社テンプレート</label>
+              <div className="space-y-2">
+                <button
+                  onClick={() => setOptions({ ...options, companyTemplateId: undefined })}
+                  className={`w-full p-3 rounded-lg border-2 text-left text-sm transition-all ${
+                    !options.companyTemplateId
+                      ? "border-blue-500 bg-blue-50 text-blue-700"
+                      : "border-slate-200 text-slate-600 hover:border-slate-300"
+                  }`}
+                >
+                  デフォルトテンプレートを使用
+                </button>
+                {companyTemplates.map((tmpl) => {
+                  const isSelected = options.companyTemplateId === tmpl.id;
+                  return (
+                    <button
+                      key={tmpl.id}
+                      onClick={() => setOptions({ ...options, companyTemplateId: tmpl.id })}
+                      className={`w-full p-3 rounded-lg border-2 text-left transition-all ${
+                        isSelected
+                          ? "border-blue-500 bg-blue-50"
+                          : "border-slate-200 hover:border-slate-300"
+                      }`}
+                    >
+                      <p className={`text-sm font-medium ${isSelected ? "text-blue-700" : "text-slate-700"}`}>{tmpl.name}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">{tmpl.description}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Template */}
           <div>

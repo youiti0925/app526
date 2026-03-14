@@ -6,6 +6,7 @@ import Header from "@/components/ui/Header";
 import { Settings, Key, Eye, EyeOff, CheckCircle2, AlertCircle, ExternalLink, BookOpen, Plus, Trash2, X } from "lucide-react";
 import { getSettings, saveSettings } from "@/lib/settings";
 import { getGlossary, saveGlossary, type GlossaryEntry } from "@/lib/glossary";
+import CompanyTemplateManager from "@/components/editor/CompanyTemplateManager";
 
 const categoryLabels: Record<GlossaryEntry["category"], string> = {
   machine: "機械",
@@ -298,6 +299,11 @@ export default function SettingsPage() {
                   ))}
                 </div>
               )}
+            </div>
+
+            {/* Company Templates */}
+            <div className="card mt-6">
+              <CompanyTemplateManager />
             </div>
 
             {/* Data Management */}

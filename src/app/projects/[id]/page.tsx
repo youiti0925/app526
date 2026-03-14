@@ -17,6 +17,9 @@ import SpeechToText from "@/components/video/SpeechToText";
 import MobileViewer from "@/components/ui/MobileViewer";
 import TrainingManagement from "@/components/dashboard/TrainingManagement";
 import AnalyticsDashboard from "@/components/dashboard/AnalyticsDashboard";
+import QuizGenerator from "@/components/editor/QuizGenerator";
+import RevisionDiffViewer from "@/components/editor/RevisionDiffViewer";
+import CompanyTemplateManager from "@/components/editor/CompanyTemplateManager";
 import { useProjectStore } from "@/store/useProjectStore";
 import { generateDemoWorkStandard, generateDemoAnalysisResult } from "@/lib/demo-data";
 import {
@@ -37,11 +40,14 @@ import {
   BarChart3,
   QrCode,
   Mic,
+  Brain as BrainIcon,
+  GitCompare,
+  FileText as FileTextIcon,
 } from "lucide-react";
 import type { AnalysisResult, WorkStandard, ExportOptions, ProjectStatus, StepCategory } from "@/types";
 import { v4 as uuidv4 } from "uuid";
 
-type ViewMode = "video" | "analysis" | "editor" | "checklist" | "visual-ref" | "mobile" | "training" | "analytics";
+type ViewMode = "video" | "analysis" | "editor" | "checklist" | "visual-ref" | "mobile" | "training" | "analytics" | "quiz" | "diff" | "templates";
 
 const statusConfig: Record<ProjectStatus, { label: string; color: string; bgColor: string }> = {
   draft: { label: "下書き", color: "#64748b", bgColor: "#f1f5f9" },
@@ -279,6 +285,9 @@ export default function ProjectDetailPage() {
     { mode: "visual-ref" as ViewMode, label: "外観基準", icon: Eye },
     { mode: "training" as ViewMode, label: "トレーニング", icon: GraduationCap },
     { mode: "mobile" as ViewMode, label: "モバイル", icon: Smartphone },
+    { mode: "quiz" as ViewMode, label: "クイズ", icon: BrainIcon },
+    { mode: "diff" as ViewMode, label: "差分比較", icon: GitCompare },
+    { mode: "templates" as ViewMode, label: "テンプレート", icon: FileTextIcon },
     { mode: "analytics" as ViewMode, label: "分析", icon: BarChart3 },
   ];
 
@@ -518,6 +527,32 @@ export default function ProjectDetailPage() {
                 totalSteps={7}
               />
             )}
+
+            {viewMode === "quiz" && currentWorkStandard && (
+              <QuizGenerator workStandard={currentWorkStandard} />
+            )}
+
+            {viewMode === "quiz" && !currentWorkStandard && (
+              <div className="card text-center py-16">
+                <BrainIcon className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <h3 className="text-lg font-bold text-slate-900 mb-2">クイズを生成するには作業標準書が必要です</h3>
+                <p className="text-slate-500">まずAI分析を実行し、作業標準書を生成してください。</p>
+              </div>
+            )}
+
+            {viewMode === "diff" && currentWorkStandard && (
+              <RevisionDiffViewer workStandard={currentWorkStandard} />
+            )}
+
+            {viewMode === "diff" && !currentWorkStandard && (
+              <div className="card text-center py-16">
+                <GitCompare className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <h3 className="text-lg font-bold text-slate-900 mb-2">差分比較には作業標準書が必要です</h3>
+                <p className="text-slate-500">まず作業標準書を生成してください。</p>
+              </div>
+            )}
+
+            {viewMode === "templates" && <CompanyTemplateManager />}
 
             {viewMode === "analytics" && <AnalyticsDashboard />}
           </div>
