@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Brain,
   ScanSearch,
@@ -9,13 +9,19 @@ import {
   Zap,
   CheckCircle2,
   Loader2,
-  ArrowRight,
   Lightbulb,
   Eye,
   Clock,
   BarChart,
+  AlertCircle,
+  Settings,
 } from "lucide-react";
 import type { AnalysisResult, DetectedScene, StepCategory } from "@/types";
+import { extractFramesFromVideo } from "@/lib/video-utils";
+import { transcribeVideoAudio, isSpeechRecognitionAvailable } from "@/lib/audio-utils";
+import { getSettings } from "@/lib/settings";
+import { formatGlossaryForPrompt } from "@/lib/glossary";
+import type { VideoContext } from "@/components/video/VideoUploader";
 
 interface AnalysisViewProps {
   analysisResult: AnalysisResult | null;
@@ -23,6 +29,10 @@ interface AnalysisViewProps {
   onAnalysisComplete: (result: AnalysisResult) => void;
   onStartAnalysis: () => void;
   onSceneClick?: (scene: DetectedScene) => void;
+  videoFile?: File | null;
+  projectName?: string;
+  projectCategory?: string;
+  videoContext?: VideoContext | null;
 }
 
 const categoryLabels: Record<StepCategory, { label: string; color: string }> = {
@@ -36,12 +46,11 @@ const categoryLabels: Record<StepCategory, { label: string; color: string }> = {
 };
 
 const analysisStages = [
-  { label: "動画の前処理", icon: ScanSearch, duration: 3000 },
-  { label: "シーン変化検出", icon: Eye, duration: 5000 },
-  { label: "動作認識・分析", icon: Brain, duration: 8000 },
-  { label: "テキスト抽出（OCR）", icon: Type, duration: 4000 },
-  { label: "工具・器具検出", icon: Wrench, duration: 4000 },
-  { label: "ステップ自動構成", icon: Zap, duration: 3000 },
+  { label: "動画の前処理", icon: ScanSearch, key: "preprocessing" },
+  { label: "フレーム抽出", icon: Eye, key: "frame_extraction" },
+  { label: "音声文字起こし", icon: Type, key: "transcription" },
+  { label: "AI分析中", icon: Brain, key: "ai_analysis" },
+  { label: "結果構成", icon: Zap, key: "structuring" },
 ];
 
 export default function AnalysisView({
@@ -50,45 +59,121 @@ export default function AnalysisView({
   onAnalysisComplete,
   onStartAnalysis,
   onSceneClick,
+  videoFile,
+  projectName,
+  projectCategory,
+  videoContext,
 }: AnalysisViewProps) {
   const [currentStage, setCurrentStage] = useState(0);
-  const [stageProgress, setStageProgress] = useState(0);
   const [completedStages, setCompletedStages] = useState<number[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [stageMessage, setStageMessage] = useState("");
 
-  useEffect(() => {
-    if (!isAnalyzing) return;
+  const runAnalysis = useCallback(async () => {
+    if (!videoFile) {
+      setError("動画ファイルが見つかりません。動画をアップロードしてから分析を開始してください。");
+      return;
+    }
 
-    let stageIndex = 0;
-    let progress = 0;
+    const settings = getSettings();
+    if (!settings.geminiApiKey) {
+      setError("Gemini APIキーが設定されていません。左メニューの「設定」からAPIキーを入力してください。");
+      return;
+    }
 
-    const runStage = () => {
-      if (stageIndex >= analysisStages.length) {
-        // Analysis complete - this would be replaced with actual API call
-        const { generateDemoAnalysisResult } = require("@/lib/demo-data");
-        onAnalysisComplete(generateDemoAnalysisResult());
-        return;
+    setError(null);
+    setCompletedStages([]);
+
+    try {
+      // Stage 0: Preprocessing
+      setCurrentStage(0);
+      setStageMessage("動画を読み込んでいます...");
+      await new Promise((r) => setTimeout(r, 500));
+      setCompletedStages([0]);
+
+      // Stage 1: Frame extraction
+      setCurrentStage(1);
+      setStageMessage("動画からフレームを抽出中...");
+      const frames = await extractFramesFromVideo(videoFile, {
+        maxFrames: 8,
+        maxWidth: 1024,
+        quality: 0.7,
+      });
+      setStageMessage(`${frames.length}フレームを抽出しました`);
+      setCompletedStages([0, 1]);
+
+      // Stage 2: Audio transcription
+      setCurrentStage(2);
+      let transcription = "";
+      if (isSpeechRecognitionAvailable()) {
+        setStageMessage("音声を文字起こし中...（動画を高速再生しています）");
+        try {
+          const transcriptionResult = await transcribeVideoAudio(videoFile, {
+            language: "ja-JP",
+            maxDuration: 120,
+            onProgress: (text) => {
+              setStageMessage(`文字起こし中: ${text.substring(0, 60)}${text.length > 60 ? "..." : ""}`);
+            },
+          });
+          transcription = transcriptionResult.text;
+          setStageMessage(transcription ? `文字起こし完了: ${transcription.length}文字` : "音声が検出されませんでした");
+        } catch {
+          setStageMessage("音声文字起こしをスキップしました");
+        }
+      } else {
+        setStageMessage("このブラウザでは音声文字起こしに対応していません（スキップ）");
+      }
+      await new Promise((r) => setTimeout(r, 500));
+      setCompletedStages([0, 1, 2]);
+
+      // Stage 3: AI Analysis
+      setCurrentStage(3);
+      setStageMessage("Gemini AIで分析中...（30秒〜1分かかります）");
+
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          frames: frames.map((f) => ({
+            timestamp: f.timestamp,
+            dataUrl: f.dataUrl,
+          })),
+          apiKey: settings.geminiApiKey,
+          projectName,
+          projectCategory,
+          transcription,
+          videoContext: videoContext || undefined,
+          glossary: formatGlossaryForPrompt() || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `分析に失敗しました (${response.status})`);
       }
 
-      setCurrentStage(stageIndex);
-      setStageProgress(0);
-      progress = 0;
+      const result = await response.json();
+      setCompletedStages([0, 1, 2, 3]);
 
-      const stage = analysisStages[stageIndex];
-      const interval = setInterval(() => {
-        progress += Math.random() * 8 + 2;
-        if (progress >= 100) {
-          progress = 100;
-          clearInterval(interval);
-          setCompletedStages((prev) => [...prev, stageIndex]);
-          stageIndex++;
-          setTimeout(runStage, 300);
-        }
-        setStageProgress(Math.min(progress, 100));
-      }, stage.duration / 20);
-    };
+      // Stage 4: Structuring
+      setCurrentStage(4);
+      setStageMessage("分析結果を構成中...");
+      await new Promise((r) => setTimeout(r, 500));
+      setCompletedStages([0, 1, 2, 3, 4]);
 
-    runStage();
-  }, [isAnalyzing, onAnalysisComplete]);
+      // Complete
+      onAnalysisComplete(result as AnalysisResult);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "分析中に予期しないエラーが発生しました";
+      setError(message);
+    }
+  }, [videoFile, projectName, projectCategory, onAnalysisComplete]);
+
+  useEffect(() => {
+    if (isAnalyzing) {
+      runAnalysis();
+    }
+  }, [isAnalyzing, runAnalysis]);
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
@@ -96,94 +181,140 @@ export default function AnalysisView({
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
+  // Pre-analysis view
   if (!isAnalyzing && !analysisResult) {
     return (
-      <div className="card text-center py-12">
-        <Brain className="w-16 h-16 text-blue-500 mx-auto mb-4" />
-        <h3 className="text-xl font-bold text-slate-900 mb-2">AI動画分析</h3>
-        <p className="text-slate-500 mb-6 max-w-md mx-auto">
-          AIが動画を分析して、シーン検出、動作認識、テキスト抽出を行い、
-          作業ステップを自動的に構成します。
-        </p>
-        <div className="flex flex-wrap items-center justify-center gap-3 mb-8">
-          {analysisStages.map((stage, i) => {
-            const Icon = stage.icon;
-            return (
-              <div key={i} className="flex items-center gap-1.5 text-xs text-slate-500 bg-slate-50 px-3 py-1.5 rounded-full">
-                <Icon className="w-3.5 h-3.5" />
-                {stage.label}
+      <div className="space-y-4">
+        {error && (
+          <div className="card border-red-200 bg-red-50">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm text-red-700 font-medium">エラー</p>
+                <p className="text-sm text-red-600 mt-1">{error}</p>
+                {error.includes("APIキー") && (
+                  <a href="/settings" className="inline-flex items-center gap-1 text-sm text-red-700 underline mt-2">
+                    <Settings className="w-4 h-4" />
+                    設定画面を開く
+                  </a>
+                )}
               </div>
-            );
-          })}
+            </div>
+          </div>
+        )}
+
+        <div className="card text-center py-12">
+          <Brain className="w-16 h-16 text-blue-500 mx-auto mb-4" />
+          <h3 className="text-xl font-bold text-slate-900 mb-2">AI動画分析</h3>
+          <p className="text-slate-500 mb-6 max-w-md mx-auto">
+            動画からフレームを抽出し、Google Gemini AIが分析して
+            作業ステップを自動的に構成します。
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-3 mb-8">
+            {analysisStages.map((stage, i) => {
+              const Icon = stage.icon;
+              return (
+                <div key={i} className="flex items-center gap-1.5 text-xs text-slate-500 bg-slate-50 px-3 py-1.5 rounded-full">
+                  <Icon className="w-3.5 h-3.5" />
+                  {stage.label}
+                </div>
+              );
+            })}
+          </div>
+
+          {!videoFile && (
+            <p className="text-sm text-amber-600 mb-4">
+              ※ まず「動画」タブで動画をアップロードしてください
+            </p>
+          )}
+
+          <button
+            onClick={onStartAnalysis}
+            disabled={!videoFile}
+            className="btn-primary text-lg px-8 py-3 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <span className="flex items-center gap-2">
+              <Zap className="w-5 h-5" />
+              AI分析を開始
+            </span>
+          </button>
         </div>
-        <button onClick={onStartAnalysis} className="btn-primary text-lg px-8 py-3">
-          <span className="flex items-center gap-2">
-            <Zap className="w-5 h-5" />
-            AI分析を開始
-          </span>
-        </button>
       </div>
     );
   }
 
+  // Analyzing view
   if (isAnalyzing) {
     return (
-      <div className="card">
-        <div className="flex items-center gap-2 mb-6">
-          <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
-          <h3 className="font-bold text-slate-900">AI分析実行中...</h3>
-        </div>
+      <div className="space-y-4">
+        {error && (
+          <div className="card border-red-200 bg-red-50">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm text-red-700 font-medium">分析エラー</p>
+                <p className="text-sm text-red-600 mt-1">{error}</p>
+              </div>
+            </div>
+          </div>
+        )}
 
-        <div className="space-y-4">
-          {analysisStages.map((stage, i) => {
-            const Icon = stage.icon;
-            const isCompleted = completedStages.includes(i);
-            const isCurrent = currentStage === i;
-            return (
-              <div
-                key={i}
-                className={`flex items-center gap-4 p-3 rounded-lg transition-all ${
-                  isCurrent ? "bg-blue-50 border border-blue-200" : isCompleted ? "bg-green-50" : "bg-slate-50"
-                }`}
-              >
+        <div className="card">
+          <div className="flex items-center gap-2 mb-6">
+            {error ? (
+              <AlertCircle className="w-5 h-5 text-red-500" />
+            ) : (
+              <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
+            )}
+            <h3 className="font-bold text-slate-900">
+              {error ? "分析が中断されました" : "AI分析実行中..."}
+            </h3>
+          </div>
+
+          <div className="space-y-4">
+            {analysisStages.map((stage, i) => {
+              const Icon = stage.icon;
+              const isCompleted = completedStages.includes(i);
+              const isCurrent = currentStage === i && !error;
+              return (
                 <div
-                  className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                    isCompleted
-                      ? "bg-green-100"
-                      : isCurrent
-                      ? "bg-blue-100 analyzing"
-                      : "bg-slate-200"
+                  key={i}
+                  className={`flex items-center gap-4 p-3 rounded-lg transition-all ${
+                    isCurrent ? "bg-blue-50 border border-blue-200" : isCompleted ? "bg-green-50" : "bg-slate-50"
                   }`}
                 >
-                  {isCompleted ? (
-                    <CheckCircle2 className="w-5 h-5 text-green-600" />
-                  ) : isCurrent ? (
-                    <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
-                  ) : (
-                    <Icon className="w-5 h-5 text-slate-400" />
+                  <div
+                    className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                      isCompleted
+                        ? "bg-green-100"
+                        : isCurrent
+                        ? "bg-blue-100"
+                        : "bg-slate-200"
+                    }`}
+                  >
+                    {isCompleted ? (
+                      <CheckCircle2 className="w-5 h-5 text-green-600" />
+                    ) : isCurrent ? (
+                      <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
+                    ) : (
+                      <Icon className="w-5 h-5 text-slate-400" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <p className={`text-sm font-medium ${isCompleted ? "text-green-700" : isCurrent ? "text-blue-700" : "text-slate-500"}`}>
+                      {stage.label}
+                    </p>
+                    {isCurrent && stageMessage && (
+                      <p className="text-xs text-blue-500 mt-1">{stageMessage}</p>
+                    )}
+                  </div>
+                  {isCompleted && (
+                    <span className="text-xs text-green-600 font-medium">完了</span>
                   )}
                 </div>
-                <div className="flex-1">
-                  <p className={`text-sm font-medium ${isCompleted ? "text-green-700" : isCurrent ? "text-blue-700" : "text-slate-500"}`}>
-                    {stage.label}
-                  </p>
-                  {isCurrent && (
-                    <div className="mt-1">
-                      <div className="progress-bar" style={{ height: "4px" }}>
-                        <div
-                          className="progress-bar-fill"
-                          style={{ width: `${stageProgress}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-                {isCompleted && (
-                  <span className="text-xs text-green-600 font-medium">完了</span>
-                )}
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </div>
     );
@@ -230,7 +361,7 @@ export default function AnalysisView({
         </h4>
         <div className="space-y-3">
           {analysisResult!.scenes.map((scene, i) => {
-            const cat = categoryLabels[scene.category];
+            const cat = categoryLabels[scene.category] || categoryLabels.operation;
             return (
               <div
                 key={scene.id}
@@ -320,7 +451,7 @@ export default function AnalysisView({
         </p>
         <div className="relative">
           {analysisResult!.suggestedSteps.map((step, i) => {
-            const cat = categoryLabels[step.category];
+            const cat = categoryLabels[step.category] || categoryLabels.operation;
             return (
               <div key={i} className="step-card">
                 {i < analysisResult!.suggestedSteps.length - 1 && (

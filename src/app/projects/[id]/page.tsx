@@ -5,18 +5,28 @@ import { useParams, useRouter } from "next/navigation";
 import Sidebar from "@/components/ui/Sidebar";
 import Header from "@/components/ui/Header";
 import VideoPlayer from "@/components/video/VideoPlayer";
+import VideoUploader from "@/components/video/VideoUploader";
 import AnalysisView from "@/components/video/AnalysisView";
 import WorkStandardEditor from "@/components/editor/WorkStandardEditor";
 import ExportDialog from "@/components/editor/ExportDialog";
 import PreviewDialog from "@/components/editor/PreviewDialog";
+import QRCodeDialog from "@/components/editor/QRCodeDialog";
 import InspectionChecklist from "@/components/editor/InspectionChecklist";
 import VisualInspectionReference from "@/components/editor/VisualInspectionReference";
 import SpeechToText from "@/components/video/SpeechToText";
 import MobileViewer from "@/components/ui/MobileViewer";
 import TrainingManagement from "@/components/dashboard/TrainingManagement";
 import AnalyticsDashboard from "@/components/dashboard/AnalyticsDashboard";
+import QuizGenerator from "@/components/editor/QuizGenerator";
+import RevisionDiffViewer from "@/components/editor/RevisionDiffViewer";
+import CompanyTemplateManager from "@/components/editor/CompanyTemplateManager";
+import ConditionalBranchEditor from "@/components/editor/ConditionalBranchEditor";
+import SOPDriftDetector from "@/components/editor/SOPDriftDetector";
+import VideoDocumentSync from "@/components/editor/VideoDocumentSync";
 import { useProjectStore } from "@/store/useProjectStore";
 import { generateDemoWorkStandard, generateDemoAnalysisResult } from "@/lib/demo-data";
+import { getFeatureToggles } from "@/lib/settings";
+import type { BranchPoint, FeatureToggles } from "@/types";
 import {
   ArrowLeft,
   Video,
@@ -33,12 +43,19 @@ import {
   Smartphone,
   GraduationCap,
   BarChart3,
+  QrCode,
   Mic,
+  Brain as BrainIcon,
+  GitCompare,
+  FileText as FileTextIcon,
+  GitBranch,
+  Activity,
+  ArrowLeftRight,
 } from "lucide-react";
-import type { AnalysisResult, WorkStandard, ExportOptions, ProjectStatus } from "@/types";
+import type { AnalysisResult, WorkStandard, ExportOptions, ProjectStatus, StepCategory } from "@/types";
 import { v4 as uuidv4 } from "uuid";
 
-type ViewMode = "video" | "analysis" | "editor" | "checklist" | "visual-ref" | "mobile" | "training" | "analytics";
+type ViewMode = "video" | "analysis" | "editor" | "checklist" | "visual-ref" | "mobile" | "training" | "analytics" | "quiz" | "diff" | "templates" | "branching" | "drift" | "sync";
 
 const statusConfig: Record<ProjectStatus, { label: string; color: string; bgColor: string }> = {
   draft: { label: "下書き", color: "#64748b", bgColor: "#f1f5f9" },
@@ -78,7 +95,25 @@ export default function ProjectDetailPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("video");
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
+  const [showQRDialog, setShowQRDialog] = useState(false);
   const [videoTime, setVideoTime] = useState(0);
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoContext, setVideoContext] = useState<{
+    workDescription: string;
+    workerNotes: string;
+    knowledgeTips: string;
+    safetyPoints: string;
+  } | null>(null);
+  const [branchPoints, setBranchPoints] = useState<BranchPoint[]>([]);
+  const [featureToggles, setFeatureToggles] = useState<FeatureToggles>({
+    conditionalBranching: true,
+    sopDriftDetection: true,
+    bidirectionalSync: true,
+  });
+
+  useEffect(() => {
+    setFeatureToggles(getFeatureToggles());
+  }, []);
 
   useEffect(() => {
     if (projects.length === 0) initializeDemoData();
@@ -130,8 +165,98 @@ export default function ProjectDetailPage() {
   };
 
   const handleGenerateWorkStandard = () => {
-    const ws = generateDemoWorkStandard(projectId);
-    setWorkStandard(ws);
+    // Generate work standard from AI analysis results if available
+    const result = analysisResult as AnalysisResult & {
+      safetyNotes?: Array<{ severity: string; title: string; description: string; relatedSteps: number[] }>;
+      qualityCheckpoints?: Array<{ stepNumber: number; checkItem: string; method: string; standard: string; acceptanceCriteria: string; measuringInstrument: string; frequency: string; recordRequired: boolean }>;
+      toolsRequired?: Array<{ name: string; specification: string; quantity: number; category: string }>;
+      header?: { processName?: string; requiredSkillLevel?: string; requiredPPE?: string[]; prerequisites?: string[] };
+    };
+
+    if (result && result.suggestedSteps && result.suggestedSteps.length > 0) {
+      // Build from AI analysis
+      const extSteps = result.suggestedSteps as Array<typeof result.suggestedSteps[0] & {
+        detailedInstructions?: string;
+        cautions?: string[];
+        tools?: string[];
+        estimatedTime?: number;
+        measurements?: Array<{ parameter: string; nominalValue: number; tolerance: { upper: number; lower: number }; unit: string; instrument: string }>;
+      }>;
+
+      const ws: WorkStandard = {
+        id: `ws-${projectId}`,
+        projectId,
+        title: `${currentProject.name} 作業標準書`,
+        documentNumber: `WS-${Date.now().toString(36).toUpperCase()}`,
+        version: "1.0",
+        revisionHistory: [{
+          version: "1.0",
+          date: new Date().toISOString(),
+          author: "AI自動生成",
+          changes: "動画分析から自動生成",
+        }],
+        header: {
+          processName: result.header?.processName || currentProject.name,
+          machineName: currentProject.machineModel || "",
+          machineModel: currentProject.machineModel || "",
+          department: currentProject.department || "",
+          applicableProducts: [],
+          requiredSkillLevel: (result.header?.requiredSkillLevel as "beginner" | "intermediate" | "advanced" | "expert") || "intermediate",
+          requiredPPE: result.header?.requiredPPE || [],
+          prerequisites: result.header?.prerequisites || [],
+        },
+        steps: extSteps.map((step, i) => ({
+          id: uuidv4(),
+          stepNumber: i + 1,
+          title: step.title,
+          description: step.description,
+          detailedInstructions: step.detailedInstructions || step.description,
+          keyPoints: step.keyPoints,
+          cautions: step.cautions || [],
+          thumbnailUrl: "",
+          videoTimestamp: { start: step.startTime, end: step.endTime },
+          estimatedTime: step.estimatedTime || 60,
+          tools: step.tools || [],
+          measurements: step.measurements || [],
+          annotations: [],
+          category: step.category as StepCategory,
+        })),
+        safetyNotes: (result.safetyNotes || []).map((n: { severity: string; title: string; description: string; relatedSteps: number[] }, i: number) => ({
+          id: uuidv4(),
+          severity: n.severity as "info" | "caution" | "warning" | "danger",
+          title: n.title,
+          description: n.description,
+          relatedSteps: n.relatedSteps || [],
+          icon: n.severity === "danger" ? "AlertTriangle" : "AlertCircle",
+        })),
+        qualityCheckpoints: (result.qualityCheckpoints || []).map((q: { stepNumber: number; checkItem: string; method: string; standard: string; acceptanceCriteria: string; measuringInstrument: string; frequency: string; recordRequired: boolean }) => ({
+          id: uuidv4(),
+          stepNumber: q.stepNumber,
+          checkItem: q.checkItem,
+          method: q.method,
+          standard: q.standard,
+          acceptanceCriteria: q.acceptanceCriteria,
+          measuringInstrument: q.measuringInstrument,
+          frequency: q.frequency,
+          recordRequired: q.recordRequired,
+        })),
+        toolsRequired: (result.toolsRequired || []).map((t: { name: string; specification: string; quantity: number; category: string }) => ({
+          id: uuidv4(),
+          name: t.name,
+          specification: t.specification || "",
+          quantity: t.quantity || 1,
+          category: (t.category || "hand-tool") as "measuring" | "hand-tool" | "power-tool" | "fixture" | "consumable" | "ppe",
+        })),
+        estimatedTotalTime: extSteps.reduce((sum, s) => sum + (s.estimatedTime || 60), 0),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setWorkStandard(ws);
+    } else {
+      // Fallback to demo data
+      const ws = generateDemoWorkStandard(projectId);
+      setWorkStandard(ws);
+    }
     updateProject(projectId, { status: "editing" });
     setViewMode("editor");
   };
@@ -170,15 +295,21 @@ export default function ProjectDetailPage() {
     updateProject(projectId, { status: "published" });
   };
 
-  const modeButtons = [
-    { mode: "video" as ViewMode, label: "動画", icon: Video },
-    { mode: "analysis" as ViewMode, label: "AI分析", icon: Brain },
-    { mode: "editor" as ViewMode, label: "編集", icon: FileEdit },
-    { mode: "checklist" as ViewMode, label: "検査チェック", icon: ClipboardCheck },
-    { mode: "visual-ref" as ViewMode, label: "外観基準", icon: Eye },
-    { mode: "training" as ViewMode, label: "トレーニング", icon: GraduationCap },
-    { mode: "mobile" as ViewMode, label: "モバイル", icon: Smartphone },
-    { mode: "analytics" as ViewMode, label: "分析", icon: BarChart3 },
+  const modeButtons: { mode: ViewMode; label: string; icon: typeof Video }[] = [
+    { mode: "video", label: "動画", icon: Video },
+    { mode: "analysis", label: "AI分析", icon: Brain },
+    { mode: "editor", label: "編集", icon: FileEdit },
+    ...(featureToggles.conditionalBranching ? [{ mode: "branching" as ViewMode, label: "条件分岐", icon: GitBranch }] : []),
+    ...(featureToggles.sopDriftDetection ? [{ mode: "drift" as ViewMode, label: "逸脱検出", icon: Activity }] : []),
+    ...(featureToggles.bidirectionalSync ? [{ mode: "sync" as ViewMode, label: "動画同期", icon: ArrowLeftRight }] : []),
+    { mode: "checklist", label: "検査チェック", icon: ClipboardCheck },
+    { mode: "visual-ref", label: "外観基準", icon: Eye },
+    { mode: "training", label: "トレーニング", icon: GraduationCap },
+    { mode: "mobile", label: "モバイル", icon: Smartphone },
+    { mode: "quiz", label: "クイズ", icon: BrainIcon },
+    { mode: "diff", label: "差分比較", icon: GitCompare },
+    { mode: "templates", label: "テンプレート", icon: FileTextIcon },
+    { mode: "analytics", label: "分析", icon: BarChart3 },
   ];
 
   return (
@@ -244,10 +375,16 @@ export default function ProjectDetailPage() {
                     </button>
                   )}
                   {currentWorkStandard && (
-                    <button onClick={() => setShowExportDialog(true)} className="btn-secondary flex items-center gap-1.5 text-sm">
-                      <Download className="w-4 h-4" />
-                      エクスポート
-                    </button>
+                    <>
+                      <button onClick={() => setShowQRDialog(true)} className="btn-secondary flex items-center gap-1.5 text-sm">
+                        <QrCode className="w-4 h-4" />
+                        QR
+                      </button>
+                      <button onClick={() => setShowExportDialog(true)} className="btn-secondary flex items-center gap-1.5 text-sm">
+                        <Download className="w-4 h-4" />
+                        エクスポート
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
@@ -281,17 +418,28 @@ export default function ProjectDetailPage() {
             {viewMode === "video" && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2">
-                  <VideoPlayer
-                    currentTime={videoTime}
-                    onTimeUpdate={setVideoTime}
-                    markers={
-                      analysisResult?.scenes.map((s) => ({
-                        time: s.startTime,
-                        label: s.description,
-                        color: "#3b82f6",
-                      })) || []
-                    }
-                  />
+                  {videoFile ? (
+                    <VideoPlayer
+                      currentTime={videoTime}
+                      onTimeUpdate={setVideoTime}
+                      videoFile={videoFile}
+                      markers={
+                        analysisResult?.scenes.map((s) => ({
+                          time: s.startTime,
+                          label: s.description,
+                          color: "#3b82f6",
+                        })) || []
+                      }
+                    />
+                  ) : (
+                    <VideoUploader
+                      onUploadComplete={(file, _url, ctx) => {
+                        setVideoFile(file);
+                        if (ctx) setVideoContext(ctx);
+                        updateProject(projectId, { status: "video-uploaded" });
+                      }}
+                    />
+                  )}
                 </div>
                 <div className="space-y-4">
                   <div className="card">
@@ -312,7 +460,7 @@ export default function ProjectDetailPage() {
                     </div>
                   </div>
 
-                  {!analysisResult && !isAnalyzing && (
+                  {videoFile && !analysisResult && !isAnalyzing && (
                     <button
                       onClick={handleStartAnalysis}
                       className="w-full btn-primary flex items-center justify-center gap-2 py-3"
@@ -345,6 +493,10 @@ export default function ProjectDetailPage() {
                 onAnalysisComplete={handleAnalysisComplete}
                 onStartAnalysis={handleStartAnalysis}
                 onSceneClick={(scene) => setVideoTime(scene.startTime)}
+                videoFile={videoFile}
+                projectName={currentProject.name}
+                projectCategory={currentProject.category}
+                videoContext={videoContext}
               />
             )}
 
@@ -397,6 +549,85 @@ export default function ProjectDetailPage() {
               />
             )}
 
+            {viewMode === "quiz" && currentWorkStandard && (
+              <QuizGenerator workStandard={currentWorkStandard} />
+            )}
+
+            {viewMode === "quiz" && !currentWorkStandard && (
+              <div className="card text-center py-16">
+                <BrainIcon className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <h3 className="text-lg font-bold text-slate-900 mb-2">クイズを生成するには作業標準書が必要です</h3>
+                <p className="text-slate-500">まずAI分析を実行し、作業標準書を生成してください。</p>
+              </div>
+            )}
+
+            {viewMode === "diff" && currentWorkStandard && (
+              <RevisionDiffViewer workStandard={currentWorkStandard} />
+            )}
+
+            {viewMode === "diff" && !currentWorkStandard && (
+              <div className="card text-center py-16">
+                <GitCompare className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <h3 className="text-lg font-bold text-slate-900 mb-2">差分比較には作業標準書が必要です</h3>
+                <p className="text-slate-500">まず作業標準書を生成してください。</p>
+              </div>
+            )}
+
+            {viewMode === "templates" && <CompanyTemplateManager />}
+
+            {viewMode === "branching" && featureToggles.conditionalBranching && currentWorkStandard && (
+              <div className="card">
+                <ConditionalBranchEditor
+                  steps={currentWorkStandard.steps}
+                  branchPoints={branchPoints}
+                  onBranchPointsChange={setBranchPoints}
+                />
+              </div>
+            )}
+
+            {viewMode === "branching" && featureToggles.conditionalBranching && !currentWorkStandard && (
+              <div className="card text-center py-16">
+                <GitBranch className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <h3 className="text-lg font-bold text-slate-900 mb-2">条件分岐には作業標準書が必要です</h3>
+                <p className="text-slate-500">まず作業標準書を生成してください。</p>
+              </div>
+            )}
+
+            {viewMode === "drift" && featureToggles.sopDriftDetection && currentWorkStandard && (
+              <div className="card">
+                <SOPDriftDetector
+                  workStandard={currentWorkStandard}
+                  videoFile={videoFile}
+                />
+              </div>
+            )}
+
+            {viewMode === "drift" && featureToggles.sopDriftDetection && !currentWorkStandard && (
+              <div className="card text-center py-16">
+                <Activity className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <h3 className="text-lg font-bold text-slate-900 mb-2">逸脱検出には作業標準書が必要です</h3>
+                <p className="text-slate-500">まず作業標準書を生成してください。</p>
+              </div>
+            )}
+
+            {viewMode === "sync" && featureToggles.bidirectionalSync && currentWorkStandard && (
+              <div className="card">
+                <VideoDocumentSync
+                  workStandard={currentWorkStandard}
+                  videoFile={videoFile}
+                  onSeekVideo={setVideoTime}
+                />
+              </div>
+            )}
+
+            {viewMode === "sync" && featureToggles.bidirectionalSync && !currentWorkStandard && (
+              <div className="card text-center py-16">
+                <ArrowLeftRight className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <h3 className="text-lg font-bold text-slate-900 mb-2">動画同期には作業標準書が必要です</h3>
+                <p className="text-slate-500">まず作業標準書を生成してください。</p>
+              </div>
+            )}
+
             {viewMode === "analytics" && <AnalyticsDashboard />}
           </div>
 
@@ -413,6 +644,13 @@ export default function ProjectDetailPage() {
                 isOpen={showPreviewDialog}
                 onClose={() => setShowPreviewDialog(false)}
                 workStandard={currentWorkStandard}
+              />
+              <QRCodeDialog
+                isOpen={showQRDialog}
+                onClose={() => setShowQRDialog(false)}
+                projectId={projectId}
+                projectName={currentProject.name}
+                documentNumber={currentWorkStandard.documentNumber}
               />
             </>
           )}

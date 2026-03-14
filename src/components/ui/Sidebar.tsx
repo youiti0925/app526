@@ -23,7 +23,7 @@ const navItems = [
 const secondaryItems = [
   { href: "#templates", label: "テンプレート", icon: FileText },
   { href: "#analytics", label: "分析レポート", icon: BarChart3 },
-  { href: "#settings", label: "設定", icon: Settings },
+  { href: "/settings", label: "設定", icon: Settings },
   { href: "#help", label: "ヘルプ", icon: HelpCircle },
 ];
 

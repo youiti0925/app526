@@ -122,6 +122,7 @@ export default function WorkStandardEditor({
           onDeleteStep={onStepDelete}
           onAddStep={onStepAdd}
           onReorderSteps={onStepReorder}
+          projectId={workStandard.projectId}
         />
       )}
 
