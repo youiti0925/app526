@@ -40,7 +40,7 @@ const categoryLabels: Record<ProjectCategory, string> = {
 };
 
 export default function ProjectsPage() {
-  const { projects, initializeDemoData, deleteProject } = useProjectStore();
+  const { projects, initializeDemoData, deleteProject, fetchProjects } = useProjectStore();
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState<string>("all");
@@ -48,8 +48,11 @@ export default function ProjectsPage() {
   const [sortBy, setSortBy] = useState<"updatedAt" | "name" | "createdAt">("updatedAt");
 
   useEffect(() => {
-    if (projects.length === 0) initializeDemoData();
-  }, [projects.length, initializeDemoData]);
+    fetchProjects().then(() => {
+      const { projects } = useProjectStore.getState();
+      if (projects.length === 0) initializeDemoData();
+    });
+  }, [fetchProjects, initializeDemoData]);
 
   const filteredProjects = projects
     .filter((p) => {

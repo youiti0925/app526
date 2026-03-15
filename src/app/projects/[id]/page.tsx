@@ -25,7 +25,7 @@ import SOPDriftDetector from "@/components/editor/SOPDriftDetector";
 import VideoDocumentSync from "@/components/editor/VideoDocumentSync";
 import { useProjectStore } from "@/store/useProjectStore";
 import { generateDemoWorkStandard, generateDemoAnalysisResult } from "@/lib/demo-data";
-import { getFeatureToggles } from "@/lib/settings";
+import { getFeatureToggles, fetchFeatureToggles } from "@/lib/settings";
 import type { BranchPoint, FeatureToggles } from "@/types";
 import {
   ArrowLeft,
@@ -90,6 +90,7 @@ export default function ProjectDetailPage() {
     addStep,
     reorderSteps,
     initializeDemoData,
+    fetchProjects,
   } = useProjectStore();
 
   const [viewMode, setViewMode] = useState<ViewMode>("video");
@@ -112,12 +113,15 @@ export default function ProjectDetailPage() {
   });
 
   useEffect(() => {
-    setFeatureToggles(getFeatureToggles());
+    fetchFeatureToggles().then(setFeatureToggles);
   }, []);
 
   useEffect(() => {
-    if (projects.length === 0) initializeDemoData();
-  }, [projects.length, initializeDemoData]);
+    fetchProjects().then(() => {
+      const { projects } = useProjectStore.getState();
+      if (projects.length === 0) initializeDemoData();
+    });
+  }, [fetchProjects, initializeDemoData]);
 
   useEffect(() => {
     const project = projects.find((p) => p.id === projectId);

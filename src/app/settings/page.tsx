@@ -4,8 +4,8 @@ import { useState, useEffect } from "react";
 import Sidebar from "@/components/ui/Sidebar";
 import Header from "@/components/ui/Header";
 import { Settings, Key, Eye, EyeOff, CheckCircle2, AlertCircle, ExternalLink, BookOpen, Plus, Trash2, X, ToggleLeft, ToggleRight, GitBranch, Activity, ArrowLeftRight } from "lucide-react";
-import { getSettings, saveSettings, getFeatureToggles, saveFeatureToggles } from "@/lib/settings";
-import { getGlossary, saveGlossary, type GlossaryEntry } from "@/lib/glossary";
+import { fetchSettings, saveSettings, fetchFeatureToggles, saveFeatureToggles } from "@/lib/settings";
+import { fetchGlossary, addGlossaryEntry as addGlossaryEntryApi, deleteGlossaryEntry as deleteGlossaryEntryApi, type GlossaryEntry } from "@/lib/glossary";
 import CompanyTemplateManager from "@/components/editor/CompanyTemplateManager";
 import type { FeatureToggles } from "@/types";
 
@@ -35,10 +35,9 @@ export default function SettingsPage() {
   });
 
   useEffect(() => {
-    const settings = getSettings();
-    setApiKey(settings.geminiApiKey);
-    setGlossary(getGlossary());
-    setFeatures(getFeatureToggles());
+    fetchSettings().then((s) => setApiKey(s.geminiApiKey));
+    fetchGlossary().then(setGlossary);
+    fetchFeatureToggles().then(setFeatures);
   }, []);
 
   const handleToggleFeature = (key: keyof FeatureToggles) => {
@@ -84,26 +83,22 @@ export default function SettingsPage() {
     }
   };
 
-  const handleAddTerm = () => {
+  const handleAddTerm = async () => {
     if (!newTerm.term.trim()) return;
-    const entry: GlossaryEntry = {
-      id: crypto.randomUUID(),
+    const entry = await addGlossaryEntryApi({
       term: newTerm.term.trim(),
       definition: newTerm.definition.trim(),
       category: newTerm.category,
       synonyms: newTerm.synonyms.split(",").map((s) => s.trim()).filter(Boolean),
-    };
-    const updated = [...glossary, entry];
-    setGlossary(updated);
-    saveGlossary(updated);
+    });
+    setGlossary((prev) => [...prev, entry]);
     setNewTerm({ term: "", definition: "", category: "other", synonyms: "" });
     setShowAddTerm(false);
   };
 
-  const handleDeleteTerm = (id: string) => {
-    const updated = glossary.filter((e) => e.id !== id);
-    setGlossary(updated);
-    saveGlossary(updated);
+  const handleDeleteTerm = async (id: string) => {
+    setGlossary((prev) => prev.filter((e) => e.id !== id));
+    await deleteGlossaryEntryApi(id);
   };
 
   return (
@@ -127,7 +122,7 @@ export default function SettingsPage() {
 
               <p className="text-sm text-slate-500 mb-4">
                 動画のAI分析に Google Gemini API を使用します。
-                APIキーは <strong>ブラウザのローカルストレージ</strong> に保存され、サーバーには保存されません。
+                APIキーは <strong>サーバーのデータベース</strong> に保存されます。
               </p>
 
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
@@ -390,11 +385,9 @@ export default function SettingsPage() {
             <div className="card mt-6">
               <h2 className="text-lg font-bold text-slate-900 mb-4">データ管理</h2>
               <p className="text-sm text-slate-500 mb-4">
-                プロジェクトデータはブラウザのローカルストレージに保存されています。
+                プロジェクトデータはサーバーのSQLiteデータベースに保存されています。
+                動画ファイルはサーバーのファイルシステム（data/uploads/）に保存されます。
               </p>
-              <div className="text-xs text-slate-400">
-                <p>ストレージ使用量: {typeof window !== "undefined" ? `約${Math.round(JSON.stringify(localStorage).length / 1024)}KB` : "-"}</p>
-              </div>
             </div>
           </div>
         </main>

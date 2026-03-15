@@ -1,7 +1,6 @@
 "use client";
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
 import type {
   Project,
   WorkStandard,
@@ -17,12 +16,16 @@ interface ProjectStore {
   currentWorkStandard: WorkStandard | null;
   analysisResult: AnalysisResult | null;
   isAnalyzing: boolean;
+  isLoading: boolean;
   dashboardStats: DashboardStats;
 
+  // Data fetching
+  fetchProjects: () => Promise<void>;
+
   // Project actions
-  addProject: (project: Omit<Project, "id" | "createdAt" | "updatedAt" | "status">) => Project;
-  updateProject: (id: string, updates: Partial<Project>) => void;
-  deleteProject: (id: string) => void;
+  addProject: (project: Omit<Project, "id" | "createdAt" | "updatedAt" | "status">) => Promise<Project>;
+  updateProject: (id: string, updates: Partial<Project>) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
   setCurrentProject: (project: Project | null) => void;
 
   // Work Standard actions
@@ -38,15 +41,26 @@ interface ProjectStore {
   setIsAnalyzing: (analyzing: boolean) => void;
 
   // Initialize with demo data
-  initializeDemoData: () => void;
+  initializeDemoData: () => Promise<void>;
 }
 
-export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
+function computeStats(projects: Project[]): DashboardStats {
+  return {
+    totalProjects: projects.length,
+    publishedStandards: projects.filter((p) => p.status === "published").length,
+    pendingReview: projects.filter((p) => p.status === "review").length,
+    activeAnalysis: projects.filter((p) => p.status === "analyzing").length,
+    recentActivity: [],
+  };
+}
+
+export const useProjectStore = create<ProjectStore>()((set, get) => ({
   projects: [],
   currentProject: null,
   currentWorkStandard: null,
   analysisResult: null,
   isAnalyzing: false,
+  isLoading: false,
   dashboardStats: {
     totalProjects: 0,
     publishedStandards: 0,
@@ -55,7 +69,19 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
     recentActivity: [],
   },
 
-  addProject: (projectData) => {
+  fetchProjects: async () => {
+    set({ isLoading: true });
+    try {
+      const res = await fetch("/api/projects");
+      if (!res.ok) throw new Error("Failed to fetch projects");
+      const projects: Project[] = await res.json();
+      set({ projects, dashboardStats: computeStats(projects), isLoading: false });
+    } catch {
+      set({ isLoading: false });
+    }
+  },
+
+  addProject: async (projectData) => {
     const now = new Date().toISOString();
     const project: Project = {
       ...projectData,
@@ -64,17 +90,37 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
       createdAt: now,
       updatedAt: now,
     };
+
+    // Optimistic update
     set((state) => ({
       projects: [...state.projects, project],
-      dashboardStats: {
-        ...state.dashboardStats,
-        totalProjects: state.projects.length + 1,
-      },
+      dashboardStats: computeStats([...state.projects, project]),
     }));
-    return project;
+
+    try {
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(project),
+      });
+      if (!res.ok) throw new Error("Failed to create project");
+      const saved: Project = await res.json();
+      set((state) => ({
+        projects: state.projects.map((p) => (p.id === project.id ? saved : p)),
+      }));
+      return saved;
+    } catch {
+      // Rollback
+      set((state) => ({
+        projects: state.projects.filter((p) => p.id !== project.id),
+        dashboardStats: computeStats(state.projects.filter((p) => p.id !== project.id)),
+      }));
+      return project;
+    }
   },
 
-  updateProject: (id, updates) => {
+  updateProject: async (id, updates) => {
+    // Optimistic update
     set((state) => ({
       projects: state.projects.map((p) =>
         p.id === id ? { ...p, ...updates, updatedAt: new Date().toISOString() } : p
@@ -84,13 +130,33 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
           ? { ...state.currentProject, ...updates, updatedAt: new Date().toISOString() }
           : state.currentProject,
     }));
+
+    try {
+      await fetch(`/api/projects/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+    } catch {
+      // Refetch on error
+      get().fetchProjects();
+    }
   },
 
-  deleteProject: (id) => {
+  deleteProject: async (id) => {
+    const prev = get().projects;
     set((state) => ({
       projects: state.projects.filter((p) => p.id !== id),
       currentProject: state.currentProject?.id === id ? null : state.currentProject,
+      dashboardStats: computeStats(state.projects.filter((p) => p.id !== id)),
     }));
+
+    try {
+      const res = await fetch(`/api/projects/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete");
+    } catch {
+      set({ projects: prev, dashboardStats: computeStats(prev) });
+    }
   },
 
   setCurrentProject: (project) => set({ currentProject: project }),
@@ -161,7 +227,7 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
   setAnalysisResult: (result) => set({ analysisResult: result }),
   setIsAnalyzing: (analyzing) => set({ isAnalyzing: analyzing }),
 
-  initializeDemoData: () => {
+  initializeDemoData: async () => {
     const now = new Date().toISOString();
     const demoProjects: Project[] = [
       {
@@ -229,58 +295,22 @@ export const useProjectStore = create<ProjectStore>()(persist((set, get) => ({
       },
     ];
 
+    // Insert demo projects via API
+    for (const project of demoProjects) {
+      try {
+        await fetch("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(project),
+        });
+      } catch {
+        // ignore duplicate inserts
+      }
+    }
+
     set({
       projects: demoProjects,
-      dashboardStats: {
-        totalProjects: demoProjects.length,
-        publishedStandards: 1,
-        pendingReview: 1,
-        activeAnalysis: 1,
-        recentActivity: [
-          {
-            id: "act-1",
-            type: "published",
-            projectName: "円テーブル回転精度検査",
-            projectId: "demo-1",
-            user: "田中 太郎",
-            timestamp: "2026-03-10T15:30:00Z",
-            details: "作業標準書を公開しました",
-          },
-          {
-            id: "act-2",
-            type: "reviewed",
-            projectName: "円テーブル割出し精度検査",
-            projectId: "demo-2",
-            user: "鈴木 花子",
-            timestamp: "2026-03-12T11:00:00Z",
-            details: "レビューコメントを追加しました",
-          },
-          {
-            id: "act-3",
-            type: "updated",
-            projectName: "円テーブルクランプ力検査",
-            projectId: "demo-3",
-            user: "佐藤 一郎",
-            timestamp: "2026-03-11T16:00:00Z",
-            details: "ステップ3の画像を更新しました",
-          },
-          {
-            id: "act-4",
-            type: "created",
-            projectName: "円テーブル組立手順",
-            projectId: "demo-4",
-            user: "田中 太郎",
-            timestamp: "2026-03-10T08:00:00Z",
-            details: "新規プロジェクトを作成しました",
-          },
-        ],
-      },
+      dashboardStats: computeStats(demoProjects),
     });
   },
-}), {
-  name: "videosop-projects",
-  partialize: (state) => ({
-    projects: state.projects,
-    dashboardStats: state.dashboardStats,
-  }),
 }));

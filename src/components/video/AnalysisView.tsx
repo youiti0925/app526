@@ -19,7 +19,7 @@ import {
 import type { AnalysisResult, DetectedScene, StepCategory } from "@/types";
 import { extractFramesFromVideo } from "@/lib/video-utils";
 import { transcribeVideoAudio, isSpeechRecognitionAvailable } from "@/lib/audio-utils";
-import { getSettings } from "@/lib/settings";
+import { fetchSettings } from "@/lib/settings";
 import { formatGlossaryForPrompt } from "@/lib/glossary";
 import type { VideoContext } from "@/components/video/VideoUploader";
 
@@ -75,7 +75,7 @@ export default function AnalysisView({
       return;
     }
 
-    const settings = getSettings();
+    const settings = await fetchSettings();
     if (!settings.geminiApiKey) {
       setError("Gemini APIキーが設定されていません。左メニューの「設定」からAPIキーを入力してください。");
       return;
