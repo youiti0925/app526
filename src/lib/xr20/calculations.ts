@@ -1,4 +1,13 @@
-import { TargetPoint, MeasurementRow, EvaluationStats, XR20Settings } from "./types";
+import {
+  TargetPoint,
+  MeasurementRow,
+  EvaluationStats,
+  XR20Settings,
+  RepeatTargetPoint,
+  RepeatMeasurementRow,
+  RepeatPositionResult,
+  RepeatabilityResult,
+} from "./types";
 
 export function generateTargetList(settings: XR20Settings): TargetPoint[] {
   const targets: TargetPoint[] = [];
@@ -165,6 +174,155 @@ export function parseCSVData(csv: string, targets: TargetPoint[]): MeasurementRo
     }
   }
   return rows;
+}
+
+// ============================================================
+// 再現性測定
+// ============================================================
+
+export function generateRepeatTargets(
+  settings: XR20Settings
+): RepeatTargetPoint[] {
+  const positions = settings.repeatPositions
+    .split(",")
+    .map((s) => parseFloat(s.trim()))
+    .filter((n) => !isNaN(n));
+  const targets: RepeatTargetPoint[] = [];
+  let no = 1;
+
+  for (const pos of positions) {
+    for (let trial = 1; trial <= settings.repeatCount; trial++) {
+      targets.push({
+        no: no++,
+        angle: pos,
+        direction: "cw",
+        trial,
+        status: "pending",
+      });
+    }
+    for (let trial = 1; trial <= settings.repeatCount; trial++) {
+      targets.push({
+        no: no++,
+        angle: pos,
+        direction: "ccw",
+        trial,
+        status: "pending",
+      });
+    }
+  }
+  return targets;
+}
+
+export function generateRepeatNCProgram(settings: XR20Settings): string {
+  const positions = settings.repeatPositions
+    .split(",")
+    .map((s) => parseFloat(s.trim()))
+    .filter((n) => !isNaN(n));
+  const lines: string[] = [];
+  const pValue = Math.round(settings.dwellTimeMs);
+  const ovr = settings.overrunAngle;
+
+  lines.push("O2000 (XR20 REPEATABILITY EVALUATION)");
+  lines.push("");
+
+  for (const pos of positions) {
+    lines.push(`(POSITION ${pos} DEG - CW x${settings.repeatCount})`);
+    for (let trial = 1; trial <= settings.repeatCount; trial++) {
+      lines.push(`(CW TRIAL ${trial})`);
+      lines.push("G91");
+      lines.push(`G00 A-${formatAngle(ovr)}`);
+      lines.push("G90");
+      lines.push(`G00 A${formatAngle(pos)}`);
+      lines.push(`G04 P${pValue}`);
+    }
+    lines.push("");
+
+    lines.push(`(POSITION ${pos} DEG - CCW x${settings.repeatCount})`);
+    for (let trial = 1; trial <= settings.repeatCount; trial++) {
+      lines.push(`(CCW TRIAL ${trial})`);
+      lines.push("G91");
+      lines.push(`G00 A${formatAngle(ovr)}`);
+      lines.push("G90");
+      lines.push(`G00 A${formatAngle(pos)}`);
+      lines.push(`G04 P${pValue}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("M30");
+  return lines.join("\n");
+}
+
+export function parseRepeatCSVData(
+  csv: string,
+  targets: RepeatTargetPoint[]
+): RepeatMeasurementRow[] {
+  const lines = csv
+    .trim()
+    .split("\n")
+    .filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("//"));
+
+  const rows: RepeatMeasurementRow[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const parts = lines[i].split(/[,\t]+/).map((s) => s.trim());
+    if (parts.length >= 3) {
+      const targetAngle = parseFloat(parts[0]);
+      const measuredAngle = parseFloat(parts[1]);
+      const errorArcSec = parseFloat(parts[2]);
+      if (
+        !isNaN(targetAngle) &&
+        !isNaN(measuredAngle) &&
+        !isNaN(errorArcSec)
+      ) {
+        const idx = rows.length;
+        const direction =
+          idx < targets.length ? targets[idx].direction : ("cw" as const);
+        const trial = idx < targets.length ? targets[idx].trial : 1;
+        rows.push({
+          no: rows.length + 1,
+          targetAngle,
+          measuredAngle,
+          errorArcSec,
+          direction,
+          trial,
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+export function calcRepeatability(
+  measurements: RepeatMeasurementRow[],
+  settings: XR20Settings
+): RepeatabilityResult {
+  const positions = settings.repeatPositions
+    .split(",")
+    .map((s) => parseFloat(s.trim()))
+    .filter((n) => !isNaN(n));
+
+  const results: RepeatPositionResult[] = positions.map((pos) => {
+    const cwErrors = measurements
+      .filter((m) => Math.abs(m.targetAngle - pos) < 0.001 && m.direction === "cw")
+      .map((m) => m.errorArcSec);
+    const ccwErrors = measurements
+      .filter((m) => Math.abs(m.targetAngle - pos) < 0.001 && m.direction === "ccw")
+      .map((m) => m.errorArcSec);
+    const cwRange =
+      cwErrors.length >= 2
+        ? Math.max(...cwErrors) - Math.min(...cwErrors)
+        : 0;
+    const ccwRange =
+      ccwErrors.length >= 2
+        ? Math.max(...ccwErrors) - Math.min(...ccwErrors)
+        : 0;
+    return { angle: pos, cwErrors, ccwErrors, cwRange, ccwRange };
+  });
+
+  const allRanges = results.flatMap((r) => [r.cwRange, r.ccwRange]);
+  const repeatability = allRanges.length > 0 ? Math.max(...allRanges) : 0;
+
+  return { positions: results, repeatability };
 }
 
 function roundAngle(angle: number): number {

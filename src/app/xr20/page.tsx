@@ -17,6 +17,8 @@ import {
   RefreshCw,
   Copy,
   Crosshair,
+  Repeat,
+  HelpCircle,
 } from "lucide-react";
 import {
   XR20Settings,
@@ -25,12 +27,19 @@ import {
   MeasurementRow,
   EvaluationStats,
   XR20Tab,
+  RepeatTargetPoint,
+  RepeatMeasurementRow,
+  RepeatabilityResult,
 } from "@/lib/xr20/types";
 import {
   generateTargetList,
   generateNCProgram,
   calculateStats,
   parseCSVData,
+  generateRepeatTargets,
+  generateRepeatNCProgram,
+  parseRepeatCSVData,
+  calcRepeatability,
 } from "@/lib/xr20/calculations";
 
 export default function XR20Page() {
@@ -43,6 +52,9 @@ export default function XR20Page() {
   const [monitorStatus, setMonitorStatus] = useState<"idle" | "running" | "paused">("idle");
   const [currentPoint, setCurrentPoint] = useState(0);
   const [logMessages, setLogMessages] = useState<string[]>([]);
+  const [repeatTargets, setRepeatTargets] = useState<RepeatTargetPoint[]>([]);
+  const [repeatCsvInput, setRepeatCsvInput] = useState("");
+  const [repeatResult, setRepeatResult] = useState<RepeatabilityResult | null>(null);
 
   const cwData = useMemo(
     () => measurements.filter((m) => m.direction === "cw"),
@@ -62,6 +74,8 @@ export default function XR20Page() {
     { id: "data", label: "測定データ", icon: Database },
     { id: "results", label: "評価結果", icon: BarChart3 },
     { id: "report", label: "成績書", icon: FileText },
+    { id: "repeatability", label: "再現性測定", icon: Repeat },
+    { id: "help", label: "ヘルプ", icon: HelpCircle },
   ];
 
   const handleGenerateTargets = useCallback(() => {
@@ -90,6 +104,37 @@ export default function XR20Page() {
       setActiveTab("results");
     }
   }, [csvInput, targets]);
+
+  const handleGenerateRepeatTargets = useCallback(() => {
+    const list = generateRepeatTargets(settings);
+    setRepeatTargets(list);
+  }, [settings]);
+
+  const handleRepeatEvaluate = useCallback(() => {
+    let tgts = repeatTargets;
+    if (tgts.length === 0) {
+      tgts = generateRepeatTargets(settings);
+      setRepeatTargets(tgts);
+    }
+    const rows = parseRepeatCSVData(repeatCsvInput, tgts);
+    if (rows.length === 0) {
+      alert("有効なデータが見つかりませんでした。");
+      return;
+    }
+    const result = calcRepeatability(rows, settings);
+    setRepeatResult(result);
+  }, [repeatCsvInput, repeatTargets, settings]);
+
+  const handleDownloadRepeatNC = useCallback(() => {
+    const program = generateRepeatNCProgram(settings);
+    const blob = new Blob([program], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "O2000_XR20_REPEAT.nc";
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [settings]);
 
   const handleDownloadNC = useCallback(() => {
     const blob = new Blob([ncProgram], { type: "text/plain" });
@@ -129,10 +174,10 @@ export default function XR20Page() {
             <div className="mb-6">
               <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
                 <Crosshair className="w-7 h-7 text-blue-600" />
-                XR20 自動トリガー＆ウォームホイール評価ツール
+                XR20 軸精度評価ツール
               </h1>
               <p className="text-sm text-slate-500 mt-1">
-                Renishaw XR20 回転分割測定器 - CARTO自動F9送信・ウォーム/ホイール評価
+                Renishaw XR20 回転分割測定器 - 割出し精度・再現性評価
               </p>
             </div>
 
@@ -205,6 +250,19 @@ export default function XR20Page() {
                   ccwStats={ccwStats}
                 />
               )}
+              {activeTab === "repeatability" && (
+                <RepeatabilityTab
+                  settings={settings}
+                  repeatTargets={repeatTargets}
+                  repeatCsvInput={repeatCsvInput}
+                  setRepeatCsvInput={setRepeatCsvInput}
+                  repeatResult={repeatResult}
+                  onGenerateTargets={handleGenerateRepeatTargets}
+                  onDownloadNC={handleDownloadRepeatNC}
+                  onEvaluate={handleRepeatEvaluate}
+                />
+              )}
+              {activeTab === "help" && <HelpTab />}
             </div>
           </div>
         </main>
@@ -310,6 +368,27 @@ function SettingsTab({
               step={0.1}
             />
           </div>
+        </div>
+      </section>
+
+      {/* Repeatability Parameters */}
+      <section>
+        <h2 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">
+          再現性測定パラメータ
+        </h2>
+        <div className="grid grid-cols-2 gap-4">
+          <InputField
+            label="測定位置 (カンマ区切り °)"
+            value={settings.repeatPositions}
+            onChange={(v) => updateSetting("repeatPositions", v)}
+            placeholder="例: 0,90,180,270"
+          />
+          <NumberField
+            label="繰り返し回数"
+            value={settings.repeatCount}
+            onChange={(v) => updateSetting("repeatCount", v)}
+            min={2}
+          />
         </div>
       </section>
 
@@ -733,6 +812,460 @@ function ResultsTab({
   );
 }
 
+/* =========================================================
+   Repeatability Tab
+   ========================================================= */
+function RepeatabilityTab({
+  settings,
+  repeatTargets,
+  repeatCsvInput,
+  setRepeatCsvInput,
+  repeatResult,
+  onGenerateTargets,
+  onDownloadNC,
+  onEvaluate,
+}: {
+  settings: XR20Settings;
+  repeatTargets: RepeatTargetPoint[];
+  repeatCsvInput: string;
+  setRepeatCsvInput: (v: string) => void;
+  repeatResult: RepeatabilityResult | null;
+  onGenerateTargets: () => void;
+  onDownloadNC: () => void;
+  onEvaluate: () => void;
+}) {
+  const positions = settings.repeatPositions
+    .split(",")
+    .map((s) => parseFloat(s.trim()))
+    .filter((n) => !isNaN(n));
+
+  return (
+    <div className="space-y-6">
+      {/* 説明 */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <h2 className="text-lg font-bold text-blue-800 mb-2">再現性測定</h2>
+        <p className="text-sm text-blue-700">
+          各測定位置でCW/CCWアプローチをN回繰り返し、再現性（各位置のMax-Minの最大値）を評価します。
+        </p>
+        <p className="text-sm text-blue-600 mt-1">
+          設定: {positions.length}箇所 × CW/CCW × {settings.repeatCount}回 = 合計 {positions.length * 2 * settings.repeatCount} 点
+        </p>
+      </div>
+
+      {/* 操作ボタン */}
+      <div className="flex gap-3">
+        <button onClick={onGenerateTargets} className="btn-primary flex items-center gap-2">
+          <RefreshCw className="w-4 h-4" /> ターゲット生成
+        </button>
+        <button onClick={onDownloadNC} className="btn-secondary flex items-center gap-2">
+          <Download className="w-4 h-4" /> NCプログラム保存
+        </button>
+      </div>
+
+      {/* ターゲット一覧 */}
+      {repeatTargets.length > 0 && (
+        <div className="overflow-auto max-h-[300px] border border-slate-200 rounded-lg">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-slate-50">
+              <tr>
+                <th className="text-left px-3 py-2 font-semibold text-slate-600">No.</th>
+                <th className="text-left px-3 py-2 font-semibold text-slate-600">位置 (°)</th>
+                <th className="text-left px-3 py-2 font-semibold text-slate-600">方向</th>
+                <th className="text-left px-3 py-2 font-semibold text-slate-600">回数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {repeatTargets.map((t) => (
+                <tr key={t.no} className="border-t border-slate-100">
+                  <td className="px-3 py-1.5">{t.no}</td>
+                  <td className="px-3 py-1.5 font-mono">{t.angle.toFixed(4)}</td>
+                  <td className="px-3 py-1.5">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                      t.direction === "cw" ? "bg-green-100 text-green-700" : "bg-purple-100 text-purple-700"
+                    }`}>
+                      {t.direction === "cw" ? "CW" : "CCW"}
+                    </span>
+                  </td>
+                  <td className="px-3 py-1.5">{t.trial}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* データ入力 */}
+      <div>
+        <h3 className="text-sm font-bold text-slate-700 mb-2">再現性データ入力</h3>
+        <p className="text-xs text-slate-500 mb-2">形式: ターゲット角度, 測定角度, 誤差(arc sec)</p>
+        <textarea
+          value={repeatCsvInput}
+          onChange={(e) => setRepeatCsvInput(e.target.value)}
+          className="w-full h-40 font-mono text-sm border border-slate-300 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="0.0000, 0.0001, 0.36&#10;0.0000, -0.0001, -0.36&#10;..."
+        />
+        <div className="flex gap-3 mt-2">
+          <button onClick={onEvaluate} className="btn-primary flex items-center gap-2">
+            <BarChart3 className="w-4 h-4" /> 再現性評価
+          </button>
+        </div>
+      </div>
+
+      {/* 結果表示 */}
+      {repeatResult && (
+        <div className="space-y-4">
+          {/* 全体再現性 */}
+          <div className="bg-gradient-to-r from-blue-500 to-purple-600 rounded-xl p-6 text-white text-center">
+            <p className="text-sm opacity-80">再現性</p>
+            <p className="text-4xl font-bold mt-1">{repeatResult.repeatability.toFixed(2)} ″</p>
+            <p className="text-xs opacity-70 mt-1">全位置CW/CCWの最大Range</p>
+          </div>
+
+          {/* 各位置の結果テーブル */}
+          <div className="overflow-auto border border-slate-200 rounded-lg">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="text-left px-4 py-2 font-semibold text-slate-600">位置 (°)</th>
+                  <th className="text-left px-4 py-2 font-semibold text-slate-600">CW Range (″)</th>
+                  <th className="text-left px-4 py-2 font-semibold text-slate-600">CCW Range (″)</th>
+                  <th className="text-left px-4 py-2 font-semibold text-slate-600">CW 回数</th>
+                  <th className="text-left px-4 py-2 font-semibold text-slate-600">CCW 回数</th>
+                </tr>
+              </thead>
+              <tbody>
+                {repeatResult.positions.map((pr) => (
+                  <tr key={pr.angle} className="border-t border-slate-100">
+                    <td className="px-4 py-2 font-mono">{pr.angle.toFixed(4)}</td>
+                    <td className="px-4 py-2 font-mono font-bold text-blue-600">{pr.cwRange.toFixed(2)}</td>
+                    <td className="px-4 py-2 font-mono font-bold text-purple-600">{pr.ccwRange.toFixed(2)}</td>
+                    <td className="px-4 py-2">{pr.cwErrors.length}</td>
+                    <td className="px-4 py-2">{pr.ccwErrors.length}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 棒グラフ */}
+          <RepeatabilityChart result={repeatResult} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RepeatabilityChart({ result }: { result: RepeatabilityResult }) {
+  const width = 600;
+  const height = 200;
+  const padding = { top: 30, right: 20, bottom: 40, left: 50 };
+  const chartW = width - padding.left - padding.right;
+  const chartH = height - padding.top - padding.bottom;
+
+  const allRanges = result.positions.flatMap((p) => [p.cwRange, p.ccwRange]);
+  const maxRange = Math.max(...allRanges, 0.1);
+
+  const barGroupWidth = chartW / result.positions.length;
+  const barWidth = barGroupWidth * 0.3;
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <h3 className="text-sm font-bold text-slate-700 mb-2">再現性 (各位置のRange)</h3>
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full">
+        {/* 再現性ライン */}
+        <line
+          x1={padding.left}
+          y1={padding.top + chartH * (1 - result.repeatability / maxRange)}
+          x2={width - padding.right}
+          y2={padding.top + chartH * (1 - result.repeatability / maxRange)}
+          stroke="red"
+          strokeDasharray="4,4"
+          strokeWidth={1}
+        />
+        <text
+          x={width - padding.right - 2}
+          y={padding.top + chartH * (1 - result.repeatability / maxRange) - 4}
+          textAnchor="end"
+          fontSize={9}
+          fill="red"
+        >
+          再現性 = {result.repeatability.toFixed(2)}″
+        </text>
+
+        {/* バー */}
+        {result.positions.map((pos, i) => {
+          const cx = padding.left + barGroupWidth * i + barGroupWidth / 2;
+          const cwH = (pos.cwRange / maxRange) * chartH;
+          const ccwH = (pos.ccwRange / maxRange) * chartH;
+          return (
+            <g key={i}>
+              <rect
+                x={cx - barWidth - 1}
+                y={padding.top + chartH - cwH}
+                width={barWidth}
+                height={cwH}
+                fill="#3b82f6"
+                rx={2}
+              />
+              <rect
+                x={cx + 1}
+                y={padding.top + chartH - ccwH}
+                width={barWidth}
+                height={ccwH}
+                fill="#8b5cf6"
+                rx={2}
+              />
+              <text
+                x={cx}
+                y={height - padding.bottom + 15}
+                textAnchor="middle"
+                fontSize={10}
+                fill="#64748b"
+              >
+                {pos.angle}°
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Y軸 */}
+        <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + chartH} stroke="#cbd5e1" />
+        <text x={padding.left - 5} y={padding.top + 4} textAnchor="end" fontSize={9} fill="#64748b">
+          {maxRange.toFixed(1)}″
+        </text>
+        <text x={padding.left - 5} y={padding.top + chartH + 4} textAnchor="end" fontSize={9} fill="#64748b">
+          0
+        </text>
+
+        {/* 凡例 */}
+        <rect x={padding.left} y={5} width={10} height={10} fill="#3b82f6" rx={2} />
+        <text x={padding.left + 14} y={14} fontSize={10} fill="#64748b">CW</text>
+        <rect x={padding.left + 40} y={5} width={10} height={10} fill="#8b5cf6" rx={2} />
+        <text x={padding.left + 54} y={14} fontSize={10} fill="#64748b">CCW</text>
+      </svg>
+    </div>
+  );
+}
+
+/* =========================================================
+   Help Tab
+   ========================================================= */
+function HelpTab() {
+  const [activeHelp, setActiveHelp] = useState<"app" | "carto">("app");
+
+  return (
+    <div className="space-y-6">
+      {/* タブ切替 */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => setActiveHelp("app")}
+          className={`px-4 py-2 rounded-lg text-sm font-medium ${
+            activeHelp === "app" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+          }`}
+        >
+          アプリの使い方
+        </button>
+        <button
+          onClick={() => setActiveHelp("carto")}
+          className={`px-4 py-2 rounded-lg text-sm font-medium ${
+            activeHelp === "carto" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+          }`}
+        >
+          CARTOの使い方
+        </button>
+      </div>
+
+      {activeHelp === "app" ? <AppHelpContent /> : <CartoHelpContent />}
+    </div>
+  );
+}
+
+function AppHelpContent() {
+  return (
+    <div className="prose prose-sm max-w-none">
+      <h2 className="text-lg font-bold text-slate-800 border-b pb-2">XR20 軸精度評価ツール 操作ガイド</h2>
+
+      <div className="space-y-6 mt-4">
+        <section>
+          <h3 className="text-md font-bold text-slate-700">概要</h3>
+          <p className="text-slate-600">
+            Renishaw XR20回転分割測定器（CARTO）を使用して、
+            回転軸・傾斜軸の「割出し精度」と「再現性」を評価するツールです。
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">割出し精度測定の流れ</h3>
+          <ol className="list-decimal list-inside space-y-1 text-slate-600">
+            <li><strong>[設定]</strong> タブで機械情報・評価パラメータを入力</li>
+            <li>「ターゲットリスト生成」でCW/CCW測定点を生成</li>
+            <li>「NCプログラム生成」でFANUC Gコードを出力</li>
+            <li>NCプログラムを機械で実行、CARTOで測定</li>
+            <li><strong>[測定データ]</strong> タブでCARTOの結果CSVを貼り付け</li>
+            <li>「データ解析」で評価結果・成績書を自動生成</li>
+          </ol>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">再現性測定の流れ</h3>
+          <ol className="list-decimal list-inside space-y-1 text-slate-600">
+            <li><strong>[設定]</strong> タブで再現性パラメータを入力（測定位置・繰り返し回数）</li>
+            <li><strong>[再現性測定]</strong> タブで「ターゲット生成」</li>
+            <li>「NCプログラム保存」でGコードを出力</li>
+            <li>測定後、データを貼り付けて「再現性評価」</li>
+          </ol>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">軸タイプ</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-blue-50 rounded-lg p-3">
+              <p className="font-bold text-blue-800">回転軸 (360°)</p>
+              <p className="text-sm text-blue-600">C軸など1周回転可能な軸。0°～360°を等分してCW/CCW測定。</p>
+            </div>
+            <div className="bg-purple-50 rounded-lg p-3">
+              <p className="font-bold text-purple-800">傾斜軸 (任意範囲)</p>
+              <p className="text-sm text-purple-600">A/B軸など1周回転できない軸。例: -30°～+110°の範囲を等分。</p>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">NCプログラムについて</h3>
+          <ul className="list-disc list-inside space-y-1 text-slate-600">
+            <li><strong>オーバーラン</strong>: バックラッシュ除去のため、反対方向に移動してから測定位置に到達</li>
+            <li><strong>ドウェル</strong>: 各位置でG04停止し、CARTOの測定を待つ</li>
+            <li>割出し精度用: O1000番台 / 再現性用: O2000番台</li>
+          </ul>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">各タブ説明</h3>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            {[
+              ["設定", "機械情報・評価パラメータ・監視パラメータ"],
+              ["ターゲットリスト", "生成された測定点の一覧"],
+              ["測定制御", "CARTO監視・自動F9送信（Windows版のみ）"],
+              ["測定データ", "CSVデータ入力・解析"],
+              ["評価結果", "CW/CCW統計・グラフ"],
+              ["成績書", "印刷用成績書"],
+              ["再現性測定", "再現性専用タブ"],
+              ["ヘルプ", "この画面"],
+            ].map(([name, desc]) => (
+              <div key={name} className="flex gap-2 bg-slate-50 rounded p-2">
+                <span className="font-bold text-slate-700 shrink-0">[{name}]</span>
+                <span className="text-slate-600">{desc}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function CartoHelpContent() {
+  return (
+    <div className="prose prose-sm max-w-none">
+      <h2 className="text-lg font-bold text-slate-800 border-b pb-2">CARTO（Renishaw）操作ガイド</h2>
+
+      <div className="space-y-6 mt-4">
+        <section>
+          <h3 className="text-md font-bold text-slate-700">CARTOとは</h3>
+          <p className="text-slate-600">
+            Renishaw社が提供するレーザー測定ソフトウェアです。
+            XR20回転分割測定器と組み合わせて回転軸の精度測定を行います。
+          </p>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">XR20測定のセットアップ</h3>
+          <ol className="list-decimal list-inside space-y-2 text-slate-600">
+            <li>
+              <strong>ハードウェア接続</strong>
+              <ul className="list-disc list-inside ml-4 mt-1">
+                <li>XL-80レーザーユニットを機械テーブル上に設置</li>
+                <li>XR20回転分割測定器を測定対象の回転軸に取り付け</li>
+                <li>USBケーブルでPCに接続</li>
+              </ul>
+            </li>
+            <li>
+              <strong>CARTOの起動と設定</strong>
+              <ul className="list-disc list-inside ml-4 mt-1">
+                <li>「Rotary」テストタイプを選択</li>
+                <li>XR20デバイスが認識されていることを確認</li>
+              </ul>
+            </li>
+            <li>
+              <strong>環境補正</strong>
+              <ul className="list-disc list-inside ml-4 mt-1">
+                <li>温度・気圧・湿度センサーの値を確認</li>
+              </ul>
+            </li>
+          </ol>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">測定手順</h3>
+          <ol className="list-decimal list-inside space-y-2 text-slate-600">
+            <li><strong>アライメント</strong> - レーザービームがXR20リフレクターに正しく戻ることを確認</li>
+            <li><strong>ターゲット設定</strong> - 本ツールで生成したリストをCARTOに入力</li>
+            <li><strong>測定開始</strong> - CARTOで「Start」→ NCプログラム実行 → 各位置でF9キャプチャ</li>
+            <li><strong>データ確認</strong> - 全点測定後、CSVエクスポート</li>
+          </ol>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">F9キーの役割</h3>
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-amber-800">
+            CARTOでF9キーは「キャプチャ」（現在の測定値を記録）です。
+            NCプログラムで測定位置に到達しドウェル停止中にF9を押すと角度誤差が記録されます。
+          </div>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">CSVエクスポート手順</h3>
+          <ol className="list-decimal list-inside space-y-1 text-slate-600">
+            <li>測定完了後、CARTOメニューから「Export」選択</li>
+            <li>「CSV」形式を選択</li>
+            <li>ファイルを保存</li>
+            <li>本ツールの「測定データ」タブで読み込み</li>
+          </ol>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">トラブルシューティング</h3>
+          <div className="space-y-2">
+            {[
+              ["信号が弱い / 赤色表示", "レーザーとリフレクターのアライメント再調整、光路上の障害物除去、リフレクター面の汚れ確認"],
+              ["F9が反応しない", "CARTOウィンドウがアクティブか確認、ウィンドウタイトル設定確認、測定待機状態か確認"],
+              ["測定値がずれる", "環境補正値を確認、XR20の取り付け確認、アライメントやり直し"],
+            ].map(([problem, solution]) => (
+              <div key={problem} className="bg-red-50 border border-red-100 rounded-lg p-3">
+                <p className="font-bold text-red-800 text-sm">{problem}</p>
+                <p className="text-red-600 text-sm mt-1">{solution}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">注意事項</h3>
+          <ul className="list-disc list-inside space-y-1 text-slate-600">
+            <li>測定中はレーザー光路を遮らないこと</li>
+            <li>温度変化が大きい場合は環境補正を更新</li>
+            <li>XR20のバッテリー残量に注意</li>
+            <li>精密な測定には十分なウォームアップ時間が必要</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   Utility Components
+   ========================================================= */
 function StatsCards({ stats }: { stats: EvaluationStats }) {
   const items = [
     { label: "測定点数", value: stats.count.toString(), unit: "点" },
