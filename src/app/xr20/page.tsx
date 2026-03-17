@@ -27,8 +27,6 @@ import {
   MeasurementRow,
   EvaluationStats,
   XR20Tab,
-  RepeatTargetPoint,
-  RepeatMeasurementRow,
   RepeatabilityResult,
 } from "@/lib/xr20/types";
 import {
@@ -40,6 +38,9 @@ import {
   generateRepeatNCProgram,
   parseRepeatCSVData,
   calcRepeatability,
+  generateCombinedTargets,
+  generateCombinedNCProgram,
+  generateCartoTargetCSV,
 } from "@/lib/xr20/calculations";
 
 export default function XR20Page() {
@@ -52,20 +53,34 @@ export default function XR20Page() {
   const [monitorStatus, setMonitorStatus] = useState<"idle" | "running" | "paused">("idle");
   const [currentPoint, setCurrentPoint] = useState(0);
   const [logMessages, setLogMessages] = useState<string[]>([]);
-  const [repeatTargets, setRepeatTargets] = useState<RepeatTargetPoint[]>([]);
+  const [repeatTargets, setRepeatTargets] = useState<TargetPoint[]>([]);
   const [repeatCsvInput, setRepeatCsvInput] = useState("");
   const [repeatResult, setRepeatResult] = useState<RepeatabilityResult | null>(null);
 
-  const cwData = useMemo(
-    () => measurements.filter((m) => m.direction === "cw"),
+  // 割出し精度データのみ
+  const indexData = useMemo(
+    () => measurements.filter((m) => m.phase === "index"),
     [measurements]
   );
+  const cwData = useMemo(
+    () => indexData.filter((m) => m.direction === "cw"),
+    [indexData]
+  );
   const ccwData = useMemo(
-    () => measurements.filter((m) => m.direction === "ccw"),
-    [measurements]
+    () => indexData.filter((m) => m.direction === "ccw"),
+    [indexData]
   );
   const cwStats = useMemo(() => calculateStats(cwData), [cwData]);
   const ccwStats = useMemo(() => calculateStats(ccwData), [ccwData]);
+  // 再現性データ
+  const repeatMeasurements = useMemo(
+    () => measurements.filter((m) => m.phase === "repeat"),
+    [measurements]
+  );
+  const repeatResultFromCombined = useMemo(
+    () => repeatMeasurements.length > 0 ? calcRepeatability(repeatMeasurements, settings) : null,
+    [repeatMeasurements, settings]
+  );
 
   const tabs: { id: XR20Tab; label: string; icon: React.ElementType }[] = [
     { id: "settings", label: "設定", icon: Settings },
@@ -135,6 +150,44 @@ export default function XR20Page() {
     a.click();
     URL.revokeObjectURL(url);
   }, [settings]);
+
+  // 連続測定
+  const handleGenerateCombinedTargets = useCallback(() => {
+    const list = generateCombinedTargets(settings);
+    setTargets(list);
+    setActiveTab("targets");
+  }, [settings]);
+
+  const handleDownloadCombinedNC = useCallback(() => {
+    if (targets.length === 0) {
+      alert("先に連続ターゲットリストを生成してください。");
+      return;
+    }
+    const program = generateCombinedNCProgram(targets, settings);
+    const blob = new Blob([program], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "O3000_XR20_COMBINED.nc";
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [targets, settings]);
+
+  // CARTO CSV出力
+  const handleDownloadCartoCSV = useCallback(() => {
+    if (targets.length === 0) {
+      alert("先にターゲットリストを生成してください。");
+      return;
+    }
+    const csv = generateCartoTargetCSV(targets);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "XR20_CARTO_TARGETS.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [targets]);
 
   const handleDownloadNC = useCallback(() => {
     const blob = new Blob([ncProgram], { type: "text/plain" });
@@ -211,6 +264,9 @@ export default function XR20Page() {
                   onGenerateTargets={handleGenerateTargets}
                   onGenerateNC={handleGenerateNC}
                   onDownloadPython={handleDownloadPython}
+                  onGenerateCombinedTargets={handleGenerateCombinedTargets}
+                  onDownloadCombinedNC={handleDownloadCombinedNC}
+                  onDownloadCartoCSV={handleDownloadCartoCSV}
                 />
               )}
               {activeTab === "targets" && (
@@ -239,6 +295,7 @@ export default function XR20Page() {
                   ccwData={ccwData}
                   cwStats={cwStats}
                   ccwStats={ccwStats}
+                  repeatResult={repeatResultFromCombined}
                 />
               )}
               {activeTab === "report" && (
@@ -248,6 +305,7 @@ export default function XR20Page() {
                   ccwData={ccwData}
                   cwStats={cwStats}
                   ccwStats={ccwStats}
+                  repeatResult={repeatResultFromCombined}
                 />
               )}
               {activeTab === "repeatability" && (
@@ -280,12 +338,18 @@ function SettingsTab({
   onGenerateTargets,
   onGenerateNC,
   onDownloadPython,
+  onGenerateCombinedTargets,
+  onDownloadCombinedNC,
+  onDownloadCartoCSV,
 }: {
   settings: XR20Settings;
   updateSetting: <K extends keyof XR20Settings>(key: K, value: XR20Settings[K]) => void;
   onGenerateTargets: () => void;
   onGenerateNC: () => void;
   onDownloadPython: () => void;
+  onGenerateCombinedTargets: () => void;
+  onDownloadCombinedNC: () => void;
+  onDownloadCartoCSV: () => void;
 }) {
   return (
     <div className="space-y-8">
@@ -458,19 +522,49 @@ function SettingsTab({
       </section>
 
       {/* Action Buttons */}
-      <div className="flex gap-3 pt-4 border-t">
-        <button onClick={onGenerateTargets} className="btn-primary flex items-center gap-2">
-          <List className="w-4 h-4" />
-          ターゲットリスト生成
-        </button>
-        <button onClick={onGenerateNC} className="btn-secondary flex items-center gap-2">
-          <Download className="w-4 h-4" />
-          NCプログラム生成
-        </button>
-        <button onClick={onDownloadPython} className="btn-secondary flex items-center gap-2">
-          <Download className="w-4 h-4" />
-          CARTO監視スクリプト (Python)
-        </button>
+      <div className="space-y-3 pt-4 border-t">
+        {/* 割出し精度 */}
+        <div>
+          <p className="text-xs font-bold text-slate-500 mb-1">割出し精度</p>
+          <div className="flex gap-3">
+            <button onClick={onGenerateTargets} className="btn-primary flex items-center gap-2">
+              <List className="w-4 h-4" />
+              ターゲット生成
+            </button>
+            <button onClick={onGenerateNC} className="btn-secondary flex items-center gap-2">
+              <Download className="w-4 h-4" />
+              NC保存
+            </button>
+          </div>
+        </div>
+        {/* 連続測定（割出し+再現性） */}
+        <div>
+          <p className="text-xs font-bold text-slate-500 mb-1">連続測定（割出し精度 + 再現性）</p>
+          <div className="flex gap-3">
+            <button onClick={onGenerateCombinedTargets} className="btn-primary flex items-center gap-2">
+              <List className="w-4 h-4" />
+              連続ターゲット生成
+            </button>
+            <button onClick={onDownloadCombinedNC} className="btn-secondary flex items-center gap-2">
+              <Download className="w-4 h-4" />
+              連続NC保存
+            </button>
+          </div>
+        </div>
+        {/* CARTO連携 */}
+        <div>
+          <p className="text-xs font-bold text-slate-500 mb-1">CARTO連携</p>
+          <div className="flex gap-3">
+            <button onClick={onDownloadCartoCSV} className="btn-secondary flex items-center gap-2">
+              <Download className="w-4 h-4" />
+              CARTOターゲットCSV
+            </button>
+            <button onClick={onDownloadPython} className="btn-secondary flex items-center gap-2">
+              <Download className="w-4 h-4" />
+              CARTO監視スクリプト (Python)
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -480,8 +574,8 @@ function SettingsTab({
    Targets Tab
    ========================================================= */
 function TargetsTab({ targets }: { targets: TargetPoint[] }) {
-  const cwCount = targets.filter((t) => t.direction === "cw").length;
-  const ccwCount = targets.filter((t) => t.direction === "ccw").length;
+  const indexCount = targets.filter((t) => t.phase === "index").length;
+  const repeatCount = targets.filter((t) => t.phase === "repeat").length;
 
   if (targets.length === 0) {
     return (
@@ -499,14 +593,18 @@ function TargetsTab({ targets }: { targets: TargetPoint[] }) {
           ターゲットリスト ({targets.length}点)
         </h2>
         <div className="flex gap-4 text-sm">
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded-full bg-green-500 inline-block" />
-            CW: {cwCount}点
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded-full bg-purple-500 inline-block" />
-            CCW: {ccwCount}点
-          </span>
+          {indexCount > 0 && (
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-full bg-blue-500 inline-block" />
+              割出し: {indexCount}点
+            </span>
+          )}
+          {repeatCount > 0 && (
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-full bg-amber-500 inline-block" />
+              再現性: {repeatCount}点
+            </span>
+          )}
         </div>
       </div>
 
@@ -517,6 +615,7 @@ function TargetsTab({ targets }: { targets: TargetPoint[] }) {
               <th className="text-left px-4 py-2 font-semibold text-slate-600">No.</th>
               <th className="text-left px-4 py-2 font-semibold text-slate-600">ターゲット角度 (°)</th>
               <th className="text-left px-4 py-2 font-semibold text-slate-600">方向</th>
+              <th className="text-left px-4 py-2 font-semibold text-slate-600">区分</th>
               <th className="text-left px-4 py-2 font-semibold text-slate-600">ステータス</th>
             </tr>
           </thead>
@@ -534,6 +633,13 @@ function TargetsTab({ targets }: { targets: TargetPoint[] }) {
                     }`}
                   >
                     {t.direction === "cw" ? "CW" : "CCW"}
+                  </span>
+                </td>
+                <td className="px-4 py-2">
+                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                    t.phase === "repeat" ? "bg-amber-100 text-amber-700" : "bg-blue-100 text-blue-700"
+                  }`}>
+                    {t.phase === "repeat" ? `再現性 #${t.trial}` : "割出し精度"}
                   </span>
                 </td>
                 <td className="px-4 py-2">
@@ -764,13 +870,15 @@ function ResultsTab({
   ccwData,
   cwStats,
   ccwStats,
+  repeatResult,
 }: {
   cwData: MeasurementRow[];
   ccwData: MeasurementRow[];
   cwStats: EvaluationStats;
   ccwStats: EvaluationStats;
+  repeatResult: RepeatabilityResult | null;
 }) {
-  if (cwData.length === 0 && ccwData.length === 0) {
+  if (cwData.length === 0 && ccwData.length === 0 && !repeatResult) {
     return (
       <div className="text-center py-16 text-slate-400">
         <BarChart3 className="w-12 h-12 mx-auto mb-3" />
@@ -808,6 +916,47 @@ function ResultsTab({
           <DataTable data={ccwData} />
         </section>
       )}
+
+      {/* 再現性（連続測定の場合） */}
+      {repeatResult && (
+        <section>
+          <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2 border-t pt-6">
+            <span className="w-3 h-3 rounded-full bg-amber-500 inline-block" />
+            再現性評価結果
+          </h2>
+          <div className="bg-gradient-to-r from-blue-500 to-purple-600 rounded-xl p-6 text-white text-center mb-4">
+            <p className="text-sm opacity-80">再現性</p>
+            <p className="text-4xl font-bold mt-1">{repeatResult.repeatability.toFixed(2)} ″</p>
+          </div>
+          <div className="overflow-auto border border-slate-200 rounded-lg">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="text-left px-4 py-2 font-semibold text-slate-600">位置 (°)</th>
+                  <th className="text-left px-4 py-2 font-semibold text-slate-600">CW Range (″)</th>
+                  <th className="text-left px-4 py-2 font-semibold text-slate-600">CCW Range (″)</th>
+                  <th className="text-left px-4 py-2 font-semibold text-slate-600">CW 回数</th>
+                  <th className="text-left px-4 py-2 font-semibold text-slate-600">CCW 回数</th>
+                </tr>
+              </thead>
+              <tbody>
+                {repeatResult.positions.map((pr) => (
+                  <tr key={pr.angle} className="border-t border-slate-100">
+                    <td className="px-4 py-2 font-mono">{pr.angle.toFixed(4)}</td>
+                    <td className="px-4 py-2 font-mono font-bold text-blue-600">{pr.cwRange.toFixed(2)}</td>
+                    <td className="px-4 py-2 font-mono font-bold text-purple-600">{pr.ccwRange.toFixed(2)}</td>
+                    <td className="px-4 py-2">{pr.cwErrors.length}</td>
+                    <td className="px-4 py-2">{pr.ccwErrors.length}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-4">
+            <RepeatabilityChart result={repeatResult} />
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -826,7 +975,7 @@ function RepeatabilityTab({
   onEvaluate,
 }: {
   settings: XR20Settings;
-  repeatTargets: RepeatTargetPoint[];
+  repeatTargets: TargetPoint[];
   repeatCsvInput: string;
   setRepeatCsvInput: (v: string) => void;
   repeatResult: RepeatabilityResult | null;
@@ -1481,18 +1630,20 @@ function ReportTab({
   ccwData,
   cwStats,
   ccwStats,
+  repeatResult,
 }: {
   settings: XR20Settings;
   cwData: MeasurementRow[];
   ccwData: MeasurementRow[];
   cwStats: EvaluationStats;
   ccwStats: EvaluationStats;
+  repeatResult: RepeatabilityResult | null;
 }) {
   const handlePrint = () => {
     window.print();
   };
 
-  if (cwData.length === 0 && ccwData.length === 0) {
+  if (cwData.length === 0 && ccwData.length === 0 && !repeatResult) {
     return (
       <div className="text-center py-16 text-slate-400">
         <FileText className="w-12 h-12 mx-auto mb-3" />
@@ -1504,6 +1655,8 @@ function ReportTab({
   const today = new Date().toLocaleDateString("ja-JP");
   const axisLabel = settings.axisType === "rotation" ? "回転軸" : "傾斜軸";
   const rangeInfo = settings.axisType === "rotation" ? "0° ~ 360°" : `${settings.startAngle}° ~ ${settings.endAngle}°`;
+  const hasRepeat = repeatResult !== null;
+  const title = hasRepeat ? "割出し精度・再現性 成績書" : "割出し精度 成績書";
 
   const sections: { label: string; data: MeasurementRow[]; stats: EvaluationStats; bgClass: string; textClass: string; chartColor: string }[] = [
     { label: `CW 評価結果 (${settings.divisions}等分)`, data: cwData, stats: cwStats, bgClass: "bg-green-50", textClass: "text-green-800", chartColor: "#3b82f6" },
@@ -1521,7 +1674,7 @@ function ReportTab({
       <div className="border border-slate-300 rounded-lg p-8 bg-white print:border-0 print:p-0" id="report">
         {/* Report Header */}
         <div className="text-center border-b-2 border-slate-800 pb-4 mb-6">
-          <h1 className="text-xl font-bold">割出し精度 成績書</h1>
+          <h1 className="text-xl font-bold">{title}</h1>
           <p className="text-sm text-slate-500 mt-1">XR20 {axisLabel}評価 (CW/CCW)</p>
         </div>
 
@@ -1584,6 +1737,39 @@ function ReportTab({
             <BarChartSVG data={sec.data} color={sec.chartColor} title={`${sec.label} (arc sec)`} />
           </div>
         ))}
+
+        {/* Repeatability Section */}
+        {hasRepeat && repeatResult && (
+          <div className="mb-6">
+            <h2 className="text-sm font-bold bg-amber-50 px-3 py-1.5 rounded mb-3 text-amber-800">
+              再現性 評価結果 (測定位置: {repeatResult.positions.map(p => `${p.angle}°`).join(", ")})
+            </h2>
+            <div className="overflow-x-auto mb-3">
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="bg-amber-50">
+                    <th className="border border-slate-300 px-3 py-1.5 text-left">位置 (°)</th>
+                    <th className="border border-slate-300 px-3 py-1.5 text-right">CW範囲 R (″)</th>
+                    <th className="border border-slate-300 px-3 py-1.5 text-right">CCW範囲 R (″)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {repeatResult.positions.map((ps) => (
+                    <tr key={ps.angle}>
+                      <td className="border border-slate-300 px-3 py-1 font-medium">{ps.angle}</td>
+                      <td className="border border-slate-300 px-3 py-1 text-right font-mono">{ps.cwRange.toFixed(2)}</td>
+                      <td className="border border-slate-300 px-3 py-1 text-right font-mono">{ps.ccwRange.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <ReportStat label="再現性" value={`${repeatResult.repeatability.toFixed(2)} ″`} highlight />
+              <ReportStat label="最大範囲 R" value={`${Math.max(...repeatResult.positions.map(p => Math.max(p.cwRange, p.ccwRange))).toFixed(2)} ″`} />
+            </div>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="mt-8 pt-4 border-t border-slate-300 grid grid-cols-3 gap-4 text-sm text-slate-500">

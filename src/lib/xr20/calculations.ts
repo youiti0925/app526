@@ -3,8 +3,6 @@ import {
   MeasurementRow,
   EvaluationStats,
   XR20Settings,
-  RepeatTargetPoint,
-  RepeatMeasurementRow,
   RepeatPositionResult,
   RepeatabilityResult,
 } from "./types";
@@ -14,50 +12,21 @@ export function generateTargetList(settings: XR20Settings): TargetPoint[] {
   let no = 1;
 
   if (settings.axisType === "rotation") {
-    // 回転軸: 0° → step → ... → (360-step)°
     const step = 360 / settings.divisions;
-
-    // CW
     for (let i = 0; i < settings.divisions; i++) {
-      targets.push({
-        no: no++,
-        angle: roundAngle(step * i),
-        direction: "cw",
-        status: "pending",
-      });
+      targets.push({ no: no++, angle: roundAngle(step * i), direction: "cw", phase: "index", trial: 0, status: "pending" });
     }
-
-    // CCW (逆順)
     for (let i = settings.divisions - 1; i >= 0; i--) {
-      targets.push({
-        no: no++,
-        angle: roundAngle(step * i),
-        direction: "ccw",
-        status: "pending",
-      });
+      targets.push({ no: no++, angle: roundAngle(step * i), direction: "ccw", phase: "index", trial: 0, status: "pending" });
     }
   } else {
-    // 傾斜軸: startAngle → endAngle を等分
     const totalRange = settings.endAngle - settings.startAngle;
     const step = totalRange / settings.divisions;
-
-    // CW (start → end)
     for (let i = 0; i <= settings.divisions; i++) {
-      targets.push({
-        no: no++,
-        angle: roundAngle(settings.startAngle + step * i),
-        direction: "cw",
-        status: "pending",
-      });
+      targets.push({ no: no++, angle: roundAngle(settings.startAngle + step * i), direction: "cw", phase: "index", trial: 0, status: "pending" });
     }
-
-    // CCW (end → start)
     for (let i = settings.divisions; i >= 0; i--) {
-      targets.push({
-        no: no++,
-        angle: roundAngle(settings.startAngle + step * i),
-        direction: "ccw",
-        status: "pending",
+      targets.push({ no: no++, angle: roundAngle(settings.startAngle + step * i), direction: "ccw", phase: "index", trial: 0, status: "pending"
       });
     }
   }
@@ -116,6 +85,133 @@ export function generateNCProgram(
   return lines.join("\n");
 }
 
+export function generateCombinedTargets(settings: XR20Settings): TargetPoint[] {
+  const targets = generateTargetList(settings);
+  let no = targets.length + 1;
+
+  const positions = settings.repeatPositions
+    .split(",")
+    .map((s) => parseFloat(s.trim()))
+    .filter((n) => !isNaN(n));
+
+  for (const pos of positions) {
+    for (let trial = 1; trial <= settings.repeatCount; trial++) {
+      targets.push({ no: no++, angle: pos, direction: "cw", phase: "repeat", trial, status: "pending" });
+    }
+    for (let trial = 1; trial <= settings.repeatCount; trial++) {
+      targets.push({ no: no++, angle: pos, direction: "ccw", phase: "repeat", trial, status: "pending" });
+    }
+  }
+  return targets;
+}
+
+export function generateCombinedNCProgram(
+  targets: TargetPoint[],
+  settings: XR20Settings
+): string {
+  const lines: string[] = [];
+  const pValue = Math.round(settings.dwellTimeMs);
+  const ovr = settings.overrunAngle;
+  const axisLabel = settings.axisType === "rotation" ? "ROTATION" : "TILT";
+
+  lines.push(`O3000 (XR20 ${axisLabel} COMBINED: INDEX + REPEAT)`);
+  lines.push("");
+
+  // 割出し精度パート
+  const indexTargets = targets.filter((t) => t.phase === "index");
+  const indexCW = indexTargets.filter((t) => t.direction === "cw");
+  const indexCCW = indexTargets.filter((t) => t.direction === "ccw");
+
+  lines.push("(===== PART 1: INDEXING ACCURACY =====)");
+  lines.push("");
+
+  if (indexCW.length > 0) {
+    lines.push(`(INDEX CW ${settings.divisions}-DIVISION)`);
+    lines.push("(OVERRUN: BACKLASH ELIMINATION FOR CW)");
+    lines.push("G91");
+    lines.push(`G00 A-${formatAngle(ovr)}`);
+    lines.push(`G00 A${formatAngle(ovr)}`);
+    lines.push("G90");
+    lines.push("");
+    for (const t of indexCW) {
+      lines.push(`G00 A${formatAngle(t.angle)}`);
+      lines.push(`G04 P${pValue}`);
+    }
+    lines.push("");
+  }
+
+  if (indexCCW.length > 0) {
+    lines.push(`(INDEX CCW ${settings.divisions}-DIVISION)`);
+    lines.push("(OVERRUN: BACKLASH ELIMINATION FOR CCW)");
+    lines.push("G91");
+    lines.push(`G00 A${formatAngle(ovr)}`);
+    lines.push(`G00 A-${formatAngle(ovr)}`);
+    lines.push("G90");
+    lines.push("");
+    for (const t of indexCCW) {
+      lines.push(`G00 A${formatAngle(t.angle)}`);
+      lines.push(`G04 P${pValue}`);
+    }
+    lines.push("");
+  }
+
+  // 再現性パート
+  const repeatTargets = targets.filter((t) => t.phase === "repeat");
+  if (repeatTargets.length > 0) {
+    lines.push("(===== PART 2: REPEATABILITY =====)");
+    lines.push("");
+
+    const positions = [...new Set(repeatTargets.map((t) => t.angle))].sort(
+      (a, b) => a - b
+    );
+    for (const pos of positions) {
+      const posCW = repeatTargets.filter(
+        (t) => t.angle === pos && t.direction === "cw"
+      );
+      const posCCW = repeatTargets.filter(
+        (t) => t.angle === pos && t.direction === "ccw"
+      );
+
+      if (posCW.length > 0) {
+        lines.push(`(REPEAT ${pos} DEG - CW x${posCW.length})`);
+        for (const t of posCW) {
+          lines.push(`(CW TRIAL ${t.trial})`);
+          lines.push("G91");
+          lines.push(`G00 A-${formatAngle(ovr)}`);
+          lines.push("G90");
+          lines.push(`G00 A${formatAngle(pos)}`);
+          lines.push(`G04 P${pValue}`);
+        }
+        lines.push("");
+      }
+
+      if (posCCW.length > 0) {
+        lines.push(`(REPEAT ${pos} DEG - CCW x${posCCW.length})`);
+        for (const t of posCCW) {
+          lines.push(`(CCW TRIAL ${t.trial})`);
+          lines.push("G91");
+          lines.push(`G00 A${formatAngle(ovr)}`);
+          lines.push("G90");
+          lines.push(`G00 A${formatAngle(pos)}`);
+          lines.push(`G04 P${pValue}`);
+        }
+        lines.push("");
+      }
+    }
+  }
+
+  lines.push("M30");
+  return lines.join("\n");
+}
+
+export function generateCartoTargetCSV(targets: TargetPoint[]): string {
+  const lines = ["Target Position"];
+  for (const t of targets) {
+    lines.push(t.angle.toFixed(4));
+  }
+  return lines.join("\n");
+}
+
 export function calculateStats(rows: MeasurementRow[]): EvaluationStats {
   if (rows.length === 0) {
     return {
@@ -163,12 +259,16 @@ export function parseCSVData(csv: string, targets: TargetPoint[]): MeasurementRo
       if (!isNaN(targetAngle) && !isNaN(measuredAngle) && !isNaN(errorArcSec)) {
         const idx = rows.length;
         const direction = idx < targets.length ? targets[idx].direction : "cw";
+        const phase = idx < targets.length ? targets[idx].phase : "index";
+        const trial = idx < targets.length ? targets[idx].trial : 0;
         rows.push({
           no: i + 1,
           targetAngle,
           measuredAngle,
           errorArcSec,
           direction,
+          phase,
+          trial,
         });
       }
     }
@@ -182,32 +282,20 @@ export function parseCSVData(csv: string, targets: TargetPoint[]): MeasurementRo
 
 export function generateRepeatTargets(
   settings: XR20Settings
-): RepeatTargetPoint[] {
+): TargetPoint[] {
   const positions = settings.repeatPositions
     .split(",")
     .map((s) => parseFloat(s.trim()))
     .filter((n) => !isNaN(n));
-  const targets: RepeatTargetPoint[] = [];
+  const targets: TargetPoint[] = [];
   let no = 1;
 
   for (const pos of positions) {
     for (let trial = 1; trial <= settings.repeatCount; trial++) {
-      targets.push({
-        no: no++,
-        angle: pos,
-        direction: "cw",
-        trial,
-        status: "pending",
-      });
+      targets.push({ no: no++, angle: pos, direction: "cw", phase: "repeat", trial, status: "pending" });
     }
     for (let trial = 1; trial <= settings.repeatCount; trial++) {
-      targets.push({
-        no: no++,
-        angle: pos,
-        direction: "ccw",
-        trial,
-        status: "pending",
-      });
+      targets.push({ no: no++, angle: pos, direction: "ccw", phase: "repeat", trial, status: "pending" });
     }
   }
   return targets;
@@ -255,14 +343,14 @@ export function generateRepeatNCProgram(settings: XR20Settings): string {
 
 export function parseRepeatCSVData(
   csv: string,
-  targets: RepeatTargetPoint[]
-): RepeatMeasurementRow[] {
+  targets: TargetPoint[]
+): MeasurementRow[] {
   const lines = csv
     .trim()
     .split("\n")
     .filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("//"));
 
-  const rows: RepeatMeasurementRow[] = [];
+  const rows: MeasurementRow[] = [];
   for (let i = 0; i < lines.length; i++) {
     const parts = lines[i].split(/[,\t]+/).map((s) => s.trim());
     if (parts.length >= 3) {
@@ -284,6 +372,7 @@ export function parseRepeatCSVData(
           measuredAngle,
           errorArcSec,
           direction,
+          phase: "repeat",
           trial,
         });
       }
@@ -293,7 +382,7 @@ export function parseRepeatCSVData(
 }
 
 export function calcRepeatability(
-  measurements: RepeatMeasurementRow[],
+  measurements: MeasurementRow[],
   settings: XR20Settings
 ): RepeatabilityResult {
   const positions = settings.repeatPositions
@@ -303,10 +392,10 @@ export function calcRepeatability(
 
   const results: RepeatPositionResult[] = positions.map((pos) => {
     const cwErrors = measurements
-      .filter((m) => Math.abs(m.targetAngle - pos) < 0.001 && m.direction === "cw")
+      .filter((m) => Math.abs(m.targetAngle - pos) < 0.001 && m.direction === "cw" && m.phase === "repeat")
       .map((m) => m.errorArcSec);
     const ccwErrors = measurements
-      .filter((m) => Math.abs(m.targetAngle - pos) < 0.001 && m.direction === "ccw")
+      .filter((m) => Math.abs(m.targetAngle - pos) < 0.001 && m.direction === "ccw" && m.phase === "repeat")
       .map((m) => m.errorArcSec);
     const cwRange =
       cwErrors.length >= 2

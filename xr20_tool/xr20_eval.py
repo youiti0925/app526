@@ -118,6 +118,8 @@ class TargetPoint:
     no: int
     angle: float
     direction: str = "cw"  # "cw" or "ccw"
+    phase: str = "index"  # "index" (割出し精度) or "repeat" (再現性)
+    trial: int = 0  # 再現性の場合の試行回数 (1～N)
     status: str = "pending"  # "pending" or "measured"
 
 
@@ -128,6 +130,8 @@ class MeasurementRow:
     measured_angle: float
     error_arcsec: float
     direction: str = "cw"  # "cw" or "ccw"
+    phase: str = "index"
+    trial: int = 0
 
 
 @dataclass
@@ -184,30 +188,128 @@ def generate_targets(cfg: XR20Config) -> list[TargetPoint]:
     no = 1
 
     if cfg.axis_type == "rotation":
-        # 回転軸: 0° → step → ... → (360-step)°
         step = 360.0 / cfg.divisions
-        # CW
         for i in range(cfg.divisions):
-            targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="cw"))
+            targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="cw", phase="index"))
             no += 1
-        # CCW (逆順)
         for i in range(cfg.divisions - 1, -1, -1):
-            targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="ccw"))
+            targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="ccw", phase="index"))
             no += 1
     else:
-        # 傾斜軸: start_angle → end_angle を等分
         total_range = cfg.end_angle - cfg.start_angle
         step = total_range / cfg.divisions
-        # CW (start → end)
         for i in range(cfg.divisions + 1):
-            targets.append(TargetPoint(no=no, angle=round(cfg.start_angle + step * i, 4), direction="cw"))
+            targets.append(TargetPoint(no=no, angle=round(cfg.start_angle + step * i, 4), direction="cw", phase="index"))
             no += 1
-        # CCW (end → start)
         for i in range(cfg.divisions, -1, -1):
-            targets.append(TargetPoint(no=no, angle=round(cfg.start_angle + step * i, 4), direction="ccw"))
+            targets.append(TargetPoint(no=no, angle=round(cfg.start_angle + step * i, 4), direction="ccw", phase="index"))
             no += 1
 
     return targets
+
+
+def generate_combined_targets(cfg: XR20Config) -> list[TargetPoint]:
+    """割出し精度 + 再現性を連続した1つのターゲットリストとして生成"""
+    targets = generate_targets(cfg)
+    no = len(targets) + 1
+
+    # 再現性パート
+    positions = [float(p.strip()) for p in cfg.repeat_positions.split(",") if p.strip()]
+    for pos in positions:
+        for trial in range(1, cfg.repeat_count + 1):
+            targets.append(TargetPoint(no=no, angle=pos, direction="cw", phase="repeat", trial=trial))
+            no += 1
+        for trial in range(1, cfg.repeat_count + 1):
+            targets.append(TargetPoint(no=no, angle=pos, direction="ccw", phase="repeat", trial=trial))
+            no += 1
+
+    return targets
+
+
+def generate_combined_nc_program(targets: list[TargetPoint], cfg: XR20Config) -> str:
+    """割出し精度 + 再現性の連続NCプログラム"""
+    axis_label = "ROTATION" if cfg.axis_type == "rotation" else "TILT"
+    lines = [f"O3000 (XR20 {axis_label} COMBINED: INDEX + REPEAT)", ""]
+    p_val = cfg.dwell_time_ms
+    ovr = cfg.overrun_angle
+
+    # --- 割出し精度パート ---
+    index_targets = [t for t in targets if t.phase == "index"]
+    index_cw = [t for t in index_targets if t.direction == "cw"]
+    index_ccw = [t for t in index_targets if t.direction == "ccw"]
+
+    lines.append("(===== PART 1: INDEXING ACCURACY =====)")
+    lines.append("")
+
+    if index_cw:
+        lines.append(f"(INDEX CW {cfg.divisions}-DIVISION)")
+        lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CW)")
+        lines.append("G91")
+        lines.append(f"G00 A-{_fmt_angle(ovr)}")
+        lines.append(f"G00 A{_fmt_angle(ovr)}")
+        lines.append("G90")
+        lines.append("")
+        for t in index_cw:
+            lines.append(f"G00 A{_fmt_angle(t.angle)}")
+            lines.append(f"G04 P{p_val}")
+        lines.append("")
+
+    if index_ccw:
+        lines.append(f"(INDEX CCW {cfg.divisions}-DIVISION)")
+        lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CCW)")
+        lines.append("G91")
+        lines.append(f"G00 A{_fmt_angle(ovr)}")
+        lines.append(f"G00 A-{_fmt_angle(ovr)}")
+        lines.append("G90")
+        lines.append("")
+        for t in index_ccw:
+            lines.append(f"G00 A{_fmt_angle(t.angle)}")
+            lines.append(f"G04 P{p_val}")
+        lines.append("")
+
+    # --- 再現性パート ---
+    repeat_targets = [t for t in targets if t.phase == "repeat"]
+    if repeat_targets:
+        lines.append("(===== PART 2: REPEATABILITY =====)")
+        lines.append("")
+
+        positions = sorted(set(t.angle for t in repeat_targets))
+        for pos in positions:
+            pos_cw = [t for t in repeat_targets if t.angle == pos and t.direction == "cw"]
+            pos_ccw = [t for t in repeat_targets if t.angle == pos and t.direction == "ccw"]
+
+            if pos_cw:
+                lines.append(f"(REPEAT {pos} DEG - CW x{len(pos_cw)})")
+                for t in pos_cw:
+                    lines.append(f"(CW TRIAL {t.trial})")
+                    lines.append("G91")
+                    lines.append(f"G00 A-{_fmt_angle(ovr)}")
+                    lines.append("G90")
+                    lines.append(f"G00 A{_fmt_angle(t.angle)}")
+                    lines.append(f"G04 P{p_val}")
+                lines.append("")
+
+            if pos_ccw:
+                lines.append(f"(REPEAT {pos} DEG - CCW x{len(pos_ccw)})")
+                for t in pos_ccw:
+                    lines.append(f"(CCW TRIAL {t.trial})")
+                    lines.append("G91")
+                    lines.append(f"G00 A{_fmt_angle(ovr)}")
+                    lines.append("G90")
+                    lines.append(f"G00 A{_fmt_angle(t.angle)}")
+                    lines.append(f"G04 P{p_val}")
+                lines.append("")
+
+    lines.append("M30")
+    return "\n".join(lines)
+
+
+def generate_carto_target_csv(targets: list[TargetPoint]) -> str:
+    """CARTO用ターゲットCSVファイルを生成"""
+    lines = ["Target Position"]
+    for t in targets:
+        lines.append(f"{t.angle:.4f}")
+    return "\n".join(lines)
 
 
 def generate_nc_program(targets: list[TargetPoint], cfg: XR20Config) -> str:
@@ -281,8 +383,18 @@ def parse_csv_data(text: str, targets: list[TargetPoint]) -> list[MeasurementRow
                 ma = float(parts[1])
                 ea = float(parts[2])
                 idx = len(rows)
-                direction = targets[idx].direction if idx < len(targets) else "cw"
-                rows.append(MeasurementRow(no=len(rows) + 1, target_angle=ta, measured_angle=ma, error_arcsec=ea, direction=direction))
+                if idx < len(targets):
+                    direction = targets[idx].direction
+                    phase = targets[idx].phase
+                    trial = targets[idx].trial
+                else:
+                    direction = "cw"
+                    phase = "index"
+                    trial = 0
+                rows.append(MeasurementRow(
+                    no=len(rows) + 1, target_angle=ta, measured_angle=ma,
+                    error_arcsec=ea, direction=direction, phase=phase, trial=trial
+                ))
             except ValueError:
                 continue
     return rows
@@ -857,8 +969,23 @@ class XR20App:
         btn_frame = ttk.Frame(inner)
         btn_frame.pack(fill="x", pady=(15, 5))
         ttk.Button(btn_frame, text="設定を保存", command=self._save_config).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="ターゲットリスト生成 →", command=self._generate_targets).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="NCプログラム生成・保存", command=self._save_nc_program).pack(side="left", padx=5)
+
+        btn_frame2 = ttk.Frame(inner)
+        btn_frame2.pack(fill="x", pady=2)
+        ttk.Label(btn_frame2, text="割出し精度:", font=("", 9, "bold")).pack(side="left", padx=(0, 5))
+        ttk.Button(btn_frame2, text="ターゲット生成 →", command=self._generate_targets).pack(side="left", padx=5)
+        ttk.Button(btn_frame2, text="NC保存", command=self._save_nc_program).pack(side="left", padx=5)
+
+        btn_frame3 = ttk.Frame(inner)
+        btn_frame3.pack(fill="x", pady=2)
+        ttk.Label(btn_frame3, text="連続測定（割出し+再現性）:", font=("", 9, "bold")).pack(side="left", padx=(0, 5))
+        ttk.Button(btn_frame3, text="連続ターゲット生成 →", command=self._generate_combined_targets).pack(side="left", padx=5)
+        ttk.Button(btn_frame3, text="連続NC保存", command=self._save_combined_nc_program).pack(side="left", padx=5)
+
+        btn_frame4 = ttk.Frame(inner)
+        btn_frame4.pack(fill="x", pady=2)
+        ttk.Label(btn_frame4, text="CARTO連携:", font=("", 9, "bold")).pack(side="left", padx=(0, 5))
+        ttk.Button(btn_frame4, text="CARTOターゲットCSV保存", command=self._save_carto_csv).pack(side="left", padx=5)
 
     def _add_section(self, parent, title):
         lf = ttk.LabelFrame(parent, text=f"  {title}  ", padding=10)
@@ -921,6 +1048,42 @@ class XR20App:
         self._refresh_targets_tab()
         self.notebook.select(1)  # ターゲットリストタブへ
 
+    def _generate_combined_targets(self):
+        self._apply_config()
+        self.targets = generate_combined_targets(self.cfg)
+        self._refresh_targets_tab()
+        self.notebook.select(1)
+
+    def _save_combined_nc_program(self):
+        self._apply_config()
+        if not self.targets:
+            self.targets = generate_combined_targets(self.cfg)
+        nc = generate_combined_nc_program(self.targets, self.cfg)
+        path = filedialog.asksaveasfilename(
+            defaultextension=".nc",
+            filetypes=[("NCプログラム", "*.nc"), ("テキスト", "*.txt")],
+            initialfile="O3000_XR20_COMBINED.nc",
+        )
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(nc)
+            messagebox.showinfo("保存完了", f"連続NCプログラムを保存しました:\n{path}")
+
+    def _save_carto_csv(self):
+        self._apply_config()
+        if not self.targets:
+            self.targets = generate_targets(self.cfg)
+        csv_text = generate_carto_target_csv(self.targets)
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv"), ("テキスト", "*.txt")],
+            initialfile="XR20_CARTO_TARGETS.csv",
+        )
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(csv_text)
+            messagebox.showinfo("保存完了", f"CARTOターゲットCSVを保存しました:\n{path}\n\nCARTOの「Import Target List」でこのファイルを読み込んでください。")
+
     def _save_nc_program(self):
         self._apply_config()
         if not self.targets:
@@ -949,16 +1112,18 @@ class XR20App:
         self._targets_info_label.pack(side="left")
 
         # Treeview
-        cols = ("no", "angle", "direction", "status")
+        cols = ("no", "angle", "direction", "phase", "status")
         self._targets_tree = ttk.Treeview(frame, columns=cols, show="headings", height=25)
         self._targets_tree.heading("no", text="No.")
         self._targets_tree.heading("angle", text="ターゲット角度 (°)")
         self._targets_tree.heading("direction", text="方向")
+        self._targets_tree.heading("phase", text="区分")
         self._targets_tree.heading("status", text="ステータス")
         self._targets_tree.column("no", width=60, anchor="center")
-        self._targets_tree.column("angle", width=220, anchor="center")
-        self._targets_tree.column("direction", width=100, anchor="center")
-        self._targets_tree.column("status", width=150, anchor="center")
+        self._targets_tree.column("angle", width=180, anchor="center")
+        self._targets_tree.column("direction", width=80, anchor="center")
+        self._targets_tree.column("phase", width=130, anchor="center")
+        self._targets_tree.column("status", width=100, anchor="center")
 
         sb = ttk.Scrollbar(frame, orient="vertical", command=self._targets_tree.yview)
         self._targets_tree.configure(yscrollcommand=sb.set)
@@ -968,16 +1133,24 @@ class XR20App:
     def _refresh_targets_tab(self):
         tree = self._targets_tree
         tree.delete(*tree.get_children())
-        cw_count = sum(1 for t in self.targets if t.direction == "cw")
-        ccw_count = sum(1 for t in self.targets if t.direction == "ccw")
+        index_count = sum(1 for t in self.targets if t.phase == "index")
+        repeat_count = sum(1 for t in self.targets if t.phase == "repeat")
         axis_label = "回転軸" if self.cfg.axis_type == "rotation" else "傾斜軸"
-        self._targets_info_label.config(
-            text=f"合計 {len(self.targets)} 点  ({axis_label}  CW: {cw_count}, CCW: {ccw_count})"
-        )
+        info_parts = [f"合計 {len(self.targets)} 点  ({axis_label}"]
+        if index_count:
+            info_parts.append(f"  割出し: {index_count}点")
+        if repeat_count:
+            info_parts.append(f"  再現性: {repeat_count}点")
+        info_parts.append(")")
+        self._targets_info_label.config(text="".join(info_parts))
         for t in self.targets:
             d = "CW" if t.direction == "cw" else "CCW"
+            if t.phase == "repeat":
+                phase_label = f"再現性 #{t.trial}"
+            else:
+                phase_label = "割出し精度"
             st = "測定済" if t.status == "measured" else "未測定"
-            tree.insert("", "end", values=(t.no, f"{t.angle:.4f}", d, st))
+            tree.insert("", "end", values=(t.no, f"{t.angle:.4f}", d, phase_label, st))
 
     # -------------------------------------------------------
     # タブ3: 測定制御
@@ -1153,11 +1326,24 @@ class XR20App:
             messagebox.showwarning("データなし", "有効なデータが見つかりませんでした。形式を確認してください。")
             return
 
-        cw_count = sum(1 for m in self.measurements if m.direction == "cw")
-        ccw_count = sum(1 for m in self.measurements if m.direction == "ccw")
-        self._data_info_label.config(
-            text=f"解析完了: {len(self.measurements)} 点 (CW: {cw_count}, CCW: {ccw_count})"
-        )
+        index_count = sum(1 for m in self.measurements if m.phase == "index")
+        repeat_count = sum(1 for m in self.measurements if m.phase == "repeat")
+        info = f"解析完了: {len(self.measurements)} 点"
+        if index_count:
+            info += f"  割出し: {index_count}点"
+        if repeat_count:
+            info += f"  再現性: {repeat_count}点"
+        self._data_info_label.config(text=info)
+
+        # 再現性データがある場合、再現性タブも自動更新
+        if repeat_count > 0:
+            repeat_rows = [m for m in self.measurements if m.phase == "repeat"]
+            self.repeat_measurements = [
+                RepeatMeasurementRow(
+                    no=m.no, target_angle=m.target_angle, measured_angle=m.measured_angle,
+                    error_arcsec=m.error_arcsec, direction=m.direction, trial=m.trial
+                ) for m in repeat_rows
+            ]
 
         self._refresh_results_tab()
         self._refresh_report_tab()
@@ -1173,15 +1359,19 @@ class XR20App:
         ttk.Label(frame, text="データを入力して評価を実行してください。").pack(pady=30)
 
     def _refresh_results_tab(self):
-        # 既存ウィジェットを削除
         for w in self._results_frame.winfo_children():
             w.destroy()
 
-        cw_data = [m for m in self.measurements if m.direction == "cw"]
-        ccw_data = [m for m in self.measurements if m.direction == "ccw"]
+        # 割出し精度データ
+        index_data = [m for m in self.measurements if m.phase == "index"]
+        cw_data = [m for m in index_data if m.direction == "cw"]
+        ccw_data = [m for m in index_data if m.direction == "ccw"]
 
         self._cw_stats = calc_stats(cw_data)
         self._ccw_stats = calc_stats(ccw_data)
+
+        # 再現性データ
+        repeat_data = [m for m in self.measurements if m.phase == "repeat"]
 
         if not HAS_MATPLOTLIB:
             ttk.Label(self._results_frame, text="※ matplotlib未インストール: pip install matplotlib でグラフ表示可能", foreground="orange").pack(pady=5)
@@ -1195,10 +1385,50 @@ class XR20App:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+        # 割出し精度セクション
+        if cw_data or ccw_data:
+            ttk.Label(inner, text="━━ 割出し精度 ━━", style="Title.TLabel").pack(fill="x", pady=(5, 10))
         if cw_data:
             self._add_eval_section(inner, "CW 評価結果", cw_data, self._cw_stats, chart_type="bar")
         if ccw_data:
             self._add_eval_section(inner, "CCW 評価結果", ccw_data, self._ccw_stats, chart_type="bar")
+
+        # 再現性セクション（連続測定の場合）
+        if repeat_data:
+            ttk.Label(inner, text="━━ 再現性 ━━", style="Title.TLabel").pack(fill="x", pady=(15, 10))
+            repeat_rows = [
+                RepeatMeasurementRow(
+                    no=m.no, target_angle=m.target_angle, measured_angle=m.measured_angle,
+                    error_arcsec=m.error_arcsec, direction=m.direction, trial=m.trial
+                ) for m in repeat_data
+            ]
+            result = calc_repeatability(repeat_rows, self.cfg)
+            self._repeat_result = result
+
+            # 再現性値
+            lf = ttk.LabelFrame(inner, text="  再現性  ", padding=10)
+            lf.pack(fill="x", pady=5)
+            ttk.Label(lf, text=f"再現性: {result.repeatability:.2f} arc sec", style="Stat.TLabel").pack()
+
+            # 各位置テーブル
+            cols = ("position", "cw_range", "ccw_range", "cw_n", "ccw_n")
+            tree = ttk.Treeview(lf, columns=cols, show="headings", height=min(8, len(result.positions)))
+            tree.heading("position", text="位置 (°)")
+            tree.heading("cw_range", text="CW Range (″)")
+            tree.heading("ccw_range", text="CCW Range (″)")
+            tree.heading("cw_n", text="CW 回数")
+            tree.heading("ccw_n", text="CCW 回数")
+            tree.column("position", width=100, anchor="center")
+            tree.column("cw_range", width=130, anchor="center")
+            tree.column("ccw_range", width=130, anchor="center")
+            tree.column("cw_n", width=80, anchor="center")
+            tree.column("ccw_n", width=80, anchor="center")
+            for pr in result.positions:
+                tree.insert("", "end", values=(
+                    f"{pr.angle:.4f}", f"{pr.cw_range:.2f}", f"{pr.ccw_range:.2f}",
+                    len(pr.cw_errors), len(pr.ccw_errors),
+                ))
+            tree.pack(fill="x", pady=(10, 0))
 
     def _add_eval_section(self, parent, title, data, stats, chart_type="bar"):
         lf = ttk.LabelFrame(parent, text=f"  {title}  ", padding=10)
@@ -1292,15 +1522,20 @@ class XR20App:
 
     def _generate_report_text(self) -> str:
         today = datetime.now().strftime("%Y年%m月%d日")
-        cw_data = [m for m in self.measurements if m.direction == "cw"]
-        ccw_data = [m for m in self.measurements if m.direction == "ccw"]
+        index_data = [m for m in self.measurements if m.phase == "index"]
+        cw_data = [m for m in index_data if m.direction == "cw"]
+        ccw_data = [m for m in index_data if m.direction == "ccw"]
+        repeat_data = [m for m in self.measurements if m.phase == "repeat"]
 
         axis_label = "回転軸" if self.cfg.axis_type == "rotation" else "傾斜軸"
         range_info = "0° ～ 360°" if self.cfg.axis_type == "rotation" else f"{self.cfg.start_angle}° ～ {self.cfg.end_angle}°"
 
+        has_repeat = len(repeat_data) > 0
+        title = "割出し精度・再現性 成績書" if has_repeat else "割出し精度 成績書"
+
         lines = []
         lines.append("=" * 60)
-        lines.append("        割出し精度 成績書")
+        lines.append(f"        {title}")
         lines.append(f"        XR20 {axis_label}評価")
         lines.append("=" * 60)
         lines.append("")
@@ -1313,9 +1548,13 @@ class XR20App:
         lines.append(f"  測定範囲:         {range_info}")
         lines.append(f"  等分数:           {self.cfg.divisions}")
         lines.append(f"  オーバーラン角度: {self.cfg.overrun_angle}°")
+        if has_repeat:
+            lines.append(f"  再現性測定位置:   {self.cfg.repeat_positions}")
+            lines.append(f"  再現性繰返し回数: {self.cfg.repeat_count}")
         lines.append(f"  測定器:           Renishaw XR20 + XL-80")
         lines.append("")
 
+        # 割出し精度
         for label, data in [
             (f"CW 評価結果 ({self.cfg.divisions}等分)", cw_data),
             (f"CCW 評価結果 ({self.cfg.divisions}等分)", ccw_data),
@@ -1337,6 +1576,26 @@ class XR20App:
             lines.append("  " + "-" * 48)
             for i, d in enumerate(data):
                 lines.append(f"  {i+1:4d}  {d.target_angle:14.4f}  {d.measured_angle:14.4f}  {d.error_arcsec:+10.2f}")
+            lines.append("")
+
+        # 再現性
+        if has_repeat:
+            repeat_rows = [
+                RepeatMeasurementRow(
+                    no=m.no, target_angle=m.target_angle, measured_angle=m.measured_angle,
+                    error_arcsec=m.error_arcsec, direction=m.direction, trial=m.trial
+                ) for m in repeat_data
+            ]
+            result = calc_repeatability(repeat_rows, self.cfg)
+            lines.append("=" * 60)
+            lines.append(f"【再現性評価結果】")
+            lines.append("=" * 60)
+            lines.append(f"  再現性: {result.repeatability:.2f} arc sec (全位置CW/CCWの最大Range)")
+            lines.append("")
+            lines.append(f"  {'位置(°)':>10}  {'CW Range(″)':>14}  {'CCW Range(″)':>14}  {'CW回数':>8}  {'CCW回数':>8}")
+            lines.append("  " + "-" * 58)
+            for pr in result.positions:
+                lines.append(f"  {pr.angle:10.4f}  {pr.cw_range:14.2f}  {pr.ccw_range:14.2f}  {len(pr.cw_errors):8d}  {len(pr.ccw_errors):8d}")
             lines.append("")
 
         lines.append("=" * 60)

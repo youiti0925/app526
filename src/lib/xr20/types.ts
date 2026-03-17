@@ -53,6 +53,8 @@ export interface TargetPoint {
   no: number;
   angle: number;
   direction: "cw" | "ccw";
+  phase: "index" | "repeat";
+  trial: number; // 0 for index, 1-N for repeat
   status: "pending" | "measured";
 }
 
@@ -62,6 +64,8 @@ export interface MeasurementRow {
   measuredAngle: number;
   errorArcSec: number;
   direction: "cw" | "ccw";
+  phase: "index" | "repeat";
+  trial: number;
 }
 
 export interface EvaluationStats {
@@ -71,23 +75,6 @@ export interface EvaluationStats {
   sigma: number;
   indexAccuracy: number; // max - min
   count: number;
-}
-
-export interface RepeatTargetPoint {
-  no: number;
-  angle: number;
-  direction: "cw" | "ccw";
-  trial: number;
-  status: "pending" | "measured";
-}
-
-export interface RepeatMeasurementRow {
-  no: number;
-  targetAngle: number;
-  measuredAngle: number;
-  errorArcSec: number;
-  direction: "cw" | "ccw";
-  trial: number;
 }
 
 export interface RepeatPositionResult {
