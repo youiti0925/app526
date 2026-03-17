@@ -1,16 +1,15 @@
 export interface XR20Settings {
   // Machine info
-  machineName: string;
+  machineModel: string;
+  machineSerial: string;
   ncModel: string;
 
-  // Gear parameters
-  wheelTeeth: number;
-  wormLeads: number;
-
   // Evaluation parameters
-  wheelDivisions: number;
-  wormDivisions: number;
-  wormStartPosition: number;
+  axisType: "rotation" | "tilt";
+  divisions: number;
+  startAngle: number;
+  endAngle: number;
+  overrunAngle: number;
 
   // Monitoring parameters
   monitorIntervalMs: number;
@@ -27,13 +26,14 @@ export interface XR20Settings {
 }
 
 export const DEFAULT_SETTINGS: XR20Settings = {
-  machineName: "",
+  machineModel: "",
+  machineSerial: "",
   ncModel: "FANUC",
-  wheelTeeth: 60,
-  wormLeads: 1,
-  wheelDivisions: 36,
-  wormDivisions: 10,
-  wormStartPosition: 0,
+  axisType: "rotation",
+  divisions: 36,
+  startAngle: 0,
+  endAngle: 360,
+  overrunAngle: 10,
   monitorIntervalMs: 150,
   stabilityCount: 10,
   stabilityThreshold: 0.001,
@@ -46,7 +46,7 @@ export const DEFAULT_SETTINGS: XR20Settings = {
 export interface TargetPoint {
   no: number;
   angle: number;
-  category: "wheel" | "worm";
+  direction: "cw" | "ccw";
   status: "pending" | "measured";
 }
 
@@ -55,7 +55,7 @@ export interface MeasurementRow {
   targetAngle: number;
   measuredAngle: number;
   errorArcSec: number;
-  category: "wheel" | "worm";
+  direction: "cw" | "ccw";
 }
 
 export interface EvaluationStats {

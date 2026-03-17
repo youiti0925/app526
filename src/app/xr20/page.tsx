@@ -31,7 +31,6 @@ import {
   generateNCProgram,
   calculateStats,
   parseCSVData,
-  separateData,
 } from "@/lib/xr20/calculations";
 
 export default function XR20Page() {
@@ -45,16 +44,16 @@ export default function XR20Page() {
   const [currentPoint, setCurrentPoint] = useState(0);
   const [logMessages, setLogMessages] = useState<string[]>([]);
 
-  const wheelData = useMemo(
-    () => measurements.filter((m) => m.category === "wheel"),
+  const cwData = useMemo(
+    () => measurements.filter((m) => m.direction === "cw"),
     [measurements]
   );
-  const wormData = useMemo(
-    () => measurements.filter((m) => m.category === "worm"),
+  const ccwData = useMemo(
+    () => measurements.filter((m) => m.direction === "ccw"),
     [measurements]
   );
-  const wheelStats = useMemo(() => calculateStats(wheelData), [wheelData]);
-  const wormStats = useMemo(() => calculateStats(wormData), [wormData]);
+  const cwStats = useMemo(() => calculateStats(cwData), [cwData]);
+  const ccwStats = useMemo(() => calculateStats(ccwData), [ccwData]);
 
   const tabs: { id: XR20Tab; label: string; icon: React.ElementType }[] = [
     { id: "settings", label: "設定", icon: Settings },
@@ -191,19 +190,19 @@ export default function XR20Page() {
               )}
               {activeTab === "results" && (
                 <ResultsTab
-                  wheelData={wheelData}
-                  wormData={wormData}
-                  wheelStats={wheelStats}
-                  wormStats={wormStats}
+                  cwData={cwData}
+                  ccwData={ccwData}
+                  cwStats={cwStats}
+                  ccwStats={ccwStats}
                 />
               )}
               {activeTab === "report" && (
                 <ReportTab
                   settings={settings}
-                  wheelData={wheelData}
-                  wormData={wormData}
-                  wheelStats={wheelStats}
-                  wormStats={wormStats}
+                  cwData={cwData}
+                  ccwData={ccwData}
+                  cwStats={cwStats}
+                  ccwStats={ccwStats}
                 />
               )}
             </div>
@@ -237,12 +236,18 @@ function SettingsTab({
         <h2 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">
           機械情報
         </h2>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-3 gap-4">
           <InputField
-            label="機械名"
-            value={settings.machineName}
-            onChange={(v) => updateSetting("machineName", v)}
+            label="型式"
+            value={settings.machineModel}
+            onChange={(v) => updateSetting("machineModel", v)}
             placeholder="例: DMG MORI NTX 2000"
+          />
+          <InputField
+            label="機番"
+            value={settings.machineSerial}
+            onChange={(v) => updateSetting("machineSerial", v)}
+            placeholder="例: 12345"
           />
           <InputField
             label="NC装置型番"
@@ -253,51 +258,58 @@ function SettingsTab({
         </div>
       </section>
 
-      {/* Gear Parameters */}
-      <section>
-        <h2 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">
-          ギヤパラメータ
-        </h2>
-        <div className="grid grid-cols-2 gap-4">
-          <NumberField
-            label="ホイール歯数"
-            value={settings.wheelTeeth}
-            onChange={(v) => updateSetting("wheelTeeth", v)}
-            min={1}
-          />
-          <NumberField
-            label="ウォーム条数"
-            value={settings.wormLeads}
-            onChange={(v) => updateSetting("wormLeads", v)}
-            min={1}
-          />
-        </div>
-      </section>
-
       {/* Evaluation Parameters */}
       <section>
         <h2 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">
           評価パラメータ
         </h2>
-        <div className="grid grid-cols-3 gap-4">
-          <NumberField
-            label="ホイール等分数"
-            value={settings.wheelDivisions}
-            onChange={(v) => updateSetting("wheelDivisions", v)}
-            min={1}
-          />
-          <NumberField
-            label="ウォーム等分数"
-            value={settings.wormDivisions}
-            onChange={(v) => updateSetting("wormDivisions", v)}
-            min={1}
-          />
-          <NumberField
-            label="ウォーム評価開始位置 (°)"
-            value={settings.wormStartPosition}
-            onChange={(v) => updateSetting("wormStartPosition", v)}
-            step={0.001}
-          />
+        <div className="space-y-4">
+          {/* Axis Type */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">軸タイプ</label>
+            <div className="flex gap-4">
+              <label className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer ${settings.axisType === "rotation" ? "bg-blue-50 border-blue-400 text-blue-700" : "border-slate-300 text-slate-600"}`}>
+                <input type="radio" name="axisType" value="rotation" checked={settings.axisType === "rotation"} onChange={() => updateSetting("axisType", "rotation")} className="sr-only" />
+                回転軸 (360°)
+              </label>
+              <label className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer ${settings.axisType === "tilt" ? "bg-blue-50 border-blue-400 text-blue-700" : "border-slate-300 text-slate-600"}`}>
+                <input type="radio" name="axisType" value="tilt" checked={settings.axisType === "tilt"} onChange={() => updateSetting("axisType", "tilt")} className="sr-only" />
+                傾斜軸 (任意範囲)
+              </label>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <NumberField
+              label="等分数"
+              value={settings.divisions}
+              onChange={(v) => updateSetting("divisions", v)}
+              min={1}
+            />
+            {settings.axisType === "tilt" && (
+              <>
+                <NumberField
+                  label="開始角度 (°)"
+                  value={settings.startAngle}
+                  onChange={(v) => updateSetting("startAngle", v)}
+                  step={0.1}
+                />
+                <NumberField
+                  label="終了角度 (°)"
+                  value={settings.endAngle}
+                  onChange={(v) => updateSetting("endAngle", v)}
+                  step={0.1}
+                />
+              </>
+            )}
+            <NumberField
+              label="オーバーラン角度 (°)"
+              value={settings.overrunAngle}
+              onChange={(v) => updateSetting("overrunAngle", v)}
+              min={0.1}
+              step={0.1}
+            />
+          </div>
         </div>
       </section>
 
@@ -389,8 +401,8 @@ function SettingsTab({
    Targets Tab
    ========================================================= */
 function TargetsTab({ targets }: { targets: TargetPoint[] }) {
-  const wheelTargets = targets.filter((t) => t.category === "wheel");
-  const wormTargets = targets.filter((t) => t.category === "worm");
+  const cwCount = targets.filter((t) => t.direction === "cw").length;
+  const ccwCount = targets.filter((t) => t.direction === "ccw").length;
 
   if (targets.length === 0) {
     return (
@@ -409,12 +421,12 @@ function TargetsTab({ targets }: { targets: TargetPoint[] }) {
         </h2>
         <div className="flex gap-4 text-sm">
           <span className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded-full bg-blue-500 inline-block" />
-            ホイール: {wheelTargets.length}点
+            <span className="w-3 h-3 rounded-full bg-green-500 inline-block" />
+            CW: {cwCount}点
           </span>
           <span className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded-full bg-amber-500 inline-block" />
-            ウォーム: {wormTargets.length}点
+            <span className="w-3 h-3 rounded-full bg-purple-500 inline-block" />
+            CCW: {ccwCount}点
           </span>
         </div>
       </div>
@@ -425,7 +437,7 @@ function TargetsTab({ targets }: { targets: TargetPoint[] }) {
             <tr>
               <th className="text-left px-4 py-2 font-semibold text-slate-600">No.</th>
               <th className="text-left px-4 py-2 font-semibold text-slate-600">ターゲット角度 (°)</th>
-              <th className="text-left px-4 py-2 font-semibold text-slate-600">区分</th>
+              <th className="text-left px-4 py-2 font-semibold text-slate-600">方向</th>
               <th className="text-left px-4 py-2 font-semibold text-slate-600">ステータス</th>
             </tr>
           </thead>
@@ -437,12 +449,12 @@ function TargetsTab({ targets }: { targets: TargetPoint[] }) {
                 <td className="px-4 py-2">
                   <span
                     className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                      t.category === "wheel"
-                        ? "bg-blue-100 text-blue-700"
-                        : "bg-amber-100 text-amber-700"
+                      t.direction === "cw"
+                        ? "bg-green-100 text-green-700"
+                        : "bg-purple-100 text-purple-700"
                     }`}
                   >
-                    {t.category === "wheel" ? "ホイール" : "ウォーム"}
+                    {t.direction === "cw" ? "CW" : "CCW"}
                   </span>
                 </td>
                 <td className="px-4 py-2">
@@ -635,7 +647,7 @@ function DataTab({
                   <th className="text-left px-3 py-2 font-semibold text-slate-600">ターゲット角度</th>
                   <th className="text-left px-3 py-2 font-semibold text-slate-600">測定角度</th>
                   <th className="text-left px-3 py-2 font-semibold text-slate-600">誤差 (arc sec)</th>
-                  <th className="text-left px-3 py-2 font-semibold text-slate-600">区分</th>
+                  <th className="text-left px-3 py-2 font-semibold text-slate-600">方向</th>
                 </tr>
               </thead>
               <tbody>
@@ -649,9 +661,9 @@ function DataTab({
                     </td>
                     <td className="px-3 py-2">
                       <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                        m.category === "wheel" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
+                        m.direction === "cw" ? "bg-green-100 text-green-700" : "bg-purple-100 text-purple-700"
                       }`}>
-                        {m.category === "wheel" ? "ホイール" : "ウォーム"}
+                        {m.direction === "cw" ? "CW" : "CCW"}
                       </span>
                     </td>
                   </tr>
@@ -669,17 +681,17 @@ function DataTab({
    Results Tab
    ========================================================= */
 function ResultsTab({
-  wheelData,
-  wormData,
-  wheelStats,
-  wormStats,
+  cwData,
+  ccwData,
+  cwStats,
+  ccwStats,
 }: {
-  wheelData: MeasurementRow[];
-  wormData: MeasurementRow[];
-  wheelStats: EvaluationStats;
-  wormStats: EvaluationStats;
+  cwData: MeasurementRow[];
+  ccwData: MeasurementRow[];
+  cwStats: EvaluationStats;
+  ccwStats: EvaluationStats;
 }) {
-  if (wheelData.length === 0 && wormData.length === 0) {
+  if (cwData.length === 0 && ccwData.length === 0) {
     return (
       <div className="text-center py-16 text-slate-400">
         <BarChart3 className="w-12 h-12 mx-auto mb-3" />
@@ -690,33 +702,31 @@ function ResultsTab({
 
   return (
     <div className="space-y-8">
-      {/* Wheel Evaluation */}
-      {wheelData.length > 0 && (
+      {cwData.length > 0 && (
         <section>
           <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full bg-blue-500 inline-block" />
-            ホイール評価結果
+            <span className="w-3 h-3 rounded-full bg-green-500 inline-block" />
+            CW 評価結果
           </h2>
-          <StatsCards stats={wheelStats} />
+          <StatsCards stats={cwStats} />
           <div className="mt-4">
-            <BarChartSVG data={wheelData} color="#3b82f6" title="ホイール各位置の誤差 (arc sec)" />
+            <BarChartSVG data={cwData} color="#3b82f6" title="CW 各位置の誤差 (arc sec)" />
           </div>
-          <DataTable data={wheelData} />
+          <DataTable data={cwData} />
         </section>
       )}
 
-      {/* Worm Evaluation */}
-      {wormData.length > 0 && (
+      {ccwData.length > 0 && (
         <section>
           <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full bg-amber-500 inline-block" />
-            ウォーム評価結果
+            <span className="w-3 h-3 rounded-full bg-purple-500 inline-block" />
+            CCW 評価結果
           </h2>
-          <StatsCards stats={wormStats} />
+          <StatsCards stats={ccwStats} />
           <div className="mt-4">
-            <LineChartSVG data={wormData} color="#f59e0b" title="ウォーム1回転の誤差推移 (arc sec)" />
+            <BarChartSVG data={ccwData} color="#8b5cf6" title="CCW 各位置の誤差 (arc sec)" />
           </div>
-          <DataTable data={wormData} />
+          <DataTable data={ccwData} />
         </section>
       )}
     </div>
@@ -934,22 +944,22 @@ function DataTable({ data }: { data: MeasurementRow[] }) {
    ========================================================= */
 function ReportTab({
   settings,
-  wheelData,
-  wormData,
-  wheelStats,
-  wormStats,
+  cwData,
+  ccwData,
+  cwStats,
+  ccwStats,
 }: {
   settings: XR20Settings;
-  wheelData: MeasurementRow[];
-  wormData: MeasurementRow[];
-  wheelStats: EvaluationStats;
-  wormStats: EvaluationStats;
+  cwData: MeasurementRow[];
+  ccwData: MeasurementRow[];
+  cwStats: EvaluationStats;
+  ccwStats: EvaluationStats;
 }) {
   const handlePrint = () => {
     window.print();
   };
 
-  if (wheelData.length === 0 && wormData.length === 0) {
+  if (cwData.length === 0 && ccwData.length === 0) {
     return (
       <div className="text-center py-16 text-slate-400">
         <FileText className="w-12 h-12 mx-auto mb-3" />
@@ -959,6 +969,13 @@ function ReportTab({
   }
 
   const today = new Date().toLocaleDateString("ja-JP");
+  const axisLabel = settings.axisType === "rotation" ? "回転軸" : "傾斜軸";
+  const rangeInfo = settings.axisType === "rotation" ? "0° ~ 360°" : `${settings.startAngle}° ~ ${settings.endAngle}°`;
+
+  const sections: { label: string; data: MeasurementRow[]; stats: EvaluationStats; bgClass: string; textClass: string; chartColor: string }[] = [
+    { label: `CW 評価結果 (${settings.divisions}等分)`, data: cwData, stats: cwStats, bgClass: "bg-green-50", textClass: "text-green-800", chartColor: "#3b82f6" },
+    { label: `CCW 評価結果 (${settings.divisions}等分)`, data: ccwData, stats: ccwStats, bgClass: "bg-purple-50", textClass: "text-purple-800", chartColor: "#8b5cf6" },
+  ];
 
   return (
     <div className="space-y-4">
@@ -971,8 +988,8 @@ function ReportTab({
       <div className="border border-slate-300 rounded-lg p-8 bg-white print:border-0 print:p-0" id="report">
         {/* Report Header */}
         <div className="text-center border-b-2 border-slate-800 pb-4 mb-6">
-          <h1 className="text-xl font-bold">回転軸 割出し精度 成績書</h1>
-          <p className="text-sm text-slate-500 mt-1">XR20 ウォームホイール評価</p>
+          <h1 className="text-xl font-bold">割出し精度 成績書</h1>
+          <p className="text-sm text-slate-500 mt-1">XR20 {axisLabel}評価 (CW/CCW)</p>
         </div>
 
         {/* Measurement Conditions */}
@@ -984,28 +1001,32 @@ function ReportTab({
               <span className="font-medium">{today}</span>
             </div>
             <div className="flex">
-              <span className="w-40 text-slate-500">機械名:</span>
-              <span className="font-medium">{settings.machineName || "-"}</span>
+              <span className="w-40 text-slate-500">型式:</span>
+              <span className="font-medium">{settings.machineModel || "-"}</span>
+            </div>
+            <div className="flex">
+              <span className="w-40 text-slate-500">機番:</span>
+              <span className="font-medium">{settings.machineSerial || "-"}</span>
             </div>
             <div className="flex">
               <span className="w-40 text-slate-500">NC装置:</span>
               <span className="font-medium">{settings.ncModel || "-"}</span>
             </div>
             <div className="flex">
-              <span className="w-40 text-slate-500">ホイール歯数:</span>
-              <span className="font-medium">{settings.wheelTeeth}</span>
+              <span className="w-40 text-slate-500">軸タイプ:</span>
+              <span className="font-medium">{axisLabel}</span>
             </div>
             <div className="flex">
-              <span className="w-40 text-slate-500">ウォーム条数:</span>
-              <span className="font-medium">{settings.wormLeads}</span>
+              <span className="w-40 text-slate-500">測定範囲:</span>
+              <span className="font-medium">{rangeInfo}</span>
             </div>
             <div className="flex">
-              <span className="w-40 text-slate-500">ホイール等分数:</span>
-              <span className="font-medium">{settings.wheelDivisions}</span>
+              <span className="w-40 text-slate-500">等分数:</span>
+              <span className="font-medium">{settings.divisions}</span>
             </div>
             <div className="flex">
-              <span className="w-40 text-slate-500">ウォーム等分数:</span>
-              <span className="font-medium">{settings.wormDivisions}</span>
+              <span className="w-40 text-slate-500">オーバーラン角度:</span>
+              <span className="font-medium">{settings.overrunAngle}°</span>
             </div>
             <div className="flex">
               <span className="w-40 text-slate-500">測定器:</span>
@@ -1014,39 +1035,22 @@ function ReportTab({
           </div>
         </div>
 
-        {/* Wheel Results */}
-        {wheelData.length > 0 && (
-          <div className="mb-6">
-            <h2 className="text-sm font-bold bg-blue-50 px-3 py-1.5 rounded mb-3 text-blue-800">
-              ホイール評価結果 ({settings.wheelDivisions}等分)
+        {/* CW/CCW Results */}
+        {sections.map((sec) => sec.data.length > 0 && (
+          <div key={sec.label} className="mb-6">
+            <h2 className={`text-sm font-bold ${sec.bgClass} px-3 py-1.5 rounded mb-3 ${sec.textClass}`}>
+              {sec.label}
             </h2>
             <div className="grid grid-cols-5 gap-2 text-sm mb-3">
-              <ReportStat label="最大誤差" value={`${wheelStats.maxError.toFixed(2)} ″`} />
-              <ReportStat label="最小誤差" value={`${wheelStats.minError.toFixed(2)} ″`} />
-              <ReportStat label="平均誤差" value={`${wheelStats.meanError.toFixed(2)} ″`} />
-              <ReportStat label="σ" value={`${wheelStats.sigma.toFixed(2)} ″`} />
-              <ReportStat label="割出し精度" value={`${wheelStats.indexAccuracy.toFixed(2)} ″`} highlight />
+              <ReportStat label="最大誤差" value={`${sec.stats.maxError.toFixed(2)} ″`} />
+              <ReportStat label="最小誤差" value={`${sec.stats.minError.toFixed(2)} ″`} />
+              <ReportStat label="平均誤差" value={`${sec.stats.meanError.toFixed(2)} ″`} />
+              <ReportStat label="σ" value={`${sec.stats.sigma.toFixed(2)} ″`} />
+              <ReportStat label="割出し精度" value={`${sec.stats.indexAccuracy.toFixed(2)} ″`} highlight />
             </div>
-            <BarChartSVG data={wheelData} color="#3b82f6" title="ホイール各位置の誤差 (arc sec)" />
+            <BarChartSVG data={sec.data} color={sec.chartColor} title={`${sec.label} (arc sec)`} />
           </div>
-        )}
-
-        {/* Worm Results */}
-        {wormData.length > 0 && (
-          <div className="mb-6">
-            <h2 className="text-sm font-bold bg-amber-50 px-3 py-1.5 rounded mb-3 text-amber-800">
-              ウォーム評価結果 ({settings.wormDivisions}等分)
-            </h2>
-            <div className="grid grid-cols-5 gap-2 text-sm mb-3">
-              <ReportStat label="最大誤差" value={`${wormStats.maxError.toFixed(2)} ″`} />
-              <ReportStat label="最小誤差" value={`${wormStats.minError.toFixed(2)} ″`} />
-              <ReportStat label="平均誤差" value={`${wormStats.meanError.toFixed(2)} ″`} />
-              <ReportStat label="σ" value={`${wormStats.sigma.toFixed(2)} ″`} />
-              <ReportStat label="割出し精度" value={`${wormStats.indexAccuracy.toFixed(2)} ″`} highlight />
-            </div>
-            <LineChartSVG data={wormData} color="#f59e0b" title="ウォーム1回転の誤差推移 (arc sec)" />
-          </div>
-        )}
+        ))}
 
         {/* Footer */}
         <div className="mt-8 pt-4 border-t border-slate-300 grid grid-cols-3 gap-4 text-sm text-slate-500">

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-XR20 自動トリガー＆ウォームホイール評価ツール
-==============================================
+XR20 自動トリガー＆軸精度評価ツール
+======================================
 Renishaw XR20 回転分割測定器（CARTOソフトウェア）用
-ウォームホイール駆動の回転軸を評価するためのツール
+回転軸・傾斜軸の割出し精度を評価するためのツール
 
 機能:
-  1. 設定管理（ギヤパラメータ・監視パラメータ）
-  2. ターゲットリスト自動生成（ホイール＋ウォーム等分）
-  3. NCプログラム自動生成（FANUC Gコード）
+  1. 設定管理（機械情報・評価パラメータ・監視パラメータ）
+  2. ターゲットリスト自動生成（CW/CCW等分）
+  3. NCプログラム自動生成（FANUC Gコード、オーバーラン付き）
   4. CARTO画面監視＋自動F9送信
   5. 測定データ評価（統計＋グラフ）
   6. 成績書出力（印刷用）
@@ -74,15 +74,15 @@ CONFIG_FILE = "xr20_config.json"
 @dataclass
 class XR20Config:
     # 機械情報
-    machine_name: str = ""
+    machine_model: str = ""
+    machine_serial: str = ""
     nc_model: str = "FANUC"
-    # ギヤパラメータ
-    wheel_teeth: int = 60
-    worm_leads: int = 1
     # 評価パラメータ
-    wheel_divisions: int = 36
-    worm_divisions: int = 10
-    worm_start_position: float = 0.0
+    axis_type: str = "rotation"  # "rotation" (回転軸 360°) or "tilt" (傾斜軸 任意範囲)
+    divisions: int = 36
+    start_angle: float = 0.0
+    end_angle: float = 360.0
+    overrun_angle: float = 10.0
     # 監視パラメータ
     monitor_interval_ms: int = 150
     stability_count: int = 10
@@ -114,7 +114,7 @@ class XR20Config:
 class TargetPoint:
     no: int
     angle: float
-    category: str  # "wheel" or "worm"
+    direction: str = "cw"  # "cw" or "ccw"
     status: str = "pending"  # "pending" or "measured"
 
 
@@ -124,7 +124,7 @@ class MeasurementRow:
     target_angle: float
     measured_angle: float
     error_arcsec: float
-    category: str  # "wheel" or "worm"
+    direction: str = "cw"  # "cw" or "ccw"
 
 
 @dataclass
@@ -145,38 +145,67 @@ class EvalStats:
 def generate_targets(cfg: XR20Config) -> list[TargetPoint]:
     targets = []
     no = 1
-    # ホイール等分
-    wheel_step = 360.0 / cfg.wheel_divisions
-    for i in range(cfg.wheel_divisions):
-        targets.append(TargetPoint(no=no, angle=round(wheel_step * i, 4), category="wheel"))
-        no += 1
-    # ウォーム等分
-    worm_rotation_angle = (360.0 / cfg.wheel_teeth) * cfg.worm_leads
-    worm_step = worm_rotation_angle / cfg.worm_divisions
-    for i in range(cfg.worm_divisions):
-        angle = round(cfg.worm_start_position + worm_step * i, 4)
-        targets.append(TargetPoint(no=no, angle=angle, category="worm"))
-        no += 1
+
+    if cfg.axis_type == "rotation":
+        # 回転軸: 0° → step → ... → (360-step)°
+        step = 360.0 / cfg.divisions
+        # CW
+        for i in range(cfg.divisions):
+            targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="cw"))
+            no += 1
+        # CCW (逆順)
+        for i in range(cfg.divisions - 1, -1, -1):
+            targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="ccw"))
+            no += 1
+    else:
+        # 傾斜軸: start_angle → end_angle を等分
+        total_range = cfg.end_angle - cfg.start_angle
+        step = total_range / cfg.divisions
+        # CW (start → end)
+        for i in range(cfg.divisions + 1):
+            targets.append(TargetPoint(no=no, angle=round(cfg.start_angle + step * i, 4), direction="cw"))
+            no += 1
+        # CCW (end → start)
+        for i in range(cfg.divisions, -1, -1):
+            targets.append(TargetPoint(no=no, angle=round(cfg.start_angle + step * i, 4), direction="ccw"))
+            no += 1
+
     return targets
 
 
 def generate_nc_program(targets: list[TargetPoint], cfg: XR20Config) -> str:
-    lines = ["O1000 (XR20 WORM-WHEEL EVALUATION)", ""]
+    axis_label = "ROTATION" if cfg.axis_type == "rotation" else "TILT"
+    lines = [f"O1000 (XR20 {axis_label} AXIS EVALUATION)", ""]
     p_val = cfg.dwell_time_ms
-    wheel = [t for t in targets if t.category == "wheel"]
-    worm = [t for t in targets if t.category == "worm"]
+    ovr = cfg.overrun_angle
 
-    if wheel:
-        lines.append(f"(WHEEL {cfg.wheel_divisions}-DIVISION)")
+    cw_targets = [t for t in targets if t.direction == "cw"]
+    ccw_targets = [t for t in targets if t.direction == "ccw"]
+
+    # --- CW ---
+    if cw_targets:
+        lines.append(f"(CW {cfg.divisions}-DIVISION)")
+        lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CW)")
+        lines.append("G91")
+        lines.append(f"G00 A-{_fmt_angle(ovr)}")
+        lines.append(f"G00 A{_fmt_angle(ovr)}")
         lines.append("G90")
-        for t in wheel:
+        lines.append("")
+        for t in cw_targets:
             lines.append(f"G00 A{_fmt_angle(t.angle)}")
             lines.append(f"G04 P{p_val}")
         lines.append("")
 
-    if worm:
-        lines.append(f"(WORM {cfg.worm_divisions}-DIVISION)")
-        for t in worm:
+    # --- CCW ---
+    if ccw_targets:
+        lines.append(f"(CCW {cfg.divisions}-DIVISION)")
+        lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CCW)")
+        lines.append("G91")
+        lines.append(f"G00 A{_fmt_angle(ovr)}")
+        lines.append(f"G00 A-{_fmt_angle(ovr)}")
+        lines.append("G90")
+        lines.append("")
+        for t in ccw_targets:
             lines.append(f"G00 A{_fmt_angle(t.angle)}")
             lines.append(f"G04 P{p_val}")
         lines.append("")
@@ -202,7 +231,7 @@ def calc_stats(rows: list[MeasurementRow]) -> EvalStats:
     )
 
 
-def parse_csv_data(text: str, wheel_count: int) -> list[MeasurementRow]:
+def parse_csv_data(text: str, targets: list[TargetPoint]) -> list[MeasurementRow]:
     rows = []
     for i, line in enumerate(text.strip().splitlines()):
         line = line.strip()
@@ -214,8 +243,9 @@ def parse_csv_data(text: str, wheel_count: int) -> list[MeasurementRow]:
                 ta = float(parts[0])
                 ma = float(parts[1])
                 ea = float(parts[2])
-                cat = "wheel" if len(rows) < wheel_count else "worm"
-                rows.append(MeasurementRow(no=len(rows) + 1, target_angle=ta, measured_angle=ma, error_arcsec=ea, category=cat))
+                idx = len(rows)
+                direction = targets[idx].direction if idx < len(targets) else "cw"
+                rows.append(MeasurementRow(no=len(rows) + 1, target_angle=ta, measured_angle=ma, error_arcsec=ea, direction=direction))
             except ValueError:
                 continue
     return rows
@@ -449,7 +479,7 @@ class CartoMonitor:
 class XR20App:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("XR20 自動トリガー＆ウォームホイール評価ツール")
+        self.root.title("XR20 自動トリガー＆軸精度評価ツール")
         self.root.geometry("1100x750")
         self.root.minsize(900, 600)
 
@@ -500,19 +530,31 @@ class XR20App:
 
         # 機械情報
         sec = self._add_section(inner, "機械情報")
-        self._add_entry(sec, "machine_name", "機械名", self.cfg.machine_name)
+        self._add_entry(sec, "machine_model", "型式", self.cfg.machine_model)
+        self._add_entry(sec, "machine_serial", "機番", self.cfg.machine_serial)
         self._add_entry(sec, "nc_model", "NC装置型番", self.cfg.nc_model)
-
-        # ギヤパラメータ
-        sec = self._add_section(inner, "ギヤパラメータ")
-        self._add_entry(sec, "wheel_teeth", "ホイール歯数", str(self.cfg.wheel_teeth))
-        self._add_entry(sec, "worm_leads", "ウォーム条数", str(self.cfg.worm_leads))
 
         # 評価パラメータ
         sec = self._add_section(inner, "評価パラメータ")
-        self._add_entry(sec, "wheel_divisions", "ホイール等分数", str(self.cfg.wheel_divisions))
-        self._add_entry(sec, "worm_divisions", "ウォーム等分数", str(self.cfg.worm_divisions))
-        self._add_entry(sec, "worm_start_position", "ウォーム評価開始位置 (°)", str(self.cfg.worm_start_position))
+
+        # 軸タイプ選択（ラジオボタン）
+        axis_row = ttk.Frame(sec)
+        axis_row.pack(fill="x", pady=2)
+        ttk.Label(axis_row, text="軸タイプ", width=30, anchor="e").pack(side="left", padx=(0, 10))
+        self._axis_type_var = tk.StringVar(value=self.cfg.axis_type)
+        ttk.Radiobutton(axis_row, text="回転軸 (360°)", variable=self._axis_type_var, value="rotation", command=self._on_axis_type_change).pack(side="left", padx=5)
+        ttk.Radiobutton(axis_row, text="傾斜軸 (任意範囲)", variable=self._axis_type_var, value="tilt", command=self._on_axis_type_change).pack(side="left", padx=5)
+
+        self._add_entry(sec, "divisions", "等分数", str(self.cfg.divisions))
+
+        # 傾斜軸用の範囲入力（回転軸では非表示にはしないが、回転軸時は使わない旨表示）
+        self._tilt_frame = ttk.Frame(sec)
+        self._tilt_frame.pack(fill="x")
+        self._add_entry_in(self._tilt_frame, "start_angle", "開始角度 (°)", str(self.cfg.start_angle))
+        self._add_entry_in(self._tilt_frame, "end_angle", "終了角度 (°)", str(self.cfg.end_angle))
+        self._on_axis_type_change()
+
+        self._add_entry(sec, "overrun_angle", "オーバーラン角度 (°)", str(self.cfg.overrun_angle))
 
         # 監視パラメータ
         sec = self._add_section(inner, "監視パラメータ")
@@ -547,16 +589,33 @@ class XR20App:
         ttk.Entry(row, textvariable=var, width=30).pack(side="left")
         self._cfg_vars[key] = var
 
+    def _add_entry_in(self, parent, key, label, default):
+        """指定フレーム内にエントリを追加"""
+        row = ttk.Frame(parent)
+        row.pack(fill="x", pady=2)
+        ttk.Label(row, text=label, width=30, anchor="e").pack(side="left", padx=(0, 10))
+        var = tk.StringVar(value=default)
+        ttk.Entry(row, textvariable=var, width=30).pack(side="left")
+        self._cfg_vars[key] = var
+
+    def _on_axis_type_change(self):
+        """軸タイプ変更時に傾斜軸用フィールドの表示切替"""
+        if self._axis_type_var.get() == "tilt":
+            self._tilt_frame.pack(fill="x")
+        else:
+            self._tilt_frame.pack_forget()
+
     def _apply_config(self):
         """GUIの入力値をcfgに反映"""
         v = self._cfg_vars
-        self.cfg.machine_name = v["machine_name"].get()
+        self.cfg.machine_model = v["machine_model"].get()
+        self.cfg.machine_serial = v["machine_serial"].get()
         self.cfg.nc_model = v["nc_model"].get()
-        self.cfg.wheel_teeth = int(v["wheel_teeth"].get() or 60)
-        self.cfg.worm_leads = int(v["worm_leads"].get() or 1)
-        self.cfg.wheel_divisions = int(v["wheel_divisions"].get() or 36)
-        self.cfg.worm_divisions = int(v["worm_divisions"].get() or 10)
-        self.cfg.worm_start_position = float(v["worm_start_position"].get() or 0)
+        self.cfg.axis_type = self._axis_type_var.get()
+        self.cfg.divisions = int(v["divisions"].get() or 36)
+        self.cfg.start_angle = float(v["start_angle"].get() or 0)
+        self.cfg.end_angle = float(v["end_angle"].get() or 360)
+        self.cfg.overrun_angle = float(v["overrun_angle"].get() or 10.0)
         self.cfg.monitor_interval_ms = int(v["monitor_interval_ms"].get() or 150)
         self.cfg.stability_count = int(v["stability_count"].get() or 10)
         self.cfg.stability_threshold = float(v["stability_threshold"].get() or 0.001)
@@ -604,15 +663,15 @@ class XR20App:
         self._targets_info_label.pack(side="left")
 
         # Treeview
-        cols = ("no", "angle", "category", "status")
+        cols = ("no", "angle", "direction", "status")
         self._targets_tree = ttk.Treeview(frame, columns=cols, show="headings", height=25)
         self._targets_tree.heading("no", text="No.")
         self._targets_tree.heading("angle", text="ターゲット角度 (°)")
-        self._targets_tree.heading("category", text="区分")
+        self._targets_tree.heading("direction", text="方向")
         self._targets_tree.heading("status", text="ステータス")
         self._targets_tree.column("no", width=60, anchor="center")
-        self._targets_tree.column("angle", width=200, anchor="center")
-        self._targets_tree.column("category", width=150, anchor="center")
+        self._targets_tree.column("angle", width=220, anchor="center")
+        self._targets_tree.column("direction", width=100, anchor="center")
         self._targets_tree.column("status", width=150, anchor="center")
 
         sb = ttk.Scrollbar(frame, orient="vertical", command=self._targets_tree.yview)
@@ -623,13 +682,16 @@ class XR20App:
     def _refresh_targets_tab(self):
         tree = self._targets_tree
         tree.delete(*tree.get_children())
-        wc = sum(1 for t in self.targets if t.category == "wheel")
-        wmc = sum(1 for t in self.targets if t.category == "worm")
-        self._targets_info_label.config(text=f"合計 {len(self.targets)} 点  (ホイール: {wc},  ウォーム: {wmc})")
+        cw_count = sum(1 for t in self.targets if t.direction == "cw")
+        ccw_count = sum(1 for t in self.targets if t.direction == "ccw")
+        axis_label = "回転軸" if self.cfg.axis_type == "rotation" else "傾斜軸"
+        self._targets_info_label.config(
+            text=f"合計 {len(self.targets)} 点  ({axis_label}  CW: {cw_count}, CCW: {ccw_count})"
+        )
         for t in self.targets:
-            cat = "ホイール" if t.category == "wheel" else "ウォーム"
+            d = "CW" if t.direction == "cw" else "CCW"
             st = "測定済" if t.status == "measured" else "未測定"
-            tree.insert("", "end", values=(t.no, f"{t.angle:.4f}", cat, st))
+            tree.insert("", "end", values=(t.no, f"{t.angle:.4f}", d, st))
 
     # -------------------------------------------------------
     # タブ3: 測定制御
@@ -774,16 +836,17 @@ class XR20App:
             self._refresh_targets_tab()
 
         text = self._data_text.get("1.0", "end")
-        wheel_count = sum(1 for t in self.targets if t.category == "wheel")
-        self.measurements = parse_csv_data(text, wheel_count)
+        self.measurements = parse_csv_data(text, self.targets)
 
         if not self.measurements:
             messagebox.showwarning("データなし", "有効なデータが見つかりませんでした。形式を確認してください。")
             return
 
-        wc = sum(1 for m in self.measurements if m.category == "wheel")
-        wmc = sum(1 for m in self.measurements if m.category == "worm")
-        self._data_info_label.config(text=f"解析完了: {len(self.measurements)} 点 (ホイール: {wc}, ウォーム: {wmc})")
+        cw_count = sum(1 for m in self.measurements if m.direction == "cw")
+        ccw_count = sum(1 for m in self.measurements if m.direction == "ccw")
+        self._data_info_label.config(
+            text=f"解析完了: {len(self.measurements)} 点 (CW: {cw_count}, CCW: {ccw_count})"
+        )
 
         self._refresh_results_tab()
         self._refresh_report_tab()
@@ -803,10 +866,11 @@ class XR20App:
         for w in self._results_frame.winfo_children():
             w.destroy()
 
-        wheel = [m for m in self.measurements if m.category == "wheel"]
-        worm = [m for m in self.measurements if m.category == "worm"]
-        self._wheel_stats = calc_stats(wheel)
-        self._worm_stats = calc_stats(worm)
+        cw_data = [m for m in self.measurements if m.direction == "cw"]
+        ccw_data = [m for m in self.measurements if m.direction == "ccw"]
+
+        self._cw_stats = calc_stats(cw_data)
+        self._ccw_stats = calc_stats(ccw_data)
 
         if not HAS_MATPLOTLIB:
             ttk.Label(self._results_frame, text="※ matplotlib未インストール: pip install matplotlib でグラフ表示可能", foreground="orange").pack(pady=5)
@@ -820,10 +884,10 @@ class XR20App:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        if wheel:
-            self._add_eval_section(inner, "ホイール評価結果", wheel, self._wheel_stats, chart_type="bar")
-        if worm:
-            self._add_eval_section(inner, "ウォーム評価結果", worm, self._worm_stats, chart_type="line")
+        if cw_data:
+            self._add_eval_section(inner, "CW 評価結果", cw_data, self._cw_stats, chart_type="bar")
+        if ccw_data:
+            self._add_eval_section(inner, "CCW 評価結果", ccw_data, self._ccw_stats, chart_type="bar")
 
     def _add_eval_section(self, parent, title, data, stats, chart_type="bar"):
         lf = ttk.LabelFrame(parent, text=f"  {title}  ", padding=10)
@@ -917,59 +981,50 @@ class XR20App:
 
     def _generate_report_text(self) -> str:
         today = datetime.now().strftime("%Y年%m月%d日")
-        wheel = [m for m in self.measurements if m.category == "wheel"]
-        worm = [m for m in self.measurements if m.category == "worm"]
-        ws = calc_stats(wheel)
-        wms = calc_stats(worm)
+        cw_data = [m for m in self.measurements if m.direction == "cw"]
+        ccw_data = [m for m in self.measurements if m.direction == "ccw"]
+
+        axis_label = "回転軸" if self.cfg.axis_type == "rotation" else "傾斜軸"
+        range_info = "0° ～ 360°" if self.cfg.axis_type == "rotation" else f"{self.cfg.start_angle}° ～ {self.cfg.end_angle}°"
 
         lines = []
         lines.append("=" * 60)
-        lines.append("        回転軸 割出し精度 成績書")
-        lines.append("        XR20 ウォームホイール評価")
+        lines.append("        割出し精度 成績書")
+        lines.append(f"        XR20 {axis_label}評価")
         lines.append("=" * 60)
         lines.append("")
         lines.append("【測定条件】")
-        lines.append(f"  測定日:         {today}")
-        lines.append(f"  機械名:         {self.cfg.machine_name or '-'}")
-        lines.append(f"  NC装置:         {self.cfg.nc_model or '-'}")
-        lines.append(f"  ホイール歯数:   {self.cfg.wheel_teeth}")
-        lines.append(f"  ウォーム条数:   {self.cfg.worm_leads}")
-        lines.append(f"  ホイール等分数: {self.cfg.wheel_divisions}")
-        lines.append(f"  ウォーム等分数: {self.cfg.worm_divisions}")
-        lines.append(f"  測定器:         Renishaw XR20 + XL-80")
+        lines.append(f"  測定日:           {today}")
+        lines.append(f"  型式:             {self.cfg.machine_model or '-'}")
+        lines.append(f"  機番:             {self.cfg.machine_serial or '-'}")
+        lines.append(f"  NC装置:           {self.cfg.nc_model or '-'}")
+        lines.append(f"  軸タイプ:         {axis_label}")
+        lines.append(f"  測定範囲:         {range_info}")
+        lines.append(f"  等分数:           {self.cfg.divisions}")
+        lines.append(f"  オーバーラン角度: {self.cfg.overrun_angle}°")
+        lines.append(f"  測定器:           Renishaw XR20 + XL-80")
         lines.append("")
 
-        if wheel:
+        for label, data in [
+            (f"CW 評価結果 ({self.cfg.divisions}等分)", cw_data),
+            (f"CCW 評価結果 ({self.cfg.divisions}等分)", ccw_data),
+        ]:
+            if not data:
+                continue
+            stats = calc_stats(data)
             lines.append("-" * 60)
-            lines.append(f"【ホイール評価結果】 ({self.cfg.wheel_divisions}等分)")
+            lines.append(f"【{label}】")
             lines.append("-" * 60)
-            lines.append(f"  測定点数:   {ws.count}")
-            lines.append(f"  最大誤差:   {ws.max_error:+.2f} arc sec")
-            lines.append(f"  最小誤差:   {ws.min_error:+.2f} arc sec")
-            lines.append(f"  平均誤差:   {ws.mean_error:+.2f} arc sec")
-            lines.append(f"  標準偏差σ:  {ws.sigma:.2f} arc sec")
-            lines.append(f"  割出し精度: {ws.index_accuracy:.2f} arc sec (Max-Min)")
+            lines.append(f"  測定点数:   {stats.count}")
+            lines.append(f"  最大誤差:   {stats.max_error:+.2f} arc sec")
+            lines.append(f"  最小誤差:   {stats.min_error:+.2f} arc sec")
+            lines.append(f"  平均誤差:   {stats.mean_error:+.2f} arc sec")
+            lines.append(f"  標準偏差σ:  {stats.sigma:.2f} arc sec")
+            lines.append(f"  割出し精度: {stats.index_accuracy:.2f} arc sec (Max-Min)")
             lines.append("")
             lines.append(f"  {'No.':>4}  {'ターゲット(°)':>14}  {'測定値(°)':>14}  {'誤差(″)':>10}")
             lines.append("  " + "-" * 48)
-            for i, d in enumerate(wheel):
-                lines.append(f"  {i+1:4d}  {d.target_angle:14.4f}  {d.measured_angle:14.4f}  {d.error_arcsec:+10.2f}")
-            lines.append("")
-
-        if worm:
-            lines.append("-" * 60)
-            lines.append(f"【ウォーム評価結果】 ({self.cfg.worm_divisions}等分)")
-            lines.append("-" * 60)
-            lines.append(f"  測定点数:   {wms.count}")
-            lines.append(f"  最大誤差:   {wms.max_error:+.2f} arc sec")
-            lines.append(f"  最小誤差:   {wms.min_error:+.2f} arc sec")
-            lines.append(f"  平均誤差:   {wms.mean_error:+.2f} arc sec")
-            lines.append(f"  標準偏差σ:  {wms.sigma:.2f} arc sec")
-            lines.append(f"  割出し精度: {wms.index_accuracy:.2f} arc sec (Max-Min)")
-            lines.append("")
-            lines.append(f"  {'No.':>4}  {'ターゲット(°)':>14}  {'測定値(°)':>14}  {'誤差(″)':>10}")
-            lines.append("  " + "-" * 48)
-            for i, d in enumerate(worm):
+            for i, d in enumerate(data):
                 lines.append(f"  {i+1:4d}  {d.target_angle:14.4f}  {d.measured_angle:14.4f}  {d.error_arcsec:+10.2f}")
             lines.append("")
 
@@ -1003,18 +1058,23 @@ class XR20App:
         if not path:
             return
 
-        wheel = [m for m in self.measurements if m.category == "wheel"]
-        worm = [m for m in self.measurements if m.category == "worm"]
-        ws = calc_stats(wheel)
-        wms = calc_stats(worm)
+        cw_data = [m for m in self.measurements if m.direction == "cw"]
+        ccw_data = [m for m in self.measurements if m.direction == "ccw"]
         today = datetime.now().strftime("%Y年%m月%d日")
+
+        sections = []
+        if cw_data:
+            sections.append((f"CW ({self.cfg.divisions}div)", cw_data, "bar"))
+        if ccw_data:
+            sections.append((f"CCW ({self.cfg.divisions}div)", ccw_data, "bar"))
 
         with PdfPages(path) as pdf:
             fig = Figure(figsize=(8.27, 11.69), dpi=100)  # A4
 
             # タイトル
-            fig.text(0.5, 0.95, "回転軸 割出し精度 成績書", ha="center", fontsize=16, fontweight="bold")
-            fig.text(0.5, 0.93, "XR20 ウォームホイール評価", ha="center", fontsize=10, color="gray")
+            axis_label = "回転軸" if self.cfg.axis_type == "rotation" else "傾斜軸"
+            fig.text(0.5, 0.95, "割出し精度 成績書", ha="center", fontsize=16, fontweight="bold")
+            fig.text(0.5, 0.93, f"XR20 {axis_label}評価 (CW/CCW)", ha="center", fontsize=10, color="gray")
 
             # 測定条件
             y = 0.89
@@ -1022,33 +1082,37 @@ class XR20App:
             y -= 0.02
             for label, val in [
                 ("測定日", today),
-                ("機械名", self.cfg.machine_name or "-"),
-                ("ホイール歯数", str(self.cfg.wheel_teeth)),
-                ("ウォーム条数", str(self.cfg.worm_leads)),
+                ("型式", self.cfg.machine_model or "-"),
+                ("機番", self.cfg.machine_serial or "-"),
+                ("等分数", str(self.cfg.divisions)),
+                ("オーバーラン", f"{self.cfg.overrun_angle}°"),
             ]:
                 fig.text(0.10, y, f"{label}: {val}", fontsize=8)
                 y -= 0.015
 
-            # ホイールグラフ
-            if wheel:
-                ax1 = fig.add_axes([0.10, 0.48, 0.82, 0.28])
-                errors = [d.error_arcsec for d in wheel]
-                colors = ["#3b82f6" if e >= 0 else "#60a5fa" for e in errors]
-                ax1.bar(range(len(errors)), errors, color=colors, width=0.7)
-                ax1.axhline(y=0, color="#94a3b8", linewidth=0.8)
-                ax1.set_title(f"ホイール評価 ({self.cfg.wheel_divisions}等分)  割出し精度: {ws.index_accuracy:.2f}″", fontsize=9)
-                ax1.set_ylabel("arc sec", fontsize=8)
-                ax1.grid(True, alpha=0.3)
+            # グラフ配置（最大4セクション）
+            n = len(sections)
+            if n > 0:
+                h = min(0.18, 0.72 / n)
+                gap = 0.02
+                start_y = 0.78 - (n * (h + gap))
+                for i, (title, data, chart_type) in enumerate(sections):
+                    stats = calc_stats(data)
+                    ax_y = start_y + (n - 1 - i) * (h + gap)
+                    ax = fig.add_axes([0.10, ax_y, 0.82, h])
+                    errors = [d.error_arcsec for d in data]
 
-            # ウォームグラフ
-            if worm:
-                ax2 = fig.add_axes([0.10, 0.12, 0.82, 0.28])
-                errors = [d.error_arcsec for d in worm]
-                ax2.plot(range(len(errors)), errors, "o-", color="#f59e0b", markersize=4, linewidth=1.5)
-                ax2.axhline(y=0, color="#94a3b8", linewidth=0.8)
-                ax2.set_title(f"ウォーム評価 ({self.cfg.worm_divisions}等分)  割出し精度: {wms.index_accuracy:.2f}″", fontsize=9)
-                ax2.set_ylabel("arc sec", fontsize=8)
-                ax2.grid(True, alpha=0.3)
+                    if chart_type == "bar":
+                        colors = ["#3b82f6" if e >= 0 else "#60a5fa" for e in errors]
+                        ax.bar(range(len(errors)), errors, color=colors, width=0.7)
+                    else:
+                        ax.plot(range(len(errors)), errors, "o-", color="#f59e0b", markersize=3, linewidth=1.2)
+
+                    ax.axhline(y=0, color="#94a3b8", linewidth=0.8)
+                    ax.set_title(f"{title}  Index: {stats.index_accuracy:.2f}\"", fontsize=8)
+                    ax.set_ylabel("arc sec", fontsize=7)
+                    ax.grid(True, alpha=0.3)
+                    ax.tick_params(labelsize=6)
 
             pdf.savefig(fig)
 

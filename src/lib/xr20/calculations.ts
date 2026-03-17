@@ -4,28 +4,53 @@ export function generateTargetList(settings: XR20Settings): TargetPoint[] {
   const targets: TargetPoint[] = [];
   let no = 1;
 
-  // Wheel division targets
-  const wheelStep = 360 / settings.wheelDivisions;
-  for (let i = 0; i < settings.wheelDivisions; i++) {
-    targets.push({
-      no: no++,
-      angle: roundAngle(wheelStep * i),
-      category: "wheel",
-      status: "pending",
-    });
-  }
+  if (settings.axisType === "rotation") {
+    // 回転軸: 0° → step → ... → (360-step)°
+    const step = 360 / settings.divisions;
 
-  // Worm division targets
-  const wormOneRotationAngle =
-    (360 / settings.wheelTeeth) * settings.wormLeads;
-  const wormStep = wormOneRotationAngle / settings.wormDivisions;
-  for (let i = 0; i < settings.wormDivisions; i++) {
-    targets.push({
-      no: no++,
-      angle: roundAngle(settings.wormStartPosition + wormStep * i),
-      category: "worm",
-      status: "pending",
-    });
+    // CW
+    for (let i = 0; i < settings.divisions; i++) {
+      targets.push({
+        no: no++,
+        angle: roundAngle(step * i),
+        direction: "cw",
+        status: "pending",
+      });
+    }
+
+    // CCW (逆順)
+    for (let i = settings.divisions - 1; i >= 0; i--) {
+      targets.push({
+        no: no++,
+        angle: roundAngle(step * i),
+        direction: "ccw",
+        status: "pending",
+      });
+    }
+  } else {
+    // 傾斜軸: startAngle → endAngle を等分
+    const totalRange = settings.endAngle - settings.startAngle;
+    const step = totalRange / settings.divisions;
+
+    // CW (start → end)
+    for (let i = 0; i <= settings.divisions; i++) {
+      targets.push({
+        no: no++,
+        angle: roundAngle(settings.startAngle + step * i),
+        direction: "cw",
+        status: "pending",
+      });
+    }
+
+    // CCW (end → start)
+    for (let i = settings.divisions; i >= 0; i--) {
+      targets.push({
+        no: no++,
+        angle: roundAngle(settings.startAngle + step * i),
+        direction: "ccw",
+        status: "pending",
+      });
+    }
   }
 
   return targets;
@@ -36,29 +61,42 @@ export function generateNCProgram(
   settings: XR20Settings
 ): string {
   const lines: string[] = [];
-  const dwellSec = settings.dwellTimeMs / 1000;
   const pValue = Math.round(settings.dwellTimeMs);
+  const ovr = settings.overrunAngle;
+  const axisLabel = settings.axisType === "rotation" ? "ROTATION" : "TILT";
 
-  lines.push("O1000 (XR20 WORM-WHEEL EVALUATION)");
+  lines.push(`O1000 (XR20 ${axisLabel} AXIS EVALUATION)`);
   lines.push("");
 
-  // Wheel section
-  const wheelTargets = targets.filter((t) => t.category === "wheel");
-  const wormTargets = targets.filter((t) => t.category === "worm");
+  const cwTargets = targets.filter((t) => t.direction === "cw");
+  const ccwTargets = targets.filter((t) => t.direction === "ccw");
 
-  if (wheelTargets.length > 0) {
-    lines.push(`(WHEEL ${settings.wheelDivisions}-DIVISION)`);
+  // --- CW ---
+  if (cwTargets.length > 0) {
+    lines.push(`(CW ${settings.divisions}-DIVISION)`);
+    lines.push("(OVERRUN: BACKLASH ELIMINATION FOR CW)");
+    lines.push("G91");
+    lines.push(`G00 A-${formatAngle(ovr)}`);
+    lines.push(`G00 A${formatAngle(ovr)}`);
     lines.push("G90");
-    for (const t of wheelTargets) {
+    lines.push("");
+    for (const t of cwTargets) {
       lines.push(`G00 A${formatAngle(t.angle)}`);
       lines.push(`G04 P${pValue}`);
     }
     lines.push("");
   }
 
-  if (wormTargets.length > 0) {
-    lines.push(`(WORM ${settings.wormDivisions}-DIVISION)`);
-    for (const t of wormTargets) {
+  // --- CCW ---
+  if (ccwTargets.length > 0) {
+    lines.push(`(CCW ${settings.divisions}-DIVISION)`);
+    lines.push("(OVERRUN: BACKLASH ELIMINATION FOR CCW)");
+    lines.push("G91");
+    lines.push(`G00 A${formatAngle(ovr)}`);
+    lines.push(`G00 A-${formatAngle(ovr)}`);
+    lines.push("G90");
+    lines.push("");
+    for (const t of ccwTargets) {
       lines.push(`G00 A${formatAngle(t.angle)}`);
       lines.push(`G04 P${pValue}`);
     }
@@ -99,17 +137,6 @@ export function calculateStats(rows: MeasurementRow[]): EvaluationStats {
   };
 }
 
-export function separateData(
-  data: MeasurementRow[],
-  targets: TargetPoint[]
-): { wheel: MeasurementRow[]; worm: MeasurementRow[] } {
-  const wheelCount = targets.filter((t) => t.category === "wheel").length;
-  return {
-    wheel: data.slice(0, wheelCount).map((r) => ({ ...r, category: "wheel" as const })),
-    worm: data.slice(wheelCount).map((r) => ({ ...r, category: "worm" as const })),
-  };
-}
-
 export function parseCSVData(csv: string, targets: TargetPoint[]): MeasurementRow[] {
   const lines = csv
     .trim()
@@ -117,7 +144,6 @@ export function parseCSVData(csv: string, targets: TargetPoint[]): MeasurementRo
     .filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("//"));
 
   const rows: MeasurementRow[] = [];
-  const wheelCount = targets.filter((t) => t.category === "wheel").length;
 
   for (let i = 0; i < lines.length; i++) {
     const parts = lines[i].split(/[,\t]+/).map((s) => s.trim());
@@ -126,12 +152,14 @@ export function parseCSVData(csv: string, targets: TargetPoint[]): MeasurementRo
       const measuredAngle = parseFloat(parts[1]);
       const errorArcSec = parseFloat(parts[2]);
       if (!isNaN(targetAngle) && !isNaN(measuredAngle) && !isNaN(errorArcSec)) {
+        const idx = rows.length;
+        const direction = idx < targets.length ? targets[idx].direction : "cw";
         rows.push({
           no: i + 1,
           targetAngle,
           measuredAngle,
           errorArcSec,
-          category: i < wheelCount ? "wheel" : "worm",
+          direction,
         });
       }
     }
