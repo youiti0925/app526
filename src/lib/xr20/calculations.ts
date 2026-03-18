@@ -34,6 +34,14 @@ export function generateTargetList(settings: XR20Settings): TargetPoint[] {
   return targets;
 }
 
+function buildMoveCmd(axis: string, angle: number, mode: "rapid" | "feed", feedRate: number): string {
+  if (mode === "rapid") {
+    return `G00 ${axis}${formatAngle(angle)}`;
+  } else {
+    return `G01 ${axis}${formatAngle(angle)} F${feedRate}`;
+  }
+}
+
 export function generateNCProgram(
   targets: TargetPoint[],
   settings: XR20Settings
@@ -42,8 +50,11 @@ export function generateNCProgram(
   const pValue = Math.round(settings.dwellTimeMs);
   const ovr = settings.overrunAngle;
   const axisLabel = settings.axisType === "rotation" ? "ROTATION" : "TILT";
+  const ax = settings.controlAxis || "A";
+  const clamp = settings.useClamp;
 
-  lines.push(`O1000 (XR20 ${axisLabel} AXIS EVALUATION)`);
+  lines.push(`O1000 (XR20 ${axisLabel} AXIS[${ax}] EVALUATION)`);
+  if (clamp) lines.push(`(CLAMP: M10=CLAMP M11=UNCLAMP)`);
   lines.push("");
 
   const cwTargets = targets.filter((t) => t.direction === "cw");
@@ -54,12 +65,14 @@ export function generateNCProgram(
     lines.push(`(CW ${settings.divisions}-DIVISION)`);
     lines.push("(OVERRUN: BACKLASH ELIMINATION FOR CW)");
     lines.push("G91");
-    lines.push(`G00 A-${formatAngle(ovr)}`);
-    lines.push(`G00 A${formatAngle(ovr)}`);
+    lines.push(`G00 ${ax}-${formatAngle(ovr)}`);
+    lines.push(`G00 ${ax}${formatAngle(ovr)}`);
     lines.push("G90");
     lines.push("");
     for (const t of cwTargets) {
-      lines.push(`G00 A${formatAngle(t.angle)}`);
+      if (clamp) lines.push("M11");
+      lines.push(buildMoveCmd(ax, t.angle, settings.feedMode, settings.feedRate));
+      if (clamp) lines.push("M10");
       lines.push(`G04 P${pValue}`);
     }
     lines.push("");
@@ -70,12 +83,14 @@ export function generateNCProgram(
     lines.push(`(CCW ${settings.divisions}-DIVISION)`);
     lines.push("(OVERRUN: BACKLASH ELIMINATION FOR CCW)");
     lines.push("G91");
-    lines.push(`G00 A${formatAngle(ovr)}`);
-    lines.push(`G00 A-${formatAngle(ovr)}`);
+    lines.push(`G00 ${ax}${formatAngle(ovr)}`);
+    lines.push(`G00 ${ax}-${formatAngle(ovr)}`);
     lines.push("G90");
     lines.push("");
     for (const t of ccwTargets) {
-      lines.push(`G00 A${formatAngle(t.angle)}`);
+      if (clamp) lines.push("M11");
+      lines.push(buildMoveCmd(ax, t.angle, settings.feedMode, settings.feedRate));
+      if (clamp) lines.push("M10");
       lines.push(`G04 P${pValue}`);
     }
     lines.push("");
@@ -113,8 +128,11 @@ export function generateCombinedNCProgram(
   const pValue = Math.round(settings.dwellTimeMs);
   const ovr = settings.overrunAngle;
   const axisLabel = settings.axisType === "rotation" ? "ROTATION" : "TILT";
+  const ax = settings.controlAxis || "A";
+  const clamp = settings.useClamp;
 
-  lines.push(`O3000 (XR20 ${axisLabel} COMBINED: INDEX + REPEAT)`);
+  lines.push(`O3000 (XR20 ${axisLabel} AXIS[${ax}] COMBINED: INDEX + REPEAT)`);
+  if (clamp) lines.push(`(CLAMP: M10=CLAMP M11=UNCLAMP)`);
   lines.push("");
 
   // 割出し精度パート
@@ -129,12 +147,14 @@ export function generateCombinedNCProgram(
     lines.push(`(INDEX CW ${settings.divisions}-DIVISION)`);
     lines.push("(OVERRUN: BACKLASH ELIMINATION FOR CW)");
     lines.push("G91");
-    lines.push(`G00 A-${formatAngle(ovr)}`);
-    lines.push(`G00 A${formatAngle(ovr)}`);
+    lines.push(`G00 ${ax}-${formatAngle(ovr)}`);
+    lines.push(`G00 ${ax}${formatAngle(ovr)}`);
     lines.push("G90");
     lines.push("");
     for (const t of indexCW) {
-      lines.push(`G00 A${formatAngle(t.angle)}`);
+      if (clamp) lines.push("M11");
+      lines.push(buildMoveCmd(ax, t.angle, settings.feedMode, settings.feedRate));
+      if (clamp) lines.push("M10");
       lines.push(`G04 P${pValue}`);
     }
     lines.push("");
@@ -144,12 +164,14 @@ export function generateCombinedNCProgram(
     lines.push(`(INDEX CCW ${settings.divisions}-DIVISION)`);
     lines.push("(OVERRUN: BACKLASH ELIMINATION FOR CCW)");
     lines.push("G91");
-    lines.push(`G00 A${formatAngle(ovr)}`);
-    lines.push(`G00 A-${formatAngle(ovr)}`);
+    lines.push(`G00 ${ax}${formatAngle(ovr)}`);
+    lines.push(`G00 ${ax}-${formatAngle(ovr)}`);
     lines.push("G90");
     lines.push("");
     for (const t of indexCCW) {
-      lines.push(`G00 A${formatAngle(t.angle)}`);
+      if (clamp) lines.push("M11");
+      lines.push(buildMoveCmd(ax, t.angle, settings.feedMode, settings.feedRate));
+      if (clamp) lines.push("M10");
       lines.push(`G04 P${pValue}`);
     }
     lines.push("");
@@ -177,9 +199,11 @@ export function generateCombinedNCProgram(
         for (const t of posCW) {
           lines.push(`(CW TRIAL ${t.trial})`);
           lines.push("G91");
-          lines.push(`G00 A-${formatAngle(ovr)}`);
+          lines.push(`G00 ${ax}-${formatAngle(ovr)}`);
           lines.push("G90");
-          lines.push(`G00 A${formatAngle(pos)}`);
+          if (clamp) lines.push("M11");
+          lines.push(buildMoveCmd(ax, pos, settings.feedMode, settings.feedRate));
+          if (clamp) lines.push("M10");
           lines.push(`G04 P${pValue}`);
         }
         lines.push("");
@@ -190,9 +214,11 @@ export function generateCombinedNCProgram(
         for (const t of posCCW) {
           lines.push(`(CCW TRIAL ${t.trial})`);
           lines.push("G91");
-          lines.push(`G00 A${formatAngle(ovr)}`);
+          lines.push(`G00 ${ax}${formatAngle(ovr)}`);
           lines.push("G90");
-          lines.push(`G00 A${formatAngle(pos)}`);
+          if (clamp) lines.push("M11");
+          lines.push(buildMoveCmd(ax, pos, settings.feedMode, settings.feedRate));
+          if (clamp) lines.push("M10");
           lines.push(`G04 P${pValue}`);
         }
         lines.push("");
@@ -309,8 +335,11 @@ export function generateRepeatNCProgram(settings: XR20Settings): string {
   const lines: string[] = [];
   const pValue = Math.round(settings.dwellTimeMs);
   const ovr = settings.overrunAngle;
+  const ax = settings.controlAxis || "A";
+  const clamp = settings.useClamp;
 
-  lines.push("O2000 (XR20 REPEATABILITY EVALUATION)");
+  lines.push(`O2000 (XR20 AXIS[${ax}] REPEATABILITY EVALUATION)`);
+  if (clamp) lines.push(`(CLAMP: M10=CLAMP M11=UNCLAMP)`);
   lines.push("");
 
   for (const pos of positions) {
@@ -318,9 +347,11 @@ export function generateRepeatNCProgram(settings: XR20Settings): string {
     for (let trial = 1; trial <= settings.repeatCount; trial++) {
       lines.push(`(CW TRIAL ${trial})`);
       lines.push("G91");
-      lines.push(`G00 A-${formatAngle(ovr)}`);
+      lines.push(`G00 ${ax}-${formatAngle(ovr)}`);
       lines.push("G90");
-      lines.push(`G00 A${formatAngle(pos)}`);
+      if (clamp) lines.push("M11");
+      lines.push(buildMoveCmd(ax, pos, settings.feedMode, settings.feedRate));
+      if (clamp) lines.push("M10");
       lines.push(`G04 P${pValue}`);
     }
     lines.push("");
@@ -329,9 +360,11 @@ export function generateRepeatNCProgram(settings: XR20Settings): string {
     for (let trial = 1; trial <= settings.repeatCount; trial++) {
       lines.push(`(CCW TRIAL ${trial})`);
       lines.push("G91");
-      lines.push(`G00 A${formatAngle(ovr)}`);
+      lines.push(`G00 ${ax}${formatAngle(ovr)}`);
       lines.push("G90");
-      lines.push(`G00 A${formatAngle(pos)}`);
+      if (clamp) lines.push("M11");
+      lines.push(buildMoveCmd(ax, pos, settings.feedMode, settings.feedRate));
+      if (clamp) lines.push("M10");
       lines.push(`G04 P${pValue}`);
     }
     lines.push("");

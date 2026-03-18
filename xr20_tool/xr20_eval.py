@@ -96,6 +96,10 @@ class XR20Config:
     carto_window_title: str = "CARTO"
     # NC
     dwell_time_ms: int = 5000
+    control_axis: str = "A"          # 制御軸 例: A, B, C
+    feed_mode: str = "rapid"         # "rapid"=G00 or "feed"=G01
+    feed_rate: int = 1000            # 送り速度 (deg/min or mm/min) G01時
+    use_clamp: bool = False          # クランプ M10/M11
 
     def save(self):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -229,9 +233,15 @@ def generate_combined_targets(cfg: XR20Config) -> list[TargetPoint]:
 def generate_combined_nc_program(targets: list[TargetPoint], cfg: XR20Config) -> str:
     """割出し精度 + 再現性の連続NCプログラム"""
     axis_label = "ROTATION" if cfg.axis_type == "rotation" else "TILT"
-    lines = [f"O3000 (XR20 {axis_label} COMBINED: INDEX + REPEAT)", ""]
+    ax = cfg.control_axis or "A"
     p_val = cfg.dwell_time_ms
     ovr = cfg.overrun_angle
+    clamp = cfg.use_clamp
+
+    lines = [f"O3000 (XR20 {axis_label} AXIS[{ax}] COMBINED: INDEX + REPEAT)"]
+    if clamp:
+        lines.append("(CLAMP: M10=CLAMP M11=UNCLAMP)")
+    lines.append("")
 
     # --- 割出し精度パート ---
     index_targets = [t for t in targets if t.phase == "index"]
@@ -245,12 +255,16 @@ def generate_combined_nc_program(targets: list[TargetPoint], cfg: XR20Config) ->
         lines.append(f"(INDEX CW {cfg.divisions}-DIVISION)")
         lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CW)")
         lines.append("G91")
-        lines.append(f"G00 A-{_fmt_angle(ovr)}")
-        lines.append(f"G00 A{_fmt_angle(ovr)}")
+        lines.append(f"G00 {ax}-{_fmt_angle(ovr)}")
+        lines.append(f"G00 {ax}{_fmt_angle(ovr)}")
         lines.append("G90")
         lines.append("")
         for t in index_cw:
-            lines.append(f"G00 A{_fmt_angle(t.angle)}")
+            if clamp:
+                lines.append("M11")
+            lines.append(_build_move_cmd(ax, t.angle, cfg.feed_mode, cfg.feed_rate))
+            if clamp:
+                lines.append("M10")
             lines.append(f"G04 P{p_val}")
         lines.append("")
 
@@ -258,12 +272,16 @@ def generate_combined_nc_program(targets: list[TargetPoint], cfg: XR20Config) ->
         lines.append(f"(INDEX CCW {cfg.divisions}-DIVISION)")
         lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CCW)")
         lines.append("G91")
-        lines.append(f"G00 A{_fmt_angle(ovr)}")
-        lines.append(f"G00 A-{_fmt_angle(ovr)}")
+        lines.append(f"G00 {ax}{_fmt_angle(ovr)}")
+        lines.append(f"G00 {ax}-{_fmt_angle(ovr)}")
         lines.append("G90")
         lines.append("")
         for t in index_ccw:
-            lines.append(f"G00 A{_fmt_angle(t.angle)}")
+            if clamp:
+                lines.append("M11")
+            lines.append(_build_move_cmd(ax, t.angle, cfg.feed_mode, cfg.feed_rate))
+            if clamp:
+                lines.append("M10")
             lines.append(f"G04 P{p_val}")
         lines.append("")
 
@@ -283,9 +301,13 @@ def generate_combined_nc_program(targets: list[TargetPoint], cfg: XR20Config) ->
                 for t in pos_cw:
                     lines.append(f"(CW TRIAL {t.trial})")
                     lines.append("G91")
-                    lines.append(f"G00 A-{_fmt_angle(ovr)}")
+                    lines.append(f"G00 {ax}-{_fmt_angle(ovr)}")
                     lines.append("G90")
-                    lines.append(f"G00 A{_fmt_angle(t.angle)}")
+                    if clamp:
+                        lines.append("M11")
+                    lines.append(_build_move_cmd(ax, t.angle, cfg.feed_mode, cfg.feed_rate))
+                    if clamp:
+                        lines.append("M10")
                     lines.append(f"G04 P{p_val}")
                 lines.append("")
 
@@ -294,9 +316,13 @@ def generate_combined_nc_program(targets: list[TargetPoint], cfg: XR20Config) ->
                 for t in pos_ccw:
                     lines.append(f"(CCW TRIAL {t.trial})")
                     lines.append("G91")
-                    lines.append(f"G00 A{_fmt_angle(ovr)}")
+                    lines.append(f"G00 {ax}{_fmt_angle(ovr)}")
                     lines.append("G90")
-                    lines.append(f"G00 A{_fmt_angle(t.angle)}")
+                    if clamp:
+                        lines.append("M11")
+                    lines.append(_build_move_cmd(ax, t.angle, cfg.feed_mode, cfg.feed_rate))
+                    if clamp:
+                        lines.append("M10")
                     lines.append(f"G04 P{p_val}")
                 lines.append("")
 
@@ -314,9 +340,15 @@ def generate_carto_target_csv(targets: list[TargetPoint]) -> str:
 
 def generate_nc_program(targets: list[TargetPoint], cfg: XR20Config) -> str:
     axis_label = "ROTATION" if cfg.axis_type == "rotation" else "TILT"
-    lines = [f"O1000 (XR20 {axis_label} AXIS EVALUATION)", ""]
+    ax = cfg.control_axis or "A"
     p_val = cfg.dwell_time_ms
     ovr = cfg.overrun_angle
+    clamp = cfg.use_clamp
+
+    lines = [f"O1000 (XR20 {axis_label} AXIS[{ax}] EVALUATION)"]
+    if clamp:
+        lines.append("(CLAMP: M10=CLAMP M11=UNCLAMP)")
+    lines.append("")
 
     cw_targets = [t for t in targets if t.direction == "cw"]
     ccw_targets = [t for t in targets if t.direction == "ccw"]
@@ -326,12 +358,16 @@ def generate_nc_program(targets: list[TargetPoint], cfg: XR20Config) -> str:
         lines.append(f"(CW {cfg.divisions}-DIVISION)")
         lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CW)")
         lines.append("G91")
-        lines.append(f"G00 A-{_fmt_angle(ovr)}")
-        lines.append(f"G00 A{_fmt_angle(ovr)}")
+        lines.append(f"G00 {ax}-{_fmt_angle(ovr)}")
+        lines.append(f"G00 {ax}{_fmt_angle(ovr)}")
         lines.append("G90")
         lines.append("")
         for t in cw_targets:
-            lines.append(f"G00 A{_fmt_angle(t.angle)}")
+            if clamp:
+                lines.append("M11")
+            lines.append(_build_move_cmd(ax, t.angle, cfg.feed_mode, cfg.feed_rate))
+            if clamp:
+                lines.append("M10")
             lines.append(f"G04 P{p_val}")
         lines.append("")
 
@@ -340,12 +376,16 @@ def generate_nc_program(targets: list[TargetPoint], cfg: XR20Config) -> str:
         lines.append(f"(CCW {cfg.divisions}-DIVISION)")
         lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CCW)")
         lines.append("G91")
-        lines.append(f"G00 A{_fmt_angle(ovr)}")
-        lines.append(f"G00 A-{_fmt_angle(ovr)}")
+        lines.append(f"G00 {ax}{_fmt_angle(ovr)}")
+        lines.append(f"G00 {ax}-{_fmt_angle(ovr)}")
         lines.append("G90")
         lines.append("")
         for t in ccw_targets:
-            lines.append(f"G00 A{_fmt_angle(t.angle)}")
+            if clamp:
+                lines.append("M11")
+            lines.append(_build_move_cmd(ax, t.angle, cfg.feed_mode, cfg.feed_rate))
+            if clamp:
+                lines.append("M10")
             lines.append(f"G04 P{p_val}")
         lines.append("")
 
@@ -420,30 +460,42 @@ def generate_repeat_targets(cfg: XR20Config) -> list[RepeatTargetPoint]:
 def generate_repeat_nc_program(cfg: XR20Config) -> str:
     """再現性測定用NCプログラム: 各位置でオーバーランしてCW/CCWアプローチをN回繰り返す"""
     positions = [float(p.strip()) for p in cfg.repeat_positions.split(",") if p.strip()]
-    lines = ["O2000 (XR20 REPEATABILITY EVALUATION)", ""]
+    ax = cfg.control_axis or "A"
     p_val = cfg.dwell_time_ms
     ovr = cfg.overrun_angle
+    clamp = cfg.use_clamp
+
+    lines = [f"O2000 (XR20 AXIS[{ax}] REPEATABILITY EVALUATION)"]
+    if clamp:
+        lines.append("(CLAMP: M10=CLAMP M11=UNCLAMP)")
+    lines.append("")
 
     for pos in positions:
         lines.append(f"(POSITION {pos} DEG - CW x{cfg.repeat_count})")
         for trial in range(1, cfg.repeat_count + 1):
             lines.append(f"(CW TRIAL {trial})")
-            # オーバーラン: CCW方向に離れてからCW方向で到達
             lines.append("G91")
-            lines.append(f"G00 A-{_fmt_angle(ovr)}")
+            lines.append(f"G00 {ax}-{_fmt_angle(ovr)}")
             lines.append("G90")
-            lines.append(f"G00 A{_fmt_angle(pos)}")
+            if clamp:
+                lines.append("M11")
+            lines.append(_build_move_cmd(ax, pos, cfg.feed_mode, cfg.feed_rate))
+            if clamp:
+                lines.append("M10")
             lines.append(f"G04 P{p_val}")
         lines.append("")
 
         lines.append(f"(POSITION {pos} DEG - CCW x{cfg.repeat_count})")
         for trial in range(1, cfg.repeat_count + 1):
             lines.append(f"(CCW TRIAL {trial})")
-            # オーバーラン: CW方向に離れてからCCW方向で到達
             lines.append("G91")
-            lines.append(f"G00 A{_fmt_angle(ovr)}")
+            lines.append(f"G00 {ax}{_fmt_angle(ovr)}")
             lines.append("G90")
-            lines.append(f"G00 A{_fmt_angle(pos)}")
+            if clamp:
+                lines.append("M11")
+            lines.append(_build_move_cmd(ax, pos, cfg.feed_mode, cfg.feed_rate))
+            if clamp:
+                lines.append("M10")
             lines.append(f"G04 P{p_val}")
         lines.append("")
 
@@ -503,6 +555,12 @@ def _fmt_angle(angle: float) -> str:
     if r == int(r):
         return f"{int(r)}."
     return str(r)
+
+
+def _build_move_cmd(ax: str, angle: float, feed_mode: str, feed_rate: int) -> str:
+    if feed_mode == "feed":
+        return f"G01 {ax}{_fmt_angle(angle)} F{feed_rate}"
+    return f"G00 {ax}{_fmt_angle(angle)}"
 
 
 # ============================================================
@@ -960,10 +1018,31 @@ class XR20App:
         self._add_entry(sec, "post_f9_wait_ms", "F9送信後待機 (ms)", str(self.cfg.post_f9_wait_ms))
         self._add_entry(sec, "stability_min_time_ms", "安定最小時間 (ms)", str(self.cfg.stability_min_time_ms))
 
+        # NCプログラム設定
+        sec = self._add_section(inner, "NCプログラム設定")
+        self._add_entry(sec, "control_axis", "制御軸 (例: A, B, C)", self.cfg.control_axis)
+        self._add_entry(sec, "dwell_time_ms", "ドウェル時間 (ms)", str(self.cfg.dwell_time_ms))
+
+        # 動作タイプ（ラジオボタン）
+        feed_row = ttk.Frame(sec)
+        feed_row.pack(fill="x", pady=2)
+        ttk.Label(feed_row, text="動作タイプ", width=30, anchor="e").pack(side="left", padx=(0, 10))
+        self._feed_mode_var = tk.StringVar(value=self.cfg.feed_mode)
+        ttk.Radiobutton(feed_row, text="G00 早送り", variable=self._feed_mode_var, value="rapid").pack(side="left", padx=5)
+        ttk.Radiobutton(feed_row, text="G01 送り速度", variable=self._feed_mode_var, value="feed").pack(side="left", padx=5)
+
+        self._add_entry(sec, "feed_rate", "送り速度 F (deg/min)", str(self.cfg.feed_rate))
+
+        # クランプ（チェックボックス）
+        clamp_row = ttk.Frame(sec)
+        clamp_row.pack(fill="x", pady=2)
+        ttk.Label(clamp_row, text="", width=30, anchor="e").pack(side="left", padx=(0, 10))
+        self._use_clamp_var = tk.BooleanVar(value=self.cfg.use_clamp)
+        ttk.Checkbutton(clamp_row, text="クランプあり (M10/M11)", variable=self._use_clamp_var).pack(side="left")
+
         # CARTO設定
         sec = self._add_section(inner, "CARTO設定")
         self._add_entry(sec, "carto_window_title", "CARTOウィンドウタイトル（部分一致）", self.cfg.carto_window_title)
-        self._add_entry(sec, "dwell_time_ms", "NCドウェル時間 (ms)", str(self.cfg.dwell_time_ms))
 
         # ボタン
         btn_frame = ttk.Frame(inner)
@@ -1036,6 +1115,10 @@ class XR20App:
         self.cfg.stability_min_time_ms = int(v["stability_min_time_ms"].get() or 1000)
         self.cfg.carto_window_title = v["carto_window_title"].get()
         self.cfg.dwell_time_ms = int(v["dwell_time_ms"].get() or 5000)
+        self.cfg.control_axis = (v["control_axis"].get() or "A").upper()
+        self.cfg.feed_mode = self._feed_mode_var.get()
+        self.cfg.feed_rate = int(v["feed_rate"].get() or 1000)
+        self.cfg.use_clamp = self._use_clamp_var.get()
 
     def _save_config(self):
         self._apply_config()

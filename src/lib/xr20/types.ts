@@ -27,6 +27,10 @@ export interface XR20Settings {
 
   // NC program
   dwellTimeMs: number;
+  controlAxis: string;           // 制御軸 例: A, B, C
+  feedMode: "rapid" | "feed";   // G00(早送り) or G01(送り速度)
+  feedRate: number;              // 送り速度 mm/min (feedMode=feed時)
+  useClamp: boolean;             // クランプ M10/M11
 }
 
 export const DEFAULT_SETTINGS: XR20Settings = {
@@ -47,6 +51,10 @@ export const DEFAULT_SETTINGS: XR20Settings = {
   stabilityMinTimeMs: 1000,
   cartoWindowTitle: "CARTO",
   dwellTimeMs: 5000,
+  controlAxis: "A",
+  feedMode: "rapid",
+  feedRate: 1000,
+  useClamp: false,
 };
 
 export interface TargetPoint {

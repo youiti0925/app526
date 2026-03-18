@@ -499,6 +499,69 @@ function SettingsTab({
         </div>
       </section>
 
+      {/* NC Program Settings */}
+      <section>
+        <h2 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">
+          NCプログラム設定
+        </h2>
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <InputField
+            label="制御軸"
+            value={settings.controlAxis}
+            onChange={(v) => updateSetting("controlAxis", v.toUpperCase())}
+            placeholder="例: A, B, C"
+          />
+          <NumberField
+            label="ドゥエル時間 (ms)"
+            value={settings.dwellTimeMs}
+            onChange={(v) => updateSetting("dwellTimeMs", v)}
+            min={1000}
+            step={500}
+          />
+        </div>
+        {/* 動作タイプ */}
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-slate-700 mb-2">動作タイプ</label>
+          <div className="flex gap-4">
+            <label className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer ${settings.feedMode === "rapid" ? "bg-blue-50 border-blue-400 text-blue-700" : "border-slate-300 text-slate-600"}`}>
+              <input type="radio" name="feedMode" value="rapid" checked={settings.feedMode === "rapid"} onChange={() => updateSetting("feedMode", "rapid")} className="sr-only" />
+              G00 早送り
+            </label>
+            <label className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer ${settings.feedMode === "feed" ? "bg-blue-50 border-blue-400 text-blue-700" : "border-slate-300 text-slate-600"}`}>
+              <input type="radio" name="feedMode" value="feed" checked={settings.feedMode === "feed"} onChange={() => updateSetting("feedMode", "feed")} className="sr-only" />
+              G01 送り速度
+            </label>
+          </div>
+        </div>
+        {/* 送り速度（G01選択時のみ表示） */}
+        {settings.feedMode === "feed" && (
+          <div className="mb-4">
+            <NumberField
+              label="送り速度 F (mm/min or deg/min)"
+              value={settings.feedRate}
+              onChange={(v) => updateSetting("feedRate", v)}
+              min={1}
+              step={100}
+            />
+          </div>
+        )}
+        {/* クランプ */}
+        <div>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={settings.useClamp}
+              onChange={(e) => updateSetting("useClamp", e.target.checked)}
+              className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span className="text-sm font-medium text-slate-700">クランプあり (M10/M11)</span>
+          </label>
+          {settings.useClamp && (
+            <p className="text-xs text-slate-500 mt-1 ml-7">M11(アンクランプ) → 移動 → M10(クランプ) → ドゥエル の順で出力されます</p>
+          )}
+        </div>
+      </section>
+
       {/* CARTO Settings */}
       <section>
         <h2 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">
@@ -510,13 +573,6 @@ function SettingsTab({
             value={settings.cartoWindowTitle}
             onChange={(v) => updateSetting("cartoWindowTitle", v)}
             placeholder="CARTO"
-          />
-          <NumberField
-            label="NCドウェル時間 (ms)"
-            value={settings.dwellTimeMs}
-            onChange={(v) => updateSetting("dwellTimeMs", v)}
-            min={1000}
-            step={500}
           />
         </div>
       </section>
@@ -889,6 +945,17 @@ function ResultsTab({
 
   return (
     <div className="space-y-8">
+      {/* CW+CCW 重ね波形 */}
+      {(cwData.length > 0 || ccwData.length > 0) && (
+        <section>
+          <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+            <span className="w-3 h-3 rounded-full bg-blue-500 inline-block" />
+            CW / CCW 誤差波形
+          </h2>
+          <WaveformChart cwData={cwData} ccwData={ccwData} />
+        </section>
+      )}
+
       {cwData.length > 0 && (
         <section>
           <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
@@ -897,7 +964,7 @@ function ResultsTab({
           </h2>
           <StatsCards stats={cwStats} />
           <div className="mt-4">
-            <BarChartSVG data={cwData} color="#3b82f6" title="CW 各位置の誤差 (arc sec)" />
+            <LineChartSVG data={cwData} color="#3b82f6" title="CW 各位置の誤差波形 (arc sec)" />
           </div>
           <DataTable data={cwData} />
         </section>
@@ -911,7 +978,7 @@ function ResultsTab({
           </h2>
           <StatsCards stats={ccwStats} />
           <div className="mt-4">
-            <BarChartSVG data={ccwData} color="#8b5cf6" title="CCW 各位置の誤差 (arc sec)" />
+            <LineChartSVG data={ccwData} color="#8b5cf6" title="CCW 各位置の誤差波形 (arc sec)" />
           </div>
           <DataTable data={ccwData} />
         </section>
@@ -1438,6 +1505,92 @@ function StatsCards({ stats }: { stats: EvaluationStats }) {
   );
 }
 
+function WaveformChart({
+  cwData,
+  ccwData,
+}: {
+  cwData: MeasurementRow[];
+  ccwData: MeasurementRow[];
+}) {
+  const width = 900;
+  const height = 320;
+  const padding = { top: 40, right: 120, bottom: 50, left: 65 };
+  const chartW = width - padding.left - padding.right;
+  const chartH = height - padding.top - padding.bottom;
+
+  const allData = [...cwData, ...ccwData];
+  if (allData.length === 0) return null;
+
+  const allErrors = allData.map((d) => d.errorArcSec);
+  const maxAbs = Math.max(Math.abs(Math.max(...allErrors)), Math.abs(Math.min(...allErrors)), 1);
+  const yMin = -maxAbs * 1.3;
+  const yMax = maxAbs * 1.3;
+
+  // X軸は両データを角度でソート
+  const allAngles = [...new Set(allData.map((d) => d.targetAngle))].sort((a, b) => a - b);
+  const scaleX = (angle: number) => padding.left + ((angle - allAngles[0]) / Math.max(allAngles[allAngles.length - 1] - allAngles[0], 1)) * chartW;
+  const scaleY = (v: number) => padding.top + chartH - ((v - yMin) / (yMax - yMin)) * chartH;
+  const zeroY = scaleY(0);
+
+  const cwSorted = [...cwData].sort((a, b) => a.targetAngle - b.targetAngle);
+  const ccwSorted = [...ccwData].sort((a, b) => a.targetAngle - b.targetAngle);
+  const cwPath = cwSorted.map((d, i) => `${i === 0 ? "M" : "L"} ${scaleX(d.targetAngle)} ${scaleY(d.errorArcSec)}`).join(" ");
+  const ccwPath = ccwSorted.map((d, i) => `${i === 0 ? "M" : "L"} ${scaleX(d.targetAngle)} ${scaleY(d.errorArcSec)}`).join(" ");
+
+  const gridValues = [-maxAbs, -maxAbs / 2, 0, maxAbs / 2, maxAbs];
+  const labelCount = Math.min(12, allAngles.length);
+  const labelStep = Math.max(1, Math.floor(allAngles.length / labelCount));
+
+  return (
+    <div className="bg-slate-50 rounded-lg p-4">
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full">
+        {/* グリッド線 */}
+        {gridValues.map((v) => (
+          <g key={v}>
+            <line x1={padding.left} y1={scaleY(v)} x2={width - padding.right} y2={scaleY(v)}
+              stroke={v === 0 ? "#94a3b8" : "#e2e8f0"} strokeWidth={v === 0 ? 1 : 0.5} strokeDasharray={v === 0 ? "0" : "4,4"} />
+            <text x={padding.left - 8} y={scaleY(v) + 4} textAnchor="end" fontSize={10} fill="#64748b">
+              {v.toFixed(1)}
+            </text>
+          </g>
+        ))}
+        {/* 軸ラベル (Y) */}
+        <text x={18} y={height / 2} textAnchor="middle" fontSize={10} fill="#64748b"
+          transform={`rotate(-90, 18, ${height / 2})`}>arc sec</text>
+        {/* CW波形 */}
+        {cwSorted.length > 1 && <path d={cwPath} fill="none" stroke="#3b82f6" strokeWidth={2} />}
+        {cwSorted.map((d, i) => (
+          <circle key={`cw${i}`} cx={scaleX(d.targetAngle)} cy={scaleY(d.errorArcSec)} r={3} fill="#3b82f6">
+            <title>{`CW ${d.targetAngle.toFixed(2)}°: ${d.errorArcSec.toFixed(2)} ″`}</title>
+          </circle>
+        ))}
+        {/* CCW波形 */}
+        {ccwSorted.length > 1 && <path d={ccwPath} fill="none" stroke="#8b5cf6" strokeWidth={2} />}
+        {ccwSorted.map((d, i) => (
+          <circle key={`ccw${i}`} cx={scaleX(d.targetAngle)} cy={scaleY(d.errorArcSec)} r={3} fill="#8b5cf6">
+            <title>{`CCW ${d.targetAngle.toFixed(2)}°: ${d.errorArcSec.toFixed(2)} ″`}</title>
+          </circle>
+        ))}
+        {/* X軸ラベル */}
+        {allAngles.filter((_, i) => i % labelStep === 0).map((angle) => (
+          <text key={angle} x={scaleX(angle)} y={height - 10} textAnchor="middle" fontSize={9} fill="#64748b">
+            {angle.toFixed(1)}°
+          </text>
+        ))}
+        {/* 凡例 */}
+        <rect x={width - padding.right + 10} y={padding.top} width={12} height={12} fill="#3b82f6" rx={2} />
+        <text x={width - padding.right + 26} y={padding.top + 10} fontSize={11} fill="#64748b">CW</text>
+        <rect x={width - padding.right + 10} y={padding.top + 20} width={12} height={12} fill="#8b5cf6" rx={2} />
+        <text x={width - padding.right + 26} y={padding.top + 30} fontSize={11} fill="#64748b">CCW</text>
+        {/* タイトル */}
+        <text x={padding.left + chartW / 2} y={15} textAnchor="middle" fontSize={12} fontWeight="bold" fill="#334155">
+          CW / CCW 誤差波形 (arc sec)
+        </text>
+      </svg>
+    </div>
+  );
+}
+
 function BarChartSVG({
   data,
   color,
@@ -1734,7 +1887,7 @@ function ReportTab({
               <ReportStat label="σ" value={`${sec.stats.sigma.toFixed(2)} ″`} />
               <ReportStat label="割出し精度" value={`${sec.stats.indexAccuracy.toFixed(2)} ″`} highlight />
             </div>
-            <BarChartSVG data={sec.data} color={sec.chartColor} title={`${sec.label} (arc sec)`} />
+            <LineChartSVG data={sec.data} color={sec.chartColor} title={`${sec.label} (arc sec)`} />
           </div>
         ))}
 
