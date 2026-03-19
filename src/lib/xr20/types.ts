@@ -91,6 +91,7 @@ export interface RepeatabilityResult {
 }
 
 export type XR20Tab =
+  | "auto"
   | "settings"
   | "targets"
   | "data"

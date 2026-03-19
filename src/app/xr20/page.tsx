@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import Sidebar from "@/components/ui/Sidebar";
 import Header from "@/components/ui/Header";
 import {
@@ -14,6 +14,12 @@ import {
   Crosshair,
   Repeat,
   HelpCircle,
+  Play,
+  CheckCircle2,
+  Circle,
+  Upload,
+  Zap,
+  Save,
 } from "lucide-react";
 import {
   XR20Settings,
@@ -35,11 +41,13 @@ import {
 } from "@/lib/xr20/calculations";
 
 export default function XR20Page() {
-  const [activeTab, setActiveTab] = useState<XR20Tab>("settings");
+  const [activeTab, setActiveTab] = useState<XR20Tab>("auto");
   const [settings, setSettings] = useState<XR20Settings>(DEFAULT_SETTINGS);
   const [targets, setTargets] = useState<TargetPoint[]>([]);
   const [csvInput, setCsvInput] = useState("");
   const [measurements, setMeasurements] = useState<MeasurementRow[]>([]);
+  const [autoStep, setAutoStep] = useState<"idle" | "prepared" | "waiting" | "done">("idle");
+  const [savedResults, setSavedResults] = useState<{ timestamp: string; filename: string }[]>([]);
 
   // ホイール割出しデータ
   const wheelCwData = useMemo(
@@ -76,6 +84,7 @@ export default function XR20Page() {
   );
 
   const tabs: { id: XR20Tab; label: string; icon: React.ElementType }[] = [
+    { id: "auto", label: "自動測定", icon: Zap },
     { id: "settings", label: "設定", icon: Settings },
     { id: "targets", label: "ターゲットリスト", icon: List },
     { id: "data", label: "測定データ", icon: Database },
@@ -85,53 +94,31 @@ export default function XR20Page() {
     { id: "help", label: "ヘルプ", icon: HelpCircle },
   ];
 
-  // ホイールのみターゲット生成
+  // === 個別操作 ===
   const handleGenerateWheelTargets = useCallback(() => {
     const list = generateWheelTargets(settings);
     setTargets(list);
     setActiveTab("targets");
   }, [settings]);
 
-  // 連続（ホイール+ウォーム+再現性）ターゲット生成
   const handleGenerateCombinedTargets = useCallback(() => {
     const list = generateCombinedTargets(settings);
     setTargets(list);
     setActiveTab("targets");
   }, [settings]);
 
-  // NCプログラムダウンロード
   const handleDownloadNC = useCallback(() => {
-    if (targets.length === 0) {
-      alert("先にターゲットリストを生成してください。");
-      return;
-    }
+    if (targets.length === 0) return;
     const program = generateNCProgram(targets, settings);
-    const blob = new Blob([program], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "O1000_XR20_EVAL.nc";
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadFile(program, "O1000_XR20_EVAL.nc", "text/plain");
   }, [targets, settings]);
 
-  // CARTOターゲットCSV出力
   const handleDownloadCartoCSV = useCallback(() => {
-    if (targets.length === 0) {
-      alert("先にターゲットリストを生成してください。");
-      return;
-    }
+    if (targets.length === 0) return;
     const csv = generateCartoTargetCSV(targets);
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "XR20_CARTO_TARGETS.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadFile(csv, "XR20_CARTO_TARGETS.csv", "text/csv");
   }, [targets]);
 
-  // データ解析
   const handleParseData = useCallback(() => {
     if (targets.length === 0) {
       alert("先にターゲットリストを生成してください。");
@@ -139,10 +126,56 @@ export default function XR20Page() {
     }
     const rows = parseCSVData(csvInput, targets);
     setMeasurements(rows);
-    if (rows.length > 0) {
-      setActiveTab("results");
-    }
+    if (rows.length > 0) setActiveTab("results");
   }, [csvInput, targets]);
+
+  // === ワンクリック自動化 ===
+
+  // STEP 1: 準備（ターゲット生成 → NC保存 → CARTOターゲットCSV保存 を一括）
+  const handleAutoPrep = useCallback(() => {
+    const list = generateCombinedTargets(settings);
+    setTargets(list);
+
+    const program = generateNCProgram(list, settings);
+    downloadFile(program, "O1000_XR20_EVAL.nc", "text/plain");
+
+    const csv = generateCartoTargetCSV(list);
+    downloadFile(csv, "XR20_CARTO_TARGETS.csv", "text/csv");
+
+    setAutoStep("prepared");
+  }, [settings]);
+
+  // STEP 2 → 3: CSVファイルドロップで自動解析 → 自動保存
+  const handleAutoCSVDrop = useCallback((csvText: string, filename: string) => {
+    if (targets.length === 0) return;
+    const rows = parseCSVData(csvText, targets);
+    if (rows.length === 0) {
+      alert("有効なデータが見つかりませんでした。CSVの形式を確認してください。");
+      return;
+    }
+    setMeasurements(rows);
+    setCsvInput(csvText);
+
+    // 自動保存（JSON）
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const saveData = {
+      timestamp,
+      settings,
+      targets: targets.length,
+      measurements: rows,
+      source: filename,
+    };
+    downloadFile(JSON.stringify(saveData, null, 2), `XR20_RESULT_${timestamp}.json`, "application/json");
+    setSavedResults(prev => [...prev, { timestamp, filename }]);
+    setAutoStep("done");
+  }, [targets, settings]);
+
+  // 次の測定へリセット
+  const handleAutoNext = useCallback(() => {
+    setMeasurements([]);
+    setCsvInput("");
+    setAutoStep("prepared");
+  }, []);
 
   const updateSetting = <K extends keyof XR20Settings>(
     key: K,
@@ -191,6 +224,25 @@ export default function XR20Page() {
 
             {/* Tab Content */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+              {activeTab === "auto" && (
+                <AutoTab
+                  settings={settings}
+                  autoStep={autoStep}
+                  targets={targets}
+                  measurements={measurements}
+                  wheelCwStats={wheelCwStats}
+                  wheelCcwStats={wheelCcwStats}
+                  wormCwStats={wormCwStats}
+                  wormCcwStats={wormCcwStats}
+                  repeatResult={repeatResult}
+                  savedResults={savedResults}
+                  onPrep={handleAutoPrep}
+                  onCSVDrop={handleAutoCSVDrop}
+                  onNext={handleAutoNext}
+                  onViewResults={() => setActiveTab("results")}
+                  onViewReport={() => setActiveTab("report")}
+                />
+              )}
               {activeTab === "settings" && (
                 <SettingsTab
                   settings={settings}
@@ -249,6 +301,279 @@ export default function XR20Page() {
           </div>
         </main>
       </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   Utility
+   ========================================================= */
+function downloadFile(content: string, filename: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* =========================================================
+   Auto Tab — ワンクリック自動測定フロー
+   ========================================================= */
+function AutoTab({
+  settings,
+  autoStep,
+  targets,
+  measurements,
+  wheelCwStats,
+  wheelCcwStats,
+  wormCwStats,
+  wormCcwStats,
+  repeatResult,
+  savedResults,
+  onPrep,
+  onCSVDrop,
+  onNext,
+  onViewResults,
+  onViewReport,
+}: {
+  settings: XR20Settings;
+  autoStep: "idle" | "prepared" | "waiting" | "done";
+  targets: TargetPoint[];
+  measurements: MeasurementRow[];
+  wheelCwStats: EvaluationStats;
+  wheelCcwStats: EvaluationStats;
+  wormCwStats: EvaluationStats;
+  wormCcwStats: EvaluationStats;
+  repeatResult: RepeatabilityResult | null;
+  savedResults: { timestamp: string; filename: string }[];
+  onPrep: () => void;
+  onCSVDrop: (csv: string, filename: string) => void;
+  onNext: () => void;
+  onViewResults: () => void;
+  onViewReport: () => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      if (text) onCSVDrop(text, file.name);
+    };
+    reader.readAsText(file);
+  };
+
+  const steps = [
+    { id: "prep", label: "準備", desc: "ターゲット生成 → NCプログラム＆CARTOリスト 自動ダウンロード" },
+    { id: "run", label: "測定実行", desc: "NCプログラムを機械で実行 → CARTOが自動キャプチャ" },
+    { id: "import", label: "結果取込", desc: "CARTOのCSVをここにドロップ → 自動解析＆自動保存" },
+  ];
+
+  const currentStepIdx = autoStep === "idle" ? 0 : autoStep === "prepared" ? 1 : autoStep === "waiting" ? 2 : 3;
+
+  return (
+    <div className="space-y-8">
+      {/* フロー説明 */}
+      <div className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-xl p-6 text-white">
+        <h2 className="text-xl font-bold mb-2 flex items-center gap-2">
+          <Zap className="w-6 h-6" />
+          自動測定フロー
+        </h2>
+        <p className="text-blue-100 text-sm">
+          ボタン1つで準備完了。測定後はCSVをドロップするだけで解析・保存まで自動。
+        </p>
+      </div>
+
+      {/* ステップ表示 */}
+      <div className="flex items-center gap-2">
+        {steps.map((step, i) => {
+          const done = i < currentStepIdx;
+          const active = i === currentStepIdx && autoStep !== "done";
+          return (
+            <div key={step.id} className="flex items-center gap-2 flex-1">
+              <div className={`flex items-center gap-3 flex-1 p-4 rounded-lg border-2 transition-all ${
+                done ? "border-green-400 bg-green-50" :
+                active ? "border-blue-500 bg-blue-50 shadow-md" :
+                "border-slate-200 bg-slate-50"
+              }`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                  done ? "bg-green-500 text-white" :
+                  active ? "bg-blue-600 text-white" :
+                  "bg-slate-300 text-white"
+                }`}>
+                  {done ? <CheckCircle2 className="w-5 h-5" /> : <span className="text-sm font-bold">{i + 1}</span>}
+                </div>
+                <div>
+                  <p className={`text-sm font-bold ${done ? "text-green-700" : active ? "text-blue-800" : "text-slate-400"}`}>
+                    {step.label}
+                  </p>
+                  <p className={`text-xs ${done ? "text-green-600" : active ? "text-blue-600" : "text-slate-400"}`}>
+                    {step.desc}
+                  </p>
+                </div>
+              </div>
+              {i < steps.length - 1 && (
+                <div className={`w-6 h-0.5 flex-shrink-0 ${done ? "bg-green-400" : "bg-slate-200"}`} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* STEP 1: 準備ボタン */}
+      {autoStep === "idle" && (
+        <div className="text-center py-8">
+          <p className="text-slate-500 mb-4 text-sm">
+            ホイール {settings.divisions}等分 + ウォーム {settings.wormDivisions}等分 + 再現性 {settings.repeatPositions.split(",").length}箇所×{settings.repeatCount}回
+          </p>
+          <button
+            onClick={onPrep}
+            className="px-8 py-4 bg-blue-600 text-white rounded-xl text-lg font-bold hover:bg-blue-700 transition-all shadow-lg hover:shadow-xl flex items-center gap-3 mx-auto"
+          >
+            <Play className="w-6 h-6" />
+            測定準備（ターゲット生成＋NC＋CSVを一括ダウンロード）
+          </button>
+          <p className="text-xs text-slate-400 mt-3">設定を変更したい場合は「設定」タブで調整してください</p>
+        </div>
+      )}
+
+      {/* STEP 2: 測定中（NCを実行してくださいのガイド） */}
+      {autoStep === "prepared" && (
+        <div className="space-y-4">
+          <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-6">
+            <h3 className="font-bold text-amber-800 mb-3 flex items-center gap-2">
+              <Circle className="w-5 h-5 animate-pulse" />
+              NCプログラムとCARTOリストがダウンロードされました
+            </h3>
+            <ol className="list-decimal list-inside space-y-2 text-sm text-amber-700">
+              <li><strong>O1000_XR20_EVAL.nc</strong> を機械に転送して実行</li>
+              <li>CARTOで「Rotary」テスト → ポジショントリガー設定（またはF9手動キャプチャ）</li>
+              <li>測定完了後、CARTOから <strong>CSV エクスポート</strong></li>
+              <li>下のエリアにCSVファイルをドロップ</li>
+            </ol>
+          </div>
+
+          {/* CSVドロップエリア */}
+          <div
+            className={`border-3 border-dashed rounded-xl p-12 text-center transition-all cursor-pointer ${
+              isDragging
+                ? "border-blue-500 bg-blue-50 scale-[1.02]"
+                : "border-slate-300 bg-slate-50 hover:border-blue-400 hover:bg-blue-50/50"
+            }`}
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDragging(false);
+              const file = e.dataTransfer.files[0];
+              if (file) handleFile(file);
+            }}
+            onClick={() => fileRef.current?.click()}
+          >
+            <Upload className={`w-12 h-12 mx-auto mb-3 ${isDragging ? "text-blue-500" : "text-slate-400"}`} />
+            <p className={`text-lg font-bold ${isDragging ? "text-blue-600" : "text-slate-500"}`}>
+              {isDragging ? "ここにドロップ！" : "CARTOのCSVファイルをドロップ"}
+            </p>
+            <p className="text-sm text-slate-400 mt-1">またはクリックしてファイルを選択</p>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".csv,.txt"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleFile(file);
+              }}
+            />
+          </div>
+
+          {/* 生成済みターゲット情報 */}
+          <div className="bg-slate-50 rounded-lg p-4 text-sm text-slate-600">
+            <p>生成済みターゲット: <strong>{targets.length}点</strong></p>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 3: 完了 */}
+      {autoStep === "done" && (
+        <div className="space-y-6">
+          <div className="bg-green-50 border-2 border-green-400 rounded-xl p-6 text-center">
+            <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-3" />
+            <h3 className="text-xl font-bold text-green-800 mb-2">解析完了・自動保存済み</h3>
+            <p className="text-sm text-green-600">
+              {measurements.length}点のデータを解析し、結果をJSONファイルとして保存しました。
+            </p>
+          </div>
+
+          {/* サマリー */}
+          <div className="grid grid-cols-2 gap-4">
+            {wheelCwStats.count > 0 && (
+              <div className="bg-blue-50 rounded-lg p-4">
+                <p className="text-xs text-blue-500 font-bold">ホイール CW 割出し精度</p>
+                <p className="text-2xl font-bold text-blue-800">{wheelCwStats.indexAccuracy.toFixed(2)} ″</p>
+              </div>
+            )}
+            {wheelCcwStats.count > 0 && (
+              <div className="bg-purple-50 rounded-lg p-4">
+                <p className="text-xs text-purple-500 font-bold">ホイール CCW 割出し精度</p>
+                <p className="text-2xl font-bold text-purple-800">{wheelCcwStats.indexAccuracy.toFixed(2)} ″</p>
+              </div>
+            )}
+            {wormCwStats.count > 0 && (
+              <div className="bg-emerald-50 rounded-lg p-4">
+                <p className="text-xs text-emerald-500 font-bold">ウォーム CW 割出し精度</p>
+                <p className="text-2xl font-bold text-emerald-800">{wormCwStats.indexAccuracy.toFixed(2)} ″</p>
+              </div>
+            )}
+            {wormCcwStats.count > 0 && (
+              <div className="bg-teal-50 rounded-lg p-4">
+                <p className="text-xs text-teal-500 font-bold">ウォーム CCW 割出し精度</p>
+                <p className="text-2xl font-bold text-teal-800">{wormCcwStats.indexAccuracy.toFixed(2)} ″</p>
+              </div>
+            )}
+            {repeatResult && (
+              <div className="bg-amber-50 rounded-lg p-4 col-span-2">
+                <p className="text-xs text-amber-500 font-bold">再現性</p>
+                <p className="text-2xl font-bold text-amber-800">{repeatResult.repeatability.toFixed(2)} ″</p>
+              </div>
+            )}
+          </div>
+
+          {/* アクション */}
+          <div className="flex gap-3 justify-center">
+            <button onClick={onViewResults} className="btn-primary flex items-center gap-2">
+              <BarChart3 className="w-4 h-4" /> 詳細結果を見る
+            </button>
+            <button onClick={onViewReport} className="btn-secondary flex items-center gap-2">
+              <FileText className="w-4 h-4" /> 成績書を見る
+            </button>
+            <button onClick={onNext} className="px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 flex items-center gap-2">
+              <RefreshCw className="w-4 h-4" /> 次の測定へ
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 保存履歴 */}
+      {savedResults.length > 0 && (
+        <div className="border-t pt-4">
+          <h3 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-1">
+            <Save className="w-4 h-4" /> 保存履歴
+          </h3>
+          <div className="space-y-1">
+            {savedResults.map((r, i) => (
+              <div key={i} className="flex items-center gap-3 text-xs text-slate-500 bg-slate-50 rounded px-3 py-2">
+                <CheckCircle2 className="w-3 h-3 text-green-500" />
+                <span className="font-mono">{r.timestamp}</span>
+                <span>← {r.filename}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
