@@ -369,7 +369,7 @@ function AutoTab({
 
   const steps = [
     { id: "prep", label: "準備", desc: "ターゲット生成 → NC＆CARTOリスト自動ダウンロード" },
-    { id: "run", label: "測定実行", desc: "CARTO Position Trigger設定 → NC実行 → 自動キャプチャ → CSVエクスポート" },
+    { id: "run", label: "測定実行", desc: "CARTOにターゲット入力 → NC実行 → F9キャプチャ → CSVエクスポート" },
     { id: "import", label: "結果取込", desc: "CARTOのCSVをドロップ → 自動解析＆自動保存" },
   ];
 
@@ -384,7 +384,7 @@ function AutoTab({
           自動測定フロー
         </h2>
         <p className="text-blue-100 text-sm">
-          ボタン1つで準備完了。CARTOのPosition Triggerで自動キャプチャ。測定後CSVをドロップすれば解析・保存は自動。
+          ボタン1つで準備完了。CARTO操作＆F9キャプチャは手動。測定後CSVをドロップすれば解析・保存は自動。
         </p>
       </div>
 
@@ -435,7 +435,7 @@ function AutoTab({
             className="px-8 py-4 bg-blue-600 text-white rounded-xl text-lg font-bold hover:bg-blue-700 transition-all shadow-lg hover:shadow-xl flex items-center gap-3 mx-auto"
           >
             <Play className="w-6 h-6" />
-            測定準備（NC＋CARTOターゲットリストを一括DL）
+            測定準備（NC＋ターゲット参照リストを一括DL）
           </button>
           <p className="text-xs text-slate-400 mt-3">設定を変更したい場合は「設定」タブで調整してください</p>
         </div>
@@ -447,16 +447,15 @@ function AutoTab({
           <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-6">
             <h3 className="font-bold text-amber-800 mb-3 flex items-center gap-2">
               <Circle className="w-5 h-5 animate-pulse" />
-              NC + CARTOターゲットリストがダウンロードされました
+              NCプログラムがダウンロードされました
             </h3>
-            <p className="text-sm text-amber-700 mb-3 font-bold">以下の順番でCARTOを操作してください：</p>
+            <p className="text-sm text-amber-700 mb-3 font-bold">以下の順番で操作してください：</p>
             <ol className="list-decimal list-inside space-y-2 text-sm text-amber-700">
               <li>CARTO起動 →「<strong>Rotary</strong>」テスト選択</li>
-              <li>Trigger設定 →「<strong>Position Trigger</strong>」モードに変更</li>
-              <li><strong>XR20_CARTO_TARGETS.csv</strong> をCARTOに読み込み（ターゲット角度リスト）</li>
+              <li>ターゲット角度をCARTOに手動入力（<strong>XR20_CARTO_TARGETS.csv</strong> を参照）</li>
               <li>CARTOで「<strong>Start</strong>」を押して測定待機状態にする</li>
               <li><strong>O1000_XR20_EVAL.nc</strong> を機械に転送 → サイクルスタート</li>
-              <li className="font-bold text-green-700">→ 各ターゲット位置で自動キャプチャされる（F9操作不要）</li>
+              <li>各ターゲット位置で<strong>F9</strong>キーを押してキャプチャ</li>
               <li>全点完了後、CARTOメニュー →「<strong>Export</strong>」→「<strong>CSV</strong>」で保存</li>
               <li>保存したCSVファイルを下のエリアにドロップ</li>
             </ol>
@@ -1398,7 +1397,7 @@ function AppHelpContent() {
             {[
               ["設定", "機械情報・評価パラメータ・監視パラメータ"],
               ["ターゲットリスト", "生成された測定点の一覧"],
-              ["測定制御", "CARTO Position Trigger設定ガイド"],
+              ["測定制御", "CARTO操作ガイド"],
               ["測定データ", "CSVデータ入力・解析"],
               ["評価結果", "CW/CCW統計・グラフ"],
               ["成績書", "印刷用成績書"],
@@ -1463,16 +1462,16 @@ function CartoHelpContent() {
           <ol className="list-decimal list-inside space-y-2 text-slate-600">
             <li><strong>アライメント</strong> - レーザービームがXR20リフレクターに正しく戻ることを確認</li>
             <li><strong>ターゲット設定</strong> - 本ツールで生成したリストをCARTOに入力</li>
-            <li><strong>測定開始</strong> - CARTOで「Start」→ NCプログラム実行 → Position Triggerで自動キャプチャ</li>
+            <li><strong>測定開始</strong> - CARTOで「Start」→ NCプログラム実行 → 各位置でF9キャプチャ</li>
             <li><strong>データ確認</strong> - 全点測定後、CSVエクスポート</li>
           </ol>
         </section>
 
         <section>
-          <h3 className="text-md font-bold text-slate-700">Position Triggerモード</h3>
+          <h3 className="text-md font-bold text-slate-700">F9キーの役割</h3>
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-amber-800">
-            CARTOの「Position Trigger」モードでは、ターゲットリストに設定した角度位置に回転軸が到達すると自動的にキャプチャされます。
-            F9手動キャプチャやPythonスクリプトは不要です。
+            CARTOでF9キーは「キャプチャ」（現在の測定値を記録）です。
+            NCプログラムで測定位置に到達しドウェル停止中にF9を押すと角度誤差が記録されます。
           </div>
         </section>
 
@@ -1491,7 +1490,7 @@ function CartoHelpContent() {
           <div className="space-y-2">
             {[
               ["信号が弱い / 赤色表示", "レーザーとリフレクターのアライメント再調整、光路上の障害物除去、リフレクター面の汚れ確認"],
-              ["Position Triggerが動作しない", "ターゲットリストが正しく読み込まれているか確認、Triggerモード設定確認、測定待機状態か確認"],
+              ["F9が反応しない", "CARTOウィンドウがアクティブか確認、測定待機状態か確認"],
               ["測定値がずれる", "環境補正値を確認、XR20の取り付け確認、アライメントやり直し"],
             ].map(([problem, solution]) => (
               <div key={problem} className="bg-red-50 border border-red-100 rounded-lg p-3">
