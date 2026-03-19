@@ -77,28 +77,19 @@ class XR20Config:
     machine_model: str = ""
     machine_serial: str = ""
     nc_model: str = "FANUC"
-    # 評価パラメータ
+    # ウォームギヤパラメータ
+    wheel_teeth: int = 72            # ホイール歯数
+    worm_starts: int = 1             # ウォーム条数
+    worm_divisions: int = 8          # ウォーム等分数（1ピッチ内）
+    # ホイール割出しパラメータ
     axis_type: str = "rotation"  # "rotation" (回転軸 360°) or "tilt" (傾斜軸 任意範囲)
-    divisions: int = 36
+    divisions: int = 72              # ホイール等分数
     start_angle: float = 0.0
     end_angle: float = 360.0
     overrun_angle: float = 10.0
     # 再現性測定パラメータ
     repeat_positions: str = "0,90,180,270"  # カンマ区切りの測定位置
     repeat_count: int = 7
-    # 監視パラメータ
-    monitor_interval_ms: int = 150
-    stability_count: int = 10
-    stability_threshold: float = 0.001
-    post_f9_wait_ms: int = 1000
-    stability_min_time_ms: int = 1000
-    # CARTO
-    carto_window_title: str = "CARTO"
-    # CARTO自動化
-    carto_exe_path: str = ""              # CARTOの実行ファイルパス
-    carto_auto_launch: bool = False       # 起動時にCARTOを自動起動
-    carto_auto_export: bool = True        # 全測定完了後にCSVを自動エクスポート
-    carto_export_dir: str = ""            # エクスポート先ディレクトリ
     # NC
     dwell_time_ms: int = 5000
     control_axis: str = "A"          # 制御軸 例: A, B, C
@@ -127,7 +118,7 @@ class TargetPoint:
     no: int
     angle: float
     direction: str = "cw"  # "cw" or "ccw"
-    phase: str = "index"  # "index" (割出し精度) or "repeat" (再現性)
+    phase: str = "wheel"  # "wheel" / "worm" / "repeat"
     trial: int = 0  # 再現性の場合の試行回数 (1～N)
     status: str = "pending"  # "pending" or "measured"
 
@@ -139,7 +130,7 @@ class MeasurementRow:
     measured_angle: float
     error_arcsec: float
     direction: str = "cw"  # "cw" or "ccw"
-    phase: str = "index"
+    phase: str = "wheel"   # "wheel" / "worm" / "repeat"
     trial: int = 0
 
 
@@ -192,34 +183,59 @@ class RepeatabilityResult:
 # ============================================================
 
 
-def generate_targets(cfg: XR20Config) -> list[TargetPoint]:
+def generate_wheel_targets(cfg: XR20Config) -> list[TargetPoint]:
+    """ホイール等分ターゲット生成"""
     targets = []
     no = 1
 
     if cfg.axis_type == "rotation":
         step = 360.0 / cfg.divisions
         for i in range(cfg.divisions):
-            targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="cw", phase="index"))
+            targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="cw", phase="wheel"))
             no += 1
         for i in range(cfg.divisions - 1, -1, -1):
-            targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="ccw", phase="index"))
+            targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="ccw", phase="wheel"))
             no += 1
     else:
         total_range = cfg.end_angle - cfg.start_angle
         step = total_range / cfg.divisions
         for i in range(cfg.divisions + 1):
-            targets.append(TargetPoint(no=no, angle=round(cfg.start_angle + step * i, 4), direction="cw", phase="index"))
+            targets.append(TargetPoint(no=no, angle=round(cfg.start_angle + step * i, 4), direction="cw", phase="wheel"))
             no += 1
         for i in range(cfg.divisions, -1, -1):
-            targets.append(TargetPoint(no=no, angle=round(cfg.start_angle + step * i, 4), direction="ccw", phase="index"))
+            targets.append(TargetPoint(no=no, angle=round(cfg.start_angle + step * i, 4), direction="ccw", phase="wheel"))
             no += 1
 
     return targets
 
 
+# 旧API互換
+def generate_targets(cfg: XR20Config) -> list[TargetPoint]:
+    return generate_wheel_targets(cfg)
+
+
+def generate_worm_targets(cfg: XR20Config, start_no: int = 1) -> list[TargetPoint]:
+    """ウォーム1ピッチ等分ターゲット生成"""
+    targets = []
+    no = start_no
+    pitch_angle = (360.0 / cfg.wheel_teeth) * cfg.worm_starts
+    step = pitch_angle / cfg.worm_divisions
+
+    for i in range(cfg.worm_divisions):
+        targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="cw", phase="worm"))
+        no += 1
+    for i in range(cfg.worm_divisions - 1, -1, -1):
+        targets.append(TargetPoint(no=no, angle=round(step * i, 4), direction="ccw", phase="worm"))
+        no += 1
+
+    return targets
+
+
 def generate_combined_targets(cfg: XR20Config) -> list[TargetPoint]:
-    """割出し精度 + 再現性を連続した1つのターゲットリストとして生成"""
-    targets = generate_targets(cfg)
+    """ホイール + ウォーム + 再現性 を連続した1つのターゲットリストとして生成"""
+    wheel = generate_wheel_targets(cfg)
+    worm = generate_worm_targets(cfg, start_no=len(wheel) + 1)
+    targets = wheel + worm
     no = len(targets) + 1
 
     # 再現性パート
@@ -248,23 +264,23 @@ def generate_combined_nc_program(targets: list[TargetPoint], cfg: XR20Config) ->
         lines.append("(CLAMP: M10=CLAMP M11=UNCLAMP)")
     lines.append("")
 
-    # --- 割出し精度パート ---
-    index_targets = [t for t in targets if t.phase == "index"]
-    index_cw = [t for t in index_targets if t.direction == "cw"]
-    index_ccw = [t for t in index_targets if t.direction == "ccw"]
-
-    lines.append("(===== PART 1: INDEXING ACCURACY =====)")
-    lines.append("")
-
-    if index_cw:
-        lines.append(f"(INDEX CW {cfg.divisions}-DIVISION)")
-        lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CW)")
-        lines.append("G91")
-        lines.append(f"G00 {ax}-{_fmt_angle(ovr)}")
-        lines.append(f"G00 {ax}{_fmt_angle(ovr)}")
+    def _emit_direction_block(group: list[TargetPoint], label: str, cw: bool):
+        if not group:
+            return
+        lines.append(f"({label})")
+        if cw:
+            lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CW)")
+            lines.append("G91")
+            lines.append(f"G00 {ax}-{_fmt_angle(ovr)}")
+            lines.append(f"G00 {ax}{_fmt_angle(ovr)}")
+        else:
+            lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CCW)")
+            lines.append("G91")
+            lines.append(f"G00 {ax}{_fmt_angle(ovr)}")
+            lines.append(f"G00 {ax}-{_fmt_angle(ovr)}")
         lines.append("G90")
         lines.append("")
-        for t in index_cw:
+        for t in group:
             if clamp:
                 lines.append("M11")
             lines.append(_build_move_cmd(ax, t.angle, cfg.feed_mode, cfg.feed_rate))
@@ -273,27 +289,29 @@ def generate_combined_nc_program(targets: list[TargetPoint], cfg: XR20Config) ->
             lines.append(f"G04 P{p_val}")
         lines.append("")
 
-    if index_ccw:
-        lines.append(f"(INDEX CCW {cfg.divisions}-DIVISION)")
-        lines.append("(OVERRUN: BACKLASH ELIMINATION FOR CCW)")
-        lines.append("G91")
-        lines.append(f"G00 {ax}{_fmt_angle(ovr)}")
-        lines.append(f"G00 {ax}-{_fmt_angle(ovr)}")
-        lines.append("G90")
+    # --- ホイールパート ---
+    wheel_cw = [t for t in targets if t.phase == "wheel" and t.direction == "cw"]
+    wheel_ccw = [t for t in targets if t.phase == "wheel" and t.direction == "ccw"]
+    if wheel_cw or wheel_ccw:
+        lines.append(f"(===== PART 1: WHEEL {cfg.divisions}-DIVISION =====)")
         lines.append("")
-        for t in index_ccw:
-            if clamp:
-                lines.append("M11")
-            lines.append(_build_move_cmd(ax, t.angle, cfg.feed_mode, cfg.feed_rate))
-            if clamp:
-                lines.append("M10")
-            lines.append(f"G04 P{p_val}")
+        _emit_direction_block(wheel_cw, f"WHEEL CW {cfg.divisions}-DIVISION", cw=True)
+        _emit_direction_block(wheel_ccw, f"WHEEL CCW {cfg.divisions}-DIVISION", cw=False)
+
+    # --- ウォームパート ---
+    worm_cw = [t for t in targets if t.phase == "worm" and t.direction == "cw"]
+    worm_ccw = [t for t in targets if t.phase == "worm" and t.direction == "ccw"]
+    if worm_cw or worm_ccw:
+        pitch = (360.0 / cfg.wheel_teeth) * cfg.worm_starts
+        lines.append(f"(===== PART 2: WORM 1-PITCH {pitch:.4f} DEG / {cfg.worm_divisions}-DIVISION =====)")
         lines.append("")
+        _emit_direction_block(worm_cw, f"WORM CW {cfg.worm_divisions}-DIVISION", cw=True)
+        _emit_direction_block(worm_ccw, f"WORM CCW {cfg.worm_divisions}-DIVISION", cw=False)
 
     # --- 再現性パート ---
     repeat_targets = [t for t in targets if t.phase == "repeat"]
     if repeat_targets:
-        lines.append("(===== PART 2: REPEATABILITY =====)")
+        lines.append("(===== PART 3: REPEATABILITY =====)")
         lines.append("")
 
         positions = sorted(set(t.angle for t in repeat_targets))
@@ -434,7 +452,7 @@ def parse_csv_data(text: str, targets: list[TargetPoint]) -> list[MeasurementRow
                     trial = targets[idx].trial
                 else:
                     direction = "cw"
-                    phase = "index"
+                    phase = "wheel"
                     trial = 0
                 rows.append(MeasurementRow(
                     no=len(rows) + 1, target_angle=ta, measured_angle=ma,
@@ -1549,7 +1567,7 @@ class XR20App:
     def _refresh_targets_tab(self):
         tree = self._targets_tree
         tree.delete(*tree.get_children())
-        index_count = sum(1 for t in self.targets if t.phase == "index")
+        index_count = sum(1 for t in self.targets if t.phase in ("wheel", "worm"))
         repeat_count = sum(1 for t in self.targets if t.phase == "repeat")
         axis_label = "回転軸" if self.cfg.axis_type == "rotation" else "傾斜軸"
         info_parts = [f"合計 {len(self.targets)} 点  ({axis_label}"]
@@ -1872,7 +1890,7 @@ class XR20App:
             messagebox.showwarning("データなし", "有効なデータが見つかりませんでした。形式を確認してください。")
             return
 
-        index_count = sum(1 for m in self.measurements if m.phase == "index")
+        index_count = sum(1 for m in self.measurements if m.phase in ("wheel", "worm"))
         repeat_count = sum(1 for m in self.measurements if m.phase == "repeat")
         info = f"解析完了: {len(self.measurements)} 点"
         if index_count:
@@ -1909,7 +1927,7 @@ class XR20App:
             w.destroy()
 
         # 割出し精度データ
-        index_data = [m for m in self.measurements if m.phase == "index"]
+        index_data = [m for m in self.measurements if m.phase in ("wheel", "worm")]
         cw_data = [m for m in index_data if m.direction == "cw"]
         ccw_data = [m for m in index_data if m.direction == "ccw"]
 
@@ -2068,7 +2086,7 @@ class XR20App:
 
     def _generate_report_text(self) -> str:
         today = datetime.now().strftime("%Y年%m月%d日")
-        index_data = [m for m in self.measurements if m.phase == "index"]
+        index_data = [m for m in self.measurements if m.phase in ("wheel", "worm")]
         cw_data = [m for m in index_data if m.direction == "cw"]
         ccw_data = [m for m in index_data if m.direction == "ccw"]
         repeat_data = [m for m in self.measurements if m.phase == "repeat"]

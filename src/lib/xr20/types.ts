@@ -4,9 +4,14 @@ export interface XR20Settings {
   machineSerial: string;
   ncModel: string;
 
+  // Gear parameters (worm wheel)
+  wheelTeeth: number;    // ホイール歯数
+  wormStarts: number;    // ウォーム条数（1条=1, 2条=2...）
+
   // Evaluation parameters
   axisType: "rotation" | "tilt";
-  divisions: number;
+  divisions: number;       // ホイール等分数（通常 = wheelTeeth）
+  wormDivisions: number;   // ウォーム等分数（1ピッチ内の分割数）
   startAngle: number;
   endAngle: number;
   overrunAngle: number;
@@ -15,41 +20,28 @@ export interface XR20Settings {
   repeatPositions: string;
   repeatCount: number;
 
-  // Monitoring parameters
-  monitorIntervalMs: number;
-  stabilityCount: number;
-  stabilityThreshold: number;
-  postF9WaitMs: number;
-  stabilityMinTimeMs: number;
-
-  // CARTO
-  cartoWindowTitle: string;
-
   // NC program
   dwellTimeMs: number;
-  controlAxis: string;           // 制御軸 例: A, B, C
-  feedMode: "rapid" | "feed";   // G00(早送り) or G01(送り速度)
-  feedRate: number;              // 送り速度 mm/min (feedMode=feed時)
-  useClamp: boolean;             // クランプ M10/M11
+  controlAxis: string;
+  feedMode: "rapid" | "feed";
+  feedRate: number;
+  useClamp: boolean;
 }
 
 export const DEFAULT_SETTINGS: XR20Settings = {
   machineModel: "",
   machineSerial: "",
   ncModel: "FANUC",
+  wheelTeeth: 72,
+  wormStarts: 1,
   axisType: "rotation",
-  divisions: 36,
+  divisions: 72,
+  wormDivisions: 8,
   startAngle: 0,
   endAngle: 360,
   overrunAngle: 10,
   repeatPositions: "0,90,180,270",
   repeatCount: 7,
-  monitorIntervalMs: 150,
-  stabilityCount: 10,
-  stabilityThreshold: 0.001,
-  postF9WaitMs: 1000,
-  stabilityMinTimeMs: 1000,
-  cartoWindowTitle: "CARTO",
   dwellTimeMs: 5000,
   controlAxis: "A",
   feedMode: "rapid",
@@ -61,8 +53,8 @@ export interface TargetPoint {
   no: number;
   angle: number;
   direction: "cw" | "ccw";
-  phase: "index" | "repeat";
-  trial: number; // 0 for index, 1-N for repeat
+  phase: "wheel" | "worm" | "repeat";
+  trial: number; // 0 for wheel/worm, 1-N for repeat
   status: "pending" | "measured";
 }
 
@@ -72,7 +64,7 @@ export interface MeasurementRow {
   measuredAngle: number;
   errorArcSec: number;
   direction: "cw" | "ccw";
-  phase: "index" | "repeat";
+  phase: "wheel" | "worm" | "repeat";
   trial: number;
 }
 
@@ -101,7 +93,6 @@ export interface RepeatabilityResult {
 export type XR20Tab =
   | "settings"
   | "targets"
-  | "control"
   | "data"
   | "results"
   | "report"
