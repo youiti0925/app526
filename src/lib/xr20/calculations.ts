@@ -344,6 +344,132 @@ export function calcRepeatability(
 }
 
 // ============================================================
+// Python自動F9監視スクリプト生成
+// ============================================================
+
+export function generatePythonScript(settings: XR20Settings, targets: TargetPoint[]): string {
+  const dwellSec = settings.dwellTimeMs / 1000;
+  const overrunSec = 2;
+  const moveSec = 1.5;
+  const marginSec = 0.5;
+
+  const timings: { sec: number; angle: number; dir: string; phase: string; no: number }[] = [];
+  let elapsed = 0;
+
+  const phaseGroups: { targets: TargetPoint[]; hasOverrun: boolean }[] = [];
+  const wheelCW = targets.filter(t => t.phase === "wheel" && t.direction === "cw");
+  const wheelCCW = targets.filter(t => t.phase === "wheel" && t.direction === "ccw");
+  const wormCW = targets.filter(t => t.phase === "worm" && t.direction === "cw");
+  const wormCCW = targets.filter(t => t.phase === "worm" && t.direction === "ccw");
+  const repeatTgts = targets.filter(t => t.phase === "repeat");
+
+  if (wheelCW.length) phaseGroups.push({ targets: wheelCW, hasOverrun: true });
+  if (wheelCCW.length) phaseGroups.push({ targets: wheelCCW, hasOverrun: true });
+  if (wormCW.length) phaseGroups.push({ targets: wormCW, hasOverrun: true });
+  if (wormCCW.length) phaseGroups.push({ targets: wormCCW, hasOverrun: true });
+
+  const repeatPositions = [...new Set(repeatTgts.map(t => t.angle))].sort((a, b) => a - b);
+  for (const pos of repeatPositions) {
+    const cwTrials = repeatTgts.filter(t => t.angle === pos && t.direction === "cw");
+    const ccwTrials = repeatTgts.filter(t => t.angle === pos && t.direction === "ccw");
+    if (cwTrials.length) phaseGroups.push({ targets: cwTrials, hasOverrun: false });
+    if (ccwTrials.length) phaseGroups.push({ targets: ccwTrials, hasOverrun: false });
+  }
+
+  for (const pg of phaseGroups) {
+    if (pg.hasOverrun) elapsed += overrunSec;
+    for (const t of pg.targets) {
+      if (t.phase === "repeat") elapsed += overrunSec;
+      elapsed += moveSec;
+      timings.push({
+        sec: Math.round((elapsed + marginSec) * 10) / 10,
+        angle: t.angle, dir: t.direction, phase: t.phase, no: t.no,
+      });
+      elapsed += dwellSec;
+    }
+  }
+
+  const timingsJson = JSON.stringify(timings.map(t => ({
+    sec: t.sec, angle: t.angle, dir: t.dir, phase: t.phase, no: t.no,
+  })));
+
+  const lines: string[] = [];
+  lines.push("#!/usr/bin/env python3");
+  lines.push('"""');
+  lines.push("XR20 CARTO 自動F9キャプチャスクリプト（タイマー方式）");
+  lines.push("====================================================");
+  lines.push("NCプログラムのドウェルタイミングに合わせてF9キーを自動送信。");
+  lines.push("CARTOの画面読み取り不要。pywinauto不要。");
+  lines.push("");
+  lines.push("使い方:");
+  lines.push("  1. CARTOを起動 → Rotaryテスト → ターゲット入力 → Start");
+  lines.push("  2. python xr20_auto_f9.py を実行");
+  lines.push("  3. NCプログラムをサイクルスタートすると同時にEnterキー");
+  lines.push("  → 全" + targets.length + "点のF9が自動送信される");
+  lines.push('"""');
+  lines.push("");
+  lines.push("import time, sys, os, ctypes, ctypes.wintypes");
+  lines.push("from datetime import datetime");
+  lines.push("");
+  lines.push('if os.name != "nt":');
+  lines.push('    print("エラー: Windows専用です"); sys.exit(1)');
+  lines.push("");
+  lines.push("# 設定");
+  lines.push("CARTO_WINDOW_TITLE = " + JSON.stringify(settings.cartoWindowTitle));
+  lines.push("TOTAL_TARGETS = " + targets.length);
+  lines.push("TIMINGS = " + timingsJson);
+  lines.push("");
+  lines.push("# Windows API");
+  lines.push("user32 = ctypes.windll.user32");
+  lines.push("WM_KEYDOWN, WM_KEYUP, VK_F9 = 0x0100, 0x0101, 0x78");
+  lines.push("WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)");
+  lines.push("");
+  lines.push("def find_window(title_part):");
+  lines.push("    results = []");
+  lines.push("    def callback(hwnd, _):");
+  lines.push("        if user32.IsWindowVisible(hwnd):");
+  lines.push("            buf = ctypes.create_unicode_buffer(256)");
+  lines.push("            user32.GetWindowTextW(hwnd, buf, 256)");
+  lines.push("            if title_part.lower() in buf.value.lower(): results.append(hwnd)");
+  lines.push("        return True");
+  lines.push("    user32.EnumWindows(WNDENUMPROC(callback), 0)");
+  lines.push("    return results[0] if results else 0");
+  lines.push("");
+  lines.push("def send_f9(hwnd):");
+  lines.push("    user32.PostMessageW(hwnd, WM_KEYDOWN, VK_F9, 0)");
+  lines.push("    time.sleep(0.05)");
+  lines.push("    user32.PostMessageW(hwnd, WM_KEYUP, VK_F9, 0)");
+  lines.push("");
+  lines.push("def log(msg):");
+  lines.push('    print(f"[{datetime.now().strftime(\'%H:%M:%S\')}] {msg}")');
+  lines.push("");
+  lines.push("def main():");
+  lines.push('    log(f"XR20 自動F9 (全{TOTAL_TARGETS}点)")');
+  lines.push('    log(f"CARTOウィンドウ検索: \'{CARTO_WINDOW_TITLE}\'")');
+  lines.push("    hwnd = find_window(CARTO_WINDOW_TITLE)");
+  lines.push("    if not hwnd:");
+  lines.push('        log("エラー: CARTOウィンドウが見つかりません"); return');
+  lines.push('    log(f"CARTO検出: hwnd=0x{hwnd:08X}")');
+  lines.push('    log("")');
+  lines.push('    log("=" * 50)');
+  lines.push('    log("CARTOでStartを押した後、NCサイクルスタートと同時にEnterを押してください")');
+  lines.push('    log("=" * 50)');
+  lines.push("    input()");
+  lines.push("    start_time = time.time()");
+  lines.push('    log("タイマー開始!")');
+  lines.push("    for i, t in enumerate(TIMINGS):");
+  lines.push('        wait = start_time + t["sec"] - time.time()');
+  lines.push("        if wait > 0: time.sleep(wait)");
+  lines.push("        send_f9(hwnd)");
+  lines.push('        log(f"  F9 #{i+1}/{TOTAL_TARGETS}  {t[\'angle\']:.4f} {t[\'dir\'].upper()} [{t[\'phase\']}]")');
+  lines.push('    log(f"\\n全{TOTAL_TARGETS}点完了! CARTOからCSVエクスポートしてください")');
+  lines.push("");
+  lines.push('if __name__ == "__main__": main()');
+
+  return lines.join("\n");
+}
+
+// ============================================================
 // ユーティリティ
 // ============================================================
 

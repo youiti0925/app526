@@ -26,6 +26,14 @@ export interface XR20Settings {
   feedMode: "rapid" | "feed";
   feedRate: number;
   useClamp: boolean;
+
+  // CARTO監視（Python自動F9スクリプト用）
+  cartoWindowTitle: string;
+  monitorIntervalMs: number;
+  stabilityCount: number;
+  stabilityThreshold: number;
+  postF9WaitMs: number;
+  stabilityMinTimeMs: number;
 }
 
 export const DEFAULT_SETTINGS: XR20Settings = {
@@ -47,6 +55,12 @@ export const DEFAULT_SETTINGS: XR20Settings = {
   feedMode: "rapid",
   feedRate: 1000,
   useClamp: false,
+  cartoWindowTitle: "CARTO",
+  monitorIntervalMs: 150,
+  stabilityCount: 10,
+  stabilityThreshold: 0.001,
+  postF9WaitMs: 1000,
+  stabilityMinTimeMs: 1000,
 };
 
 export interface TargetPoint {

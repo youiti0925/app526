@@ -38,6 +38,7 @@ import {
   parseCSVData,
   calcRepeatability,
   generateCartoTargetCSV,
+  generatePythonScript,
 } from "@/lib/xr20/calculations";
 
 export default function XR20Page() {
@@ -141,6 +142,9 @@ export default function XR20Page() {
 
     const csv = generateCartoTargetCSV(list);
     downloadFile(csv, "XR20_CARTO_TARGETS.csv", "text/csv");
+
+    const pyScript = generatePythonScript(settings, list);
+    downloadFile(pyScript, "xr20_auto_f9.py", "text/x-python");
 
     setAutoStep("prepared");
   }, [settings]);
@@ -434,7 +438,7 @@ function AutoTab({
             className="px-8 py-4 bg-blue-600 text-white rounded-xl text-lg font-bold hover:bg-blue-700 transition-all shadow-lg hover:shadow-xl flex items-center gap-3 mx-auto"
           >
             <Play className="w-6 h-6" />
-            測定準備（ターゲット生成＋NC＋CSVを一括ダウンロード）
+            測定準備（NC＋CARTOリスト＋自動F9スクリプトを一括DL）
           </button>
           <p className="text-xs text-slate-400 mt-3">設定を変更したい場合は「設定」タブで調整してください</p>
         </div>
@@ -446,19 +450,16 @@ function AutoTab({
           <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-6">
             <h3 className="font-bold text-amber-800 mb-3 flex items-center gap-2">
               <Circle className="w-5 h-5 animate-pulse" />
-              NCプログラムとCARTOリストがダウンロードされました
+              NC + CARTOリスト + 自動F9スクリプトがダウンロードされました
             </h3>
             <p className="text-sm text-amber-700 mb-3 font-bold">以下の順番でCARTOを操作してください：</p>
             <ol className="list-decimal list-inside space-y-2 text-sm text-amber-700">
-              <li>CARTO起動 →「<strong>Rotary</strong>」テストタイプを選択</li>
-              <li>XR20デバイスが認識されていることを確認</li>
-              <li>環境補正（温度・気圧・湿度）を確認</li>
-              <li>アライメント確認（レーザー → XR20リフレクター、信号強度が<strong>緑</strong>）</li>
-              <li>ダウンロードされた <strong>XR20_CARTO_TARGETS.csv</strong> を参考にターゲット角度をCARTOに入力</li>
-              <li>CARTOで「<strong>Start</strong>」クリック</li>
-              <li><strong>O1000_XR20_EVAL.nc</strong> を機械に転送して実行</li>
-              <li>各位置でドウェル停止中に <strong>F9キーを押してキャプチャ</strong>（手動）</li>
-              <li>全点測定完了後、CARTOメニュー →「<strong>Export</strong>」→「<strong>CSV</strong>」で保存</li>
+              <li>CARTO起動 →「<strong>Rotary</strong>」テスト → ターゲット角度入力 →「<strong>Start</strong>」</li>
+              <li>測定PCで <strong>python xr20_auto_f9.py</strong> を実行（F9自動送信待機）</li>
+              <li><strong>O1000_XR20_EVAL.nc</strong> を機械に転送</li>
+              <li>NCサイクルスタートと同時にスクリプトのEnterキーを押す</li>
+              <li className="font-bold text-green-700">→ 各位置でF9が自動送信される（手動操作不要）</li>
+              <li>全点完了後、CARTOメニュー →「<strong>Export</strong>」→「<strong>CSV</strong>」で保存</li>
               <li>保存したCSVファイルを下のエリアにドロップ</li>
             </ol>
           </div>
