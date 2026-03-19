@@ -367,9 +367,9 @@ function AutoTab({
   };
 
   const steps = [
-    { id: "prep", label: "準備", desc: "ターゲット生成 → NCプログラム＆CARTOリスト 自動ダウンロード" },
-    { id: "run", label: "測定実行", desc: "NCプログラムを機械で実行 → CARTOが自動キャプチャ" },
-    { id: "import", label: "結果取込", desc: "CARTOのCSVをここにドロップ → 自動解析＆自動保存" },
+    { id: "prep", label: "準備", desc: "ターゲット生成 → NC＆CARTOリスト自動ダウンロード" },
+    { id: "run", label: "測定実行", desc: "CARTO操作 → NC実行 → 各位置でF9キャプチャ（手動）→ CSVエクスポート" },
+    { id: "import", label: "結果取込", desc: "CARTOのCSVをドロップ → 自動解析＆自動保存" },
   ];
 
   const currentStepIdx = autoStep === "idle" ? 0 : autoStep === "prepared" ? 1 : autoStep === "waiting" ? 2 : 3;
@@ -383,7 +383,7 @@ function AutoTab({
           自動測定フロー
         </h2>
         <p className="text-blue-100 text-sm">
-          ボタン1つで準備完了。測定後はCSVをドロップするだけで解析・保存まで自動。
+          ボタン1つで準備完了。CARTO操作＆F9キャプチャは手動。測定後CSVをドロップすれば解析・保存は自動。
         </p>
       </div>
 
@@ -448,11 +448,18 @@ function AutoTab({
               <Circle className="w-5 h-5 animate-pulse" />
               NCプログラムとCARTOリストがダウンロードされました
             </h3>
+            <p className="text-sm text-amber-700 mb-3 font-bold">以下の順番でCARTOを操作してください：</p>
             <ol className="list-decimal list-inside space-y-2 text-sm text-amber-700">
+              <li>CARTO起動 →「<strong>Rotary</strong>」テストタイプを選択</li>
+              <li>XR20デバイスが認識されていることを確認</li>
+              <li>環境補正（温度・気圧・湿度）を確認</li>
+              <li>アライメント確認（レーザー → XR20リフレクター、信号強度が<strong>緑</strong>）</li>
+              <li>ダウンロードされた <strong>XR20_CARTO_TARGETS.csv</strong> を参考にターゲット角度をCARTOに入力</li>
+              <li>CARTOで「<strong>Start</strong>」クリック</li>
               <li><strong>O1000_XR20_EVAL.nc</strong> を機械に転送して実行</li>
-              <li>CARTOで「Rotary」テスト → ポジショントリガー設定（またはF9手動キャプチャ）</li>
-              <li>測定完了後、CARTOから <strong>CSV エクスポート</strong></li>
-              <li>下のエリアにCSVファイルをドロップ</li>
+              <li>各位置でドウェル停止中に <strong>F9キーを押してキャプチャ</strong>（手動）</li>
+              <li>全点測定完了後、CARTOメニュー →「<strong>Export</strong>」→「<strong>CSV</strong>」で保存</li>
+              <li>保存したCSVファイルを下のエリアにドロップ</li>
             </ol>
           </div>
 
