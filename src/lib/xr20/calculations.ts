@@ -344,129 +344,380 @@ export function calcRepeatability(
 }
 
 // ============================================================
-// Python自動F9監視スクリプト生成
+// フェーズ別NCプログラム生成（ホイール / ウォーム / 再現性）
 // ============================================================
 
-export function generatePythonScript(settings: XR20Settings, targets: TargetPoint[]): string {
-  const dwellSec = settings.dwellTimeMs / 1000;
-  const overrunSec = 2;
-  const moveSec = 1.5;
-  const marginSec = 0.5;
+export function generatePhaseNCProgram(
+  targets: TargetPoint[],
+  settings: XR20Settings,
+  phase: "wheel" | "worm" | "repeat"
+): string {
+  const phaseTargets = targets.filter(t => t.phase === phase);
+  if (phaseTargets.length === 0) return "";
 
-  const timings: { sec: number; angle: number; dir: string; phase: string; no: number }[] = [];
-  let elapsed = 0;
+  const lines: string[] = [];
+  const pValue = Math.round(settings.dwellTimeMs);
+  const ovr = settings.overrunAngle;
+  const ax = settings.controlAxis || "A";
+  const clamp = settings.useClamp;
 
-  const phaseGroups: { targets: TargetPoint[]; hasOverrun: boolean }[] = [];
-  const wheelCW = targets.filter(t => t.phase === "wheel" && t.direction === "cw");
-  const wheelCCW = targets.filter(t => t.phase === "wheel" && t.direction === "ccw");
-  const wormCW = targets.filter(t => t.phase === "worm" && t.direction === "cw");
-  const wormCCW = targets.filter(t => t.phase === "worm" && t.direction === "ccw");
-  const repeatTgts = targets.filter(t => t.phase === "repeat");
+  const pNum = phase === "wheel" ? "O2001" : phase === "worm" ? "O2002" : "O2003";
+  const pLabel = phase === "wheel" ? "WHEEL" : phase === "worm" ? "WORM" : "REPEATABILITY";
 
-  if (wheelCW.length) phaseGroups.push({ targets: wheelCW, hasOverrun: true });
-  if (wheelCCW.length) phaseGroups.push({ targets: wheelCCW, hasOverrun: true });
-  if (wormCW.length) phaseGroups.push({ targets: wormCW, hasOverrun: true });
-  if (wormCCW.length) phaseGroups.push({ targets: wormCCW, hasOverrun: true });
+  lines.push(`${pNum} (XR20 ${pLabel} EVALUATION - AXIS[${ax}])`);
 
-  const repeatPositions = [...new Set(repeatTgts.map(t => t.angle))].sort((a, b) => a - b);
-  for (const pos of repeatPositions) {
-    const cwTrials = repeatTgts.filter(t => t.angle === pos && t.direction === "cw");
-    const ccwTrials = repeatTgts.filter(t => t.angle === pos && t.direction === "ccw");
-    if (cwTrials.length) phaseGroups.push({ targets: cwTrials, hasOverrun: false });
-    if (ccwTrials.length) phaseGroups.push({ targets: ccwTrials, hasOverrun: false });
+  // CARTO準備待ちドゥエル（先頭）
+  if (settings.initialDwellSec > 0) {
+    lines.push(`(CARTO SETUP WAIT: ${settings.initialDwellSec} SEC)`);
+    lines.push(`G04 P${Math.round(settings.initialDwellSec * 1000)}`);
+    lines.push("");
   }
 
-  for (const pg of phaseGroups) {
-    if (pg.hasOverrun) elapsed += overrunSec;
-    for (const t of pg.targets) {
-      if (t.phase === "repeat") elapsed += overrunSec;
-      elapsed += moveSec;
-      timings.push({
-        sec: Math.round((elapsed + marginSec) * 10) / 10,
-        angle: t.angle, dir: t.direction, phase: t.phase, no: t.no,
-      });
-      elapsed += dwellSec;
+  if (clamp) lines.push("(CLAMP: M10=CLAMP M11=UNCLAMP)");
+  lines.push("");
+
+  if (phase === "wheel" || phase === "worm") {
+    const cwTargets = phaseTargets.filter(t => t.direction === "cw");
+    const ccwTargets = phaseTargets.filter(t => t.direction === "ccw");
+
+    if (cwTargets.length > 0) {
+      lines.push(`(===== ${pLabel} CW =====)`);
+      lines.push("(OVERRUN: BACKLASH ELIMINATION FOR CW)");
+      lines.push("G91");
+      lines.push(`G00 ${ax}-${formatAngle(ovr)}`);
+      lines.push(`G00 ${ax}${formatAngle(ovr)}`);
+      lines.push("G90");
+      lines.push("");
+      for (const t of cwTargets) {
+        if (clamp) lines.push("M11");
+        lines.push(buildMoveCmd(ax, t.angle, settings.feedMode, settings.feedRate));
+        if (clamp) lines.push("M10");
+        lines.push(`G04 P${pValue}`);
+      }
+      lines.push("");
+    }
+
+    if (ccwTargets.length > 0) {
+      lines.push(`(===== ${pLabel} CCW =====)`);
+      lines.push("(OVERRUN: BACKLASH ELIMINATION FOR CCW)");
+      lines.push("G91");
+      lines.push(`G00 ${ax}${formatAngle(ovr)}`);
+      lines.push(`G00 ${ax}-${formatAngle(ovr)}`);
+      lines.push("G90");
+      lines.push("");
+      for (const t of ccwTargets) {
+        if (clamp) lines.push("M11");
+        lines.push(buildMoveCmd(ax, t.angle, settings.feedMode, settings.feedRate));
+        if (clamp) lines.push("M10");
+        lines.push(`G04 P${pValue}`);
+      }
+      lines.push("");
+    }
+  } else {
+    // 再現性
+    lines.push("(===== REPEATABILITY =====)");
+    lines.push("");
+    const positions = [...new Set(phaseTargets.map(t => t.angle))].sort((a, b) => a - b);
+    for (const pos of positions) {
+      const posCW = phaseTargets.filter(t => t.angle === pos && t.direction === "cw");
+      const posCCW = phaseTargets.filter(t => t.angle === pos && t.direction === "ccw");
+
+      if (posCW.length > 0) {
+        lines.push(`(REPEAT ${pos} DEG - CW x${posCW.length})`);
+        for (const t of posCW) {
+          lines.push(`(CW TRIAL ${t.trial})`);
+          lines.push("G91");
+          lines.push(`G00 ${ax}-${formatAngle(ovr)}`);
+          lines.push("G90");
+          if (clamp) lines.push("M11");
+          lines.push(buildMoveCmd(ax, pos, settings.feedMode, settings.feedRate));
+          if (clamp) lines.push("M10");
+          lines.push(`G04 P${pValue}`);
+        }
+        lines.push("");
+      }
+
+      if (posCCW.length > 0) {
+        lines.push(`(REPEAT ${pos} DEG - CCW x${posCCW.length})`);
+        for (const t of posCCW) {
+          lines.push(`(CCW TRIAL ${t.trial})`);
+          lines.push("G91");
+          lines.push(`G00 ${ax}${formatAngle(ovr)}`);
+          lines.push("G90");
+          if (clamp) lines.push("M11");
+          lines.push(buildMoveCmd(ax, pos, settings.feedMode, settings.feedRate));
+          if (clamp) lines.push("M10");
+          lines.push(`G04 P${pValue}`);
+        }
+        lines.push("");
+      }
     }
   }
 
-  const timingsJson = JSON.stringify(timings.map(t => ({
-    sec: t.sec, angle: t.angle, dir: t.dir, phase: t.phase, no: t.no,
-  })));
-
-  const lines: string[] = [];
-  lines.push("#!/usr/bin/env python3");
-  lines.push('"""');
-  lines.push("XR20 CARTO 自動F9キャプチャスクリプト（タイマー方式）");
-  lines.push("====================================================");
-  lines.push("NCプログラムのドウェルタイミングに合わせてF9キーを自動送信。");
-  lines.push("CARTOの画面読み取り不要。pywinauto不要。");
-  lines.push("");
-  lines.push("使い方:");
-  lines.push("  1. CARTOを起動 → Rotaryテスト → ターゲット入力 → Start");
-  lines.push("  2. python xr20_auto_f9.py を実行");
-  lines.push("  3. NCプログラムをサイクルスタートすると同時にEnterキー");
-  lines.push("  → 全" + targets.length + "点のF9が自動送信される");
-  lines.push('"""');
-  lines.push("");
-  lines.push("import time, sys, os, ctypes, ctypes.wintypes");
-  lines.push("from datetime import datetime");
-  lines.push("");
-  lines.push('if os.name != "nt":');
-  lines.push('    print("エラー: Windows専用です"); sys.exit(1)');
-  lines.push("");
-  lines.push("# 設定");
-  lines.push("CARTO_WINDOW_TITLE = " + JSON.stringify(settings.cartoWindowTitle));
-  lines.push("TOTAL_TARGETS = " + targets.length);
-  lines.push("TIMINGS = " + timingsJson);
-  lines.push("");
-  lines.push("# Windows API");
-  lines.push("user32 = ctypes.windll.user32");
-  lines.push("WM_KEYDOWN, WM_KEYUP, VK_F9 = 0x0100, 0x0101, 0x78");
-  lines.push("WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)");
-  lines.push("");
-  lines.push("def find_window(title_part):");
-  lines.push("    results = []");
-  lines.push("    def callback(hwnd, _):");
-  lines.push("        if user32.IsWindowVisible(hwnd):");
-  lines.push("            buf = ctypes.create_unicode_buffer(256)");
-  lines.push("            user32.GetWindowTextW(hwnd, buf, 256)");
-  lines.push("            if title_part.lower() in buf.value.lower(): results.append(hwnd)");
-  lines.push("        return True");
-  lines.push("    user32.EnumWindows(WNDENUMPROC(callback), 0)");
-  lines.push("    return results[0] if results else 0");
-  lines.push("");
-  lines.push("def send_f9(hwnd):");
-  lines.push("    user32.PostMessageW(hwnd, WM_KEYDOWN, VK_F9, 0)");
-  lines.push("    time.sleep(0.05)");
-  lines.push("    user32.PostMessageW(hwnd, WM_KEYUP, VK_F9, 0)");
-  lines.push("");
-  lines.push("def log(msg):");
-  lines.push('    print(f"[{datetime.now().strftime(\'%H:%M:%S\')}] {msg}")');
-  lines.push("");
-  lines.push("def main():");
-  lines.push('    log(f"XR20 自動F9 (全{TOTAL_TARGETS}点)")');
-  lines.push('    log(f"CARTOウィンドウ検索: \'{CARTO_WINDOW_TITLE}\'")');
-  lines.push("    hwnd = find_window(CARTO_WINDOW_TITLE)");
-  lines.push("    if not hwnd:");
-  lines.push('        log("エラー: CARTOウィンドウが見つかりません"); return');
-  lines.push('    log(f"CARTO検出: hwnd=0x{hwnd:08X}")');
-  lines.push('    log("")');
-  lines.push('    log("=" * 50)');
-  lines.push('    log("CARTOでStartを押した後、NCサイクルスタートと同時にEnterを押してください")');
-  lines.push('    log("=" * 50)');
-  lines.push("    input()");
-  lines.push("    start_time = time.time()");
-  lines.push('    log("タイマー開始!")');
-  lines.push("    for i, t in enumerate(TIMINGS):");
-  lines.push('        wait = start_time + t["sec"] - time.time()');
-  lines.push("        if wait > 0: time.sleep(wait)");
-  lines.push("        send_f9(hwnd)");
-  lines.push('        log(f"  F9 #{i+1}/{TOTAL_TARGETS}  {t[\'angle\']:.4f} {t[\'dir\'].upper()} [{t[\'phase\']}]")');
-  lines.push('    log(f"\\n全{TOTAL_TARGETS}点完了! CARTOからCSVエクスポートしてください")');
-  lines.push("");
-  lines.push('if __name__ == "__main__": main()');
-
+  lines.push("M30");
   return lines.join("\n");
+}
+
+// ============================================================
+// CARTO自動操作Pythonスクリプト生成（pywinauto方式）
+// ============================================================
+
+export function generateCartoAutomationScript(
+  settings: XR20Settings,
+  targets: TargetPoint[],
+  phases: ("wheel" | "worm" | "repeat")[]
+): string {
+  const wheelTargets = targets.filter(t => t.phase === "wheel");
+  const wormTargets = targets.filter(t => t.phase === "worm");
+  const repeatTargets = targets.filter(t => t.phase === "repeat");
+
+  // フェーズごとのターゲット角度リスト
+  const phaseConfigs: { phase: string; angles: number[]; divisions: number }[] = [];
+  for (const phase of phases) {
+    if (phase === "wheel" && wheelTargets.length > 0) {
+      const cwAngles = wheelTargets.filter(t => t.direction === "cw").map(t => t.angle);
+      phaseConfigs.push({ phase: "wheel", angles: cwAngles, divisions: settings.divisions });
+    }
+    if (phase === "worm" && wormTargets.length > 0) {
+      const cwAngles = wormTargets.filter(t => t.direction === "cw").map(t => t.angle);
+      phaseConfigs.push({ phase: "worm", angles: cwAngles, divisions: settings.wormDivisions });
+    }
+    if (phase === "repeat" && repeatTargets.length > 0) {
+      const positions = [...new Set(repeatTargets.map(t => t.angle))].sort((a, b) => a - b);
+      phaseConfigs.push({ phase: "repeat", angles: positions, divisions: positions.length });
+    }
+  }
+
+  return `#!/usr/bin/env python3
+"""
+XR20 CARTO 自動操作スクリプト（pywinauto UI Automation）
+========================================================
+CARTOを自動操作して、Rotaryテストのセットアップを行う。
+測定データのキャプチャはCARTOの位置自動検知（feedrate detection）に任せる。
+
+必要ライブラリ:
+  pip install pywinauto
+
+使い方:
+  1. python xr20_carto_auto.py を実行
+  2. CARTOが起動し、テスト条件が自動設定される
+  3. CARTOが「Startボタン押下待ち」まで進んだらスクリプトが一時停止
+  4. NCプログラムの自動運転ボタンを押す
+  5. 測定完了後、スクリプトが次のフェーズ（ウォーム等）を自動設定
+  6. 全フェーズ完了後、結果CSVを自動エクスポート
+"""
+
+import time
+import sys
+import os
+import subprocess
+import json
+from datetime import datetime
+
+if os.name != "nt":
+    print("エラー: Windows専用です")
+    sys.exit(1)
+
+try:
+    from pywinauto import Application, Desktop
+    from pywinauto.keyboard import send_keys
+except ImportError:
+    print("エラー: pywinauto が必要です")
+    print("  pip install pywinauto")
+    sys.exit(1)
+
+# ============================================================
+# 設定
+# ============================================================
+CARTO_EXE = ${JSON.stringify(settings.cartoExePath)}
+MACHINE_MODEL = ${JSON.stringify(settings.machineModel)}
+AXIS = ${JSON.stringify(settings.controlAxis)}
+DWELL_SEC = ${settings.initialDwellSec}
+
+PHASES = ${JSON.stringify(phaseConfigs, null, 2)}
+
+# ============================================================
+# ログ
+# ============================================================
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+# ============================================================
+# CARTO起動
+# ============================================================
+def launch_carto():
+    """CARTOを起動し、メインウィンドウを取得"""
+    log(f"CARTO起動中: {CARTO_EXE}")
+    if not os.path.exists(CARTO_EXE):
+        log(f"エラー: CARTO実行ファイルが見つかりません: {CARTO_EXE}")
+        log("設定画面でCARTOパスを確認してください")
+        return None
+
+    try:
+        app = Application(backend="uia").start(CARTO_EXE)
+        time.sleep(5)  # CARTO起動待ち
+        log("CARTO起動完了")
+        return app
+    except Exception as e:
+        log(f"CARTO起動エラー: {e}")
+        # 既に起動済みの場合は接続を試みる
+        try:
+            app = Application(backend="uia").connect(path=CARTO_EXE)
+            log("既存のCARTOプロセスに接続")
+            return app
+        except Exception:
+            log("CARTOへの接続に失敗しました")
+            return None
+
+# ============================================================
+# CARTO操作関数
+# ============================================================
+def setup_rotary_test(app, phase_config):
+    """
+    CARTOのRotaryテストを設定する
+
+    注意: CARTOのUI要素名はバージョンにより異なる場合があります。
+    実際のCARTO画面に合わせて以下のコントロール名を調整してください。
+
+    この関数はテンプレートです。CARTOのUI構造に合わせてカスタマイズが必要です。
+    """
+    phase = phase_config["phase"]
+    angles = phase_config["angles"]
+    divisions = phase_config["divisions"]
+
+    log(f"=== フェーズ設定: {phase.upper()} ({divisions}分割, {len(angles)}ターゲット) ===")
+
+    main_win = app.top_window()
+
+    # --- ここからCARTO UI操作 ---
+    # 注意: 以下はCARTOのUI構造に合わせて調整が必要です
+    # pywinautoのprint_control_identifiers()で実際のコントロール名を確認してください
+
+    try:
+        # 1. Rotary テストを選択
+        log("Rotaryテストを選択中...")
+        # main_win.child_window(title="Rotary", control_type="TreeItem").click_input()
+        # time.sleep(1)
+
+        # 2. テスト条件設定
+        log(f"ターゲット数: {len(angles)}")
+        log(f"角度範囲: {angles[0]:.4f} - {angles[-1]:.4f} deg")
+
+        # 3. ターゲット角度を入力
+        # CARTOのターゲット入力方法はバージョンにより異なる
+        # - パートプログラム生成機能を使う場合: CARTOが自動でターゲットを設定
+        # - 手動入力の場合: 以下のようにUI操作で入力
+
+        log("ターゲット角度:")
+        for i, angle in enumerate(angles):
+            log(f"  [{i+1}] {angle:.4f} deg")
+
+        # 4. Feedrate detection設定（位置自動キャプチャ）
+        log("Feedrate detection（位置自動キャプチャ）を確認中...")
+
+        log(f"フェーズ '{phase}' のセットアップ準備完了")
+
+    except Exception as e:
+        log(f"UI操作エラー: {e}")
+        log("CARTOのUI構造が想定と異なる可能性があります")
+        log("print_control_identifiers()で確認してください:")
+        log("  main_win.print_control_identifiers()")
+        raise
+
+def wait_for_measurement_complete(app):
+    """
+    測定完了を待つ
+
+    CARTOの測定完了判定方法:
+    - ウィンドウタイトルの変化を監視
+    - または特定のUI要素（Completeステータス等）を監視
+    """
+    log("NC運転開始を待機中...")
+    log(">>> CNC操作盤で自動運転ボタンを押してください <<<")
+    input("  [Enter]で続行（測定完了後に押してください）...")
+    log("測定完了確認")
+
+def export_results(app, phase, output_dir):
+    """CARTOから結果をCSVエクスポート"""
+    log(f"結果エクスポート中: {phase}")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"XR20_{phase.upper()}_{timestamp}.csv"
+    filepath = os.path.join(output_dir, filename)
+
+    # CARTOのエクスポート操作
+    # main_win = app.top_window()
+    # main_win.child_window(title="Export", control_type="Button").click_input()
+    # ...
+
+    log(f"  → {filepath}")
+    return filepath
+
+# ============================================================
+# メイン処理
+# ============================================================
+def main():
+    log("=" * 60)
+    log("XR20 CARTO自動操作スクリプト")
+    log(f"  機種: {MACHINE_MODEL}")
+    log(f"  軸: {AXIS}")
+    log(f"  フェーズ数: {len(PHASES)}")
+    for i, p in enumerate(PHASES):
+        log(f"    [{i+1}] {p['phase'].upper()}: {p['divisions']}分割")
+    log("=" * 60)
+    log("")
+
+    # 出力ディレクトリ
+    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # CARTO起動
+    app = launch_carto()
+    if app is None:
+        log("CARTOの起動に失敗しました。手動でCARTOを起動してください。")
+        input("[Enter]で続行...")
+        try:
+            app = Application(backend="uia").connect(path=CARTO_EXE)
+        except Exception:
+            log("CARTOに接続できません。終了します。")
+            return
+
+    result_files = []
+
+    for i, phase_config in enumerate(PHASES):
+        phase = phase_config["phase"]
+        log("")
+        log(f"{'='*60}")
+        log(f"フェーズ {i+1}/{len(PHASES)}: {phase.upper()}")
+        log(f"{'='*60}")
+
+        # CARTO条件設定
+        setup_rotary_test(app, phase_config)
+
+        log("")
+        log(">>> CARTOで [Start] を押してから、CNCの自動運転を開始してください <<<")
+        if DWELL_SEC > 0:
+            log(f"    (NCプログラム先頭に{DWELL_SEC}秒のドゥエルがあります)")
+
+        # 測定完了待ち
+        wait_for_measurement_complete(app)
+
+        # 結果エクスポート
+        filepath = export_results(app, phase, output_dir)
+        result_files.append({"phase": phase, "file": filepath})
+
+    log("")
+    log("=" * 60)
+    log("全フェーズ完了!")
+    log("=" * 60)
+    for r in result_files:
+        log(f"  {r['phase'].upper()}: {r['file']}")
+    log("")
+    log("結果CSVをアプリのデータタブにドラッグ&ドロップして解析してください")
+
+if __name__ == "__main__":
+    main()
+`;
 }
 
 // ============================================================

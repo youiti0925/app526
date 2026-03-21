@@ -34,11 +34,12 @@ import {
   generateWheelTargets,
   generateCombinedTargets,
   generateNCProgram,
+  generatePhaseNCProgram,
+  generateCartoAutomationScript,
   calculateStats,
   parseCSVData,
   calcRepeatability,
   generateCartoTargetCSV,
-  generatePythonScript,
 } from "@/lib/xr20/calculations";
 
 export default function XR20Page() {
@@ -47,7 +48,9 @@ export default function XR20Page() {
   const [targets, setTargets] = useState<TargetPoint[]>([]);
   const [csvInput, setCsvInput] = useState("");
   const [measurements, setMeasurements] = useState<MeasurementRow[]>([]);
-  const [autoStep, setAutoStep] = useState<"idle" | "prepared" | "waiting" | "done">("idle");
+  const [autoStep, setAutoStep] = useState<"idle" | "prepared" | "measuring" | "phase_done" | "all_done">("idle");
+  const [currentPhase, setCurrentPhase] = useState<"wheel" | "worm" | "repeat">("wheel");
+  const [phaseResults, setPhaseResults] = useState<{ phase: string; rows: MeasurementRow[]; timestamp: string }[]>([]);
   const [savedResults, setSavedResults] = useState<{ timestamp: string; filename: string }[]>([]);
 
   // ホイール割出しデータ
@@ -130,52 +133,96 @@ export default function XR20Page() {
     if (rows.length > 0) setActiveTab("results");
   }, [csvInput, targets]);
 
-  // === ワンクリック自動化 ===
+  // === 自動化フロー（フェーズ別: ホイール → ウォーム → 再現性） ===
 
-  // STEP 1: 準備（ターゲット生成 → NC保存 → CARTOターゲットCSV保存 を一括）
+  const phaseOrder: ("wheel" | "worm" | "repeat")[] = ["wheel", "worm", "repeat"];
+
+  // STEP 1: 準備（全ターゲット生成 + フェーズ別NC + CARTO自動操作スクリプト）
   const handleAutoPrep = useCallback(() => {
     const list = generateCombinedTargets(settings);
     setTargets(list);
 
-    const program = generateNCProgram(list, settings);
-    downloadFile(program, "O1000_XR20_EVAL.nc", "text/plain");
+    // フェーズ別NCプログラム
+    for (const phase of phaseOrder) {
+      const nc = generatePhaseNCProgram(list, settings, phase);
+      if (nc) {
+        const pNum = phase === "wheel" ? "O2001" : phase === "worm" ? "O2002" : "O2003";
+        downloadFile(nc, `${pNum}_XR20_${phase.toUpperCase()}.nc`, "text/plain");
+      }
+    }
 
+    // CARTO自動操作スクリプト
+    const script = generateCartoAutomationScript(settings, list, phaseOrder);
+    downloadFile(script, "xr20_carto_auto.py", "text/x-python");
+
+    // CARTOターゲット参照リスト
     const csv = generateCartoTargetCSV(list);
     downloadFile(csv, "XR20_CARTO_TARGETS.csv", "text/csv");
 
+    setCurrentPhase("wheel");
+    setPhaseResults([]);
     setAutoStep("prepared");
   }, [settings]);
 
-  // STEP 2 → 3: CSVファイルドロップで自動解析 → 自動保存
-  const handleAutoCSVDrop = useCallback((csvText: string, filename: string) => {
+  // STEP 2: NC運転開始（フェーズごと）
+  const handleStartMeasuring = useCallback(() => {
+    setAutoStep("measuring");
+  }, []);
+
+  // STEP 3: フェーズ完了 → CSVドロップで解析
+  const handlePhaseCSVDrop = useCallback((csvText: string, filename: string) => {
     if (targets.length === 0) return;
-    const rows = parseCSVData(csvText, targets);
+    const phaseTargets = targets.filter(t => t.phase === currentPhase);
+    const rows = parseCSVData(csvText, phaseTargets);
     if (rows.length === 0) {
       alert("有効なデータが見つかりませんでした。CSVの形式を確認してください。");
       return;
     }
-    setMeasurements(rows);
-    setCsvInput(csvText);
 
-    // 自動保存（JSON）
+    // フェーズ結果を蓄積
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    setPhaseResults(prev => [...prev, { phase: currentPhase, rows, timestamp }]);
+
+    // 全体の測定データにマージ
+    setMeasurements(prev => [...prev, ...rows]);
+    setCsvInput(prev => prev + "\n" + csvText);
+
+    // 自動保存
     const saveData = {
       timestamp,
+      phase: currentPhase,
       settings,
-      targets: targets.length,
       measurements: rows,
       source: filename,
     };
-    downloadFile(JSON.stringify(saveData, null, 2), `XR20_RESULT_${timestamp}.json`, "application/json");
+    downloadFile(JSON.stringify(saveData, null, 2), `XR20_${currentPhase.toUpperCase()}_${timestamp}.json`, "application/json");
     setSavedResults(prev => [...prev, { timestamp, filename }]);
-    setAutoStep("done");
-  }, [targets, settings]);
 
-  // 次の測定へリセット
-  const handleAutoNext = useCallback(() => {
+    // 次のフェーズがあるか判定
+    const currentIdx = phaseOrder.indexOf(currentPhase);
+    if (currentIdx < phaseOrder.length - 1) {
+      setAutoStep("phase_done");
+    } else {
+      setAutoStep("all_done");
+    }
+  }, [targets, currentPhase, settings]);
+
+  // STEP 4: 次のフェーズへ
+  const handleNextPhase = useCallback(() => {
+    const currentIdx = phaseOrder.indexOf(currentPhase);
+    if (currentIdx < phaseOrder.length - 1) {
+      setCurrentPhase(phaseOrder[currentIdx + 1]);
+      setAutoStep("prepared");
+    }
+  }, [currentPhase]);
+
+  // 全リセット
+  const handleAutoReset = useCallback(() => {
     setMeasurements([]);
     setCsvInput("");
-    setAutoStep("prepared");
+    setPhaseResults([]);
+    setCurrentPhase("wheel");
+    setAutoStep("idle");
   }, []);
 
   const updateSetting = <K extends keyof XR20Settings>(
@@ -229,6 +276,7 @@ export default function XR20Page() {
                 <AutoTab
                   settings={settings}
                   autoStep={autoStep}
+                  currentPhase={currentPhase}
                   targets={targets}
                   measurements={measurements}
                   wheelCwStats={wheelCwStats}
@@ -236,10 +284,13 @@ export default function XR20Page() {
                   wormCwStats={wormCwStats}
                   wormCcwStats={wormCcwStats}
                   repeatResult={repeatResult}
+                  phaseResults={phaseResults}
                   savedResults={savedResults}
                   onPrep={handleAutoPrep}
-                  onCSVDrop={handleAutoCSVDrop}
-                  onNext={handleAutoNext}
+                  onStartMeasuring={handleStartMeasuring}
+                  onPhaseCSVDrop={handlePhaseCSVDrop}
+                  onNextPhase={handleNextPhase}
+                  onReset={handleAutoReset}
                   onViewResults={() => setActiveTab("results")}
                   onViewReport={() => setActiveTab("report")}
                 />
@@ -320,11 +371,12 @@ function downloadFile(content: string, filename: string, type: string) {
 }
 
 /* =========================================================
-   Auto Tab — ワンクリック自動測定フロー
+   Auto Tab — フェーズ別自動測定フロー（ホイール→ウォーム→再現性）
    ========================================================= */
 function AutoTab({
   settings,
   autoStep,
+  currentPhase,
   targets,
   measurements,
   wheelCwStats,
@@ -332,15 +384,19 @@ function AutoTab({
   wormCwStats,
   wormCcwStats,
   repeatResult,
+  phaseResults,
   savedResults,
   onPrep,
-  onCSVDrop,
-  onNext,
+  onStartMeasuring,
+  onPhaseCSVDrop,
+  onNextPhase,
+  onReset,
   onViewResults,
   onViewReport,
 }: {
   settings: XR20Settings;
-  autoStep: "idle" | "prepared" | "waiting" | "done";
+  autoStep: "idle" | "prepared" | "measuring" | "phase_done" | "all_done";
+  currentPhase: "wheel" | "worm" | "repeat";
   targets: TargetPoint[];
   measurements: MeasurementRow[];
   wheelCwStats: EvaluationStats;
@@ -348,10 +404,13 @@ function AutoTab({
   wormCwStats: EvaluationStats;
   wormCcwStats: EvaluationStats;
   repeatResult: RepeatabilityResult | null;
+  phaseResults: { phase: string; rows: MeasurementRow[]; timestamp: string }[];
   savedResults: { timestamp: string; filename: string }[];
   onPrep: () => void;
-  onCSVDrop: (csv: string, filename: string) => void;
-  onNext: () => void;
+  onStartMeasuring: () => void;
+  onPhaseCSVDrop: (csv: string, filename: string) => void;
+  onNextPhase: () => void;
+  onReset: () => void;
   onViewResults: () => void;
   onViewReport: () => void;
 }) {
@@ -362,18 +421,19 @@ function AutoTab({
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target?.result as string;
-      if (text) onCSVDrop(text, file.name);
+      if (text) onPhaseCSVDrop(text, file.name);
     };
     reader.readAsText(file);
   };
 
-  const steps = [
-    { id: "prep", label: "準備", desc: "ターゲット生成 → NC＆CARTOリスト自動ダウンロード" },
-    { id: "run", label: "測定実行", desc: "CARTOにターゲット入力 → NC実行 → F9キャプチャ → CSVエクスポート" },
-    { id: "import", label: "結果取込", desc: "CARTOのCSVをドロップ → 自動解析＆自動保存" },
-  ];
+  const phaseLabels: Record<string, { label: string; color: string; bgColor: string; ncFile: string }> = {
+    wheel: { label: "ホイール", color: "text-blue-700", bgColor: "bg-blue-50 border-blue-300", ncFile: "O2001_XR20_WHEEL.nc" },
+    worm: { label: "ウォーム", color: "text-emerald-700", bgColor: "bg-emerald-50 border-emerald-300", ncFile: "O2002_XR20_WORM.nc" },
+    repeat: { label: "再現性", color: "text-amber-700", bgColor: "bg-amber-50 border-amber-300", ncFile: "O2003_XR20_REPEAT.nc" },
+  };
 
-  const currentStepIdx = autoStep === "idle" ? 0 : autoStep === "prepared" ? 1 : autoStep === "waiting" ? 2 : 3;
+  const allPhases: ("wheel" | "worm" | "repeat")[] = ["wheel", "worm", "repeat"];
+  const currentPhaseIdx = allPhases.indexOf(currentPhase);
 
   return (
     <div className="space-y-8">
@@ -381,23 +441,24 @@ function AutoTab({
       <div className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-xl p-6 text-white">
         <h2 className="text-xl font-bold mb-2 flex items-center gap-2">
           <Zap className="w-6 h-6" />
-          自動測定フロー
+          自動測定フロー（位置自動キャプチャ方式）
         </h2>
         <p className="text-blue-100 text-sm">
-          ボタン1つで準備完了。CARTO操作＆F9キャプチャは手動。測定後CSVをドロップすれば解析・保存は自動。
+          条件入力 → CARTO自動セットアップ → NC自動運転 → 位置到達でCARTO自動キャプチャ → 次のフェーズへ自動切替
         </p>
       </div>
 
-      {/* ステップ表示 */}
+      {/* フェーズ進捗表示 */}
       <div className="flex items-center gap-2">
-        {steps.map((step, i) => {
-          const done = i < currentStepIdx;
-          const active = i === currentStepIdx && autoStep !== "done";
+        {allPhases.map((phase, i) => {
+          const info = phaseLabels[phase];
+          const done = phaseResults.some(r => r.phase === phase);
+          const active = phase === currentPhase && autoStep !== "idle" && autoStep !== "all_done";
           return (
-            <div key={step.id} className="flex items-center gap-2 flex-1">
+            <div key={phase} className="flex items-center gap-2 flex-1">
               <div className={`flex items-center gap-3 flex-1 p-4 rounded-lg border-2 transition-all ${
                 done ? "border-green-400 bg-green-50" :
-                active ? "border-blue-500 bg-blue-50 shadow-md" :
+                active ? `border-2 ${info.bgColor} shadow-md` :
                 "border-slate-200 bg-slate-50"
               }`}>
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
@@ -408,15 +469,15 @@ function AutoTab({
                   {done ? <CheckCircle2 className="w-5 h-5" /> : <span className="text-sm font-bold">{i + 1}</span>}
                 </div>
                 <div>
-                  <p className={`text-sm font-bold ${done ? "text-green-700" : active ? "text-blue-800" : "text-slate-400"}`}>
-                    {step.label}
+                  <p className={`text-sm font-bold ${done ? "text-green-700" : active ? info.color : "text-slate-400"}`}>
+                    {info.label}
                   </p>
-                  <p className={`text-xs ${done ? "text-green-600" : active ? "text-blue-600" : "text-slate-400"}`}>
-                    {step.desc}
+                  <p className={`text-xs ${done ? "text-green-600" : active ? "text-slate-500" : "text-slate-400"}`}>
+                    {done ? "完了" : active ? "実行中" : "待機"}
                   </p>
                 </div>
               </div>
-              {i < steps.length - 1 && (
+              {i < allPhases.length - 1 && (
                 <div className={`w-6 h-0.5 flex-shrink-0 ${done ? "bg-green-400" : "bg-slate-200"}`} />
               )}
             </div>
@@ -435,30 +496,71 @@ function AutoTab({
             className="px-8 py-4 bg-blue-600 text-white rounded-xl text-lg font-bold hover:bg-blue-700 transition-all shadow-lg hover:shadow-xl flex items-center gap-3 mx-auto"
           >
             <Play className="w-6 h-6" />
-            測定準備（NC＋ターゲット参照リストを一括DL）
+            測定準備開始
           </button>
-          <p className="text-xs text-slate-400 mt-3">設定を変更したい場合は「設定」タブで調整してください</p>
+          <p className="text-xs text-slate-400 mt-3">
+            フェーズ別NCプログラム + CARTO自動操作スクリプト + ターゲット参照リストを一括ダウンロード
+          </p>
         </div>
       )}
 
-      {/* STEP 2: 測定中（NCを実行してくださいのガイド） */}
+      {/* STEP 2: フェーズ別測定ガイド */}
       {autoStep === "prepared" && (
         <div className="space-y-4">
-          <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-6">
-            <h3 className="font-bold text-amber-800 mb-3 flex items-center gap-2">
+          <div className={`border-2 rounded-xl p-6 ${phaseLabels[currentPhase].bgColor}`}>
+            <h3 className={`font-bold mb-3 flex items-center gap-2 ${phaseLabels[currentPhase].color}`}>
               <Circle className="w-5 h-5 animate-pulse" />
-              NCプログラムがダウンロードされました
+              {phaseLabels[currentPhase].label}測定 — CARTO＆NC準備
             </h3>
-            <p className="text-sm text-amber-700 mb-3 font-bold">以下の順番で操作してください：</p>
-            <ol className="list-decimal list-inside space-y-2 text-sm text-amber-700">
-              <li>CARTO起動 →「<strong>Rotary</strong>」テスト選択</li>
-              <li>ターゲット角度をCARTOに手動入力（<strong>XR20_CARTO_TARGETS.csv</strong> を参照）</li>
-              <li>CARTOで「<strong>Start</strong>」を押して測定待機状態にする</li>
-              <li><strong>O1000_XR20_EVAL.nc</strong> を機械に転送 → サイクルスタート</li>
-              <li>各ターゲット位置で<strong>F9</strong>キーを押してキャプチャ</li>
-              <li>全点完了後、CARTOメニュー →「<strong>Export</strong>」→「<strong>CSV</strong>」で保存</li>
-              <li>保存したCSVファイルを下のエリアにドロップ</li>
+            <ol className="list-decimal list-inside space-y-2 text-sm text-slate-700">
+              {currentPhaseIdx === 0 ? (
+                <>
+                  <li>CARTO自動操作スクリプトを実行: <code className="bg-white px-2 py-0.5 rounded text-xs font-mono">python xr20_carto_auto.py</code></li>
+                  <li>CARTOが起動し、<strong>{phaseLabels[currentPhase].label}</strong>テスト条件が自動設定される</li>
+                  <li>CARTOで「<strong>Start</strong>」を押して測定待機状態にする</li>
+                  <li><strong>{phaseLabels[currentPhase].ncFile}</strong> を機械に転送</li>
+                </>
+              ) : (
+                <>
+                  <li>スクリプトが次のフェーズ（<strong>{phaseLabels[currentPhase].label}</strong>）を自動設定中...</li>
+                  <li>CARTOで「<strong>Start</strong>」を押す</li>
+                  <li><strong>{phaseLabels[currentPhase].ncFile}</strong> を機械に転送</li>
+                </>
+              )}
+              <li>
+                <strong>NC自動運転ボタン</strong>を押す
+                {settings.initialDwellSec > 0 && (
+                  <span className="text-xs text-slate-500 ml-1">
+                    （先頭に{settings.initialDwellSec}秒のドゥエルあり — CARTO準備の時間）
+                  </span>
+                )}
+              </li>
+              <li>CARTOが各位置で<strong>自動的にキャプチャ</strong>（位置自動検知）</li>
             </ol>
+          </div>
+
+          <button
+            onClick={onStartMeasuring}
+            className="w-full px-6 py-4 bg-green-600 text-white rounded-xl text-lg font-bold hover:bg-green-700 transition-all shadow-lg flex items-center gap-3 justify-center"
+          >
+            <Play className="w-6 h-6" />
+            NC運転開始済み → 測定完了を待つ
+          </button>
+        </div>
+      )}
+
+      {/* STEP 3: 測定中 → CSV取込 */}
+      {autoStep === "measuring" && (
+        <div className="space-y-4">
+          <div className="bg-blue-50 border-2 border-blue-300 rounded-xl p-6 text-center">
+            <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+            <h3 className="text-lg font-bold text-blue-800 mb-2">
+              {phaseLabels[currentPhase].label}測定中...
+            </h3>
+            <p className="text-sm text-blue-600">
+              CARTOが位置自動検知で各ターゲットをキャプチャしています。<br />
+              測定完了後、CARTOから<strong>CSV</strong>をエクスポートして下にドロップしてください。
+            </p>
           </div>
 
           {/* CSVドロップエリア */}
@@ -480,7 +582,7 @@ function AutoTab({
           >
             <Upload className={`w-12 h-12 mx-auto mb-3 ${isDragging ? "text-blue-500" : "text-slate-400"}`} />
             <p className={`text-lg font-bold ${isDragging ? "text-blue-600" : "text-slate-500"}`}>
-              {isDragging ? "ここにドロップ！" : "CARTOのCSVファイルをドロップ"}
+              {isDragging ? "ここにドロップ！" : `${phaseLabels[currentPhase].label}のCSVファイルをドロップ`}
             </p>
             <p className="text-sm text-slate-400 mt-1">またはクリックしてファイルを選択</p>
             <input
@@ -494,22 +596,40 @@ function AutoTab({
               }}
             />
           </div>
-
-          {/* 生成済みターゲット情報 */}
-          <div className="bg-slate-50 rounded-lg p-4 text-sm text-slate-600">
-            <p>生成済みターゲット: <strong>{targets.length}点</strong></p>
-          </div>
         </div>
       )}
 
-      {/* STEP 3: 完了 */}
-      {autoStep === "done" && (
+      {/* STEP 4: フェーズ完了 → 次のフェーズへ */}
+      {autoStep === "phase_done" && (
+        <div className="space-y-6">
+          <div className="bg-green-50 border-2 border-green-400 rounded-xl p-6 text-center">
+            <CheckCircle2 className="w-10 h-10 text-green-500 mx-auto mb-2" />
+            <h3 className="text-lg font-bold text-green-800 mb-1">
+              {phaseLabels[currentPhase].label}測定 完了
+            </h3>
+            <p className="text-sm text-green-600">
+              次のフェーズに進みます。スクリプトがCARTOに次の条件を自動設定します。
+            </p>
+          </div>
+
+          <button
+            onClick={onNextPhase}
+            className="w-full px-6 py-4 bg-indigo-600 text-white rounded-xl text-lg font-bold hover:bg-indigo-700 transition-all shadow-lg flex items-center gap-3 justify-center"
+          >
+            <RefreshCw className="w-6 h-6" />
+            次のフェーズへ → {phaseLabels[allPhases[currentPhaseIdx + 1]]?.label || ""}
+          </button>
+        </div>
+      )}
+
+      {/* STEP 5: 全フェーズ完了 */}
+      {autoStep === "all_done" && (
         <div className="space-y-6">
           <div className="bg-green-50 border-2 border-green-400 rounded-xl p-6 text-center">
             <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-3" />
-            <h3 className="text-xl font-bold text-green-800 mb-2">解析完了・自動保存済み</h3>
+            <h3 className="text-xl font-bold text-green-800 mb-2">全フェーズ完了 — 解析・保存済み</h3>
             <p className="text-sm text-green-600">
-              {measurements.length}点のデータを解析し、結果をJSONファイルとして保存しました。
+              ホイール + ウォーム + 再現性 全{measurements.length}点のデータを解析しました。
             </p>
           </div>
 
@@ -550,13 +670,13 @@ function AutoTab({
           {/* アクション */}
           <div className="flex gap-3 justify-center">
             <button onClick={onViewResults} className="btn-primary flex items-center gap-2">
-              <BarChart3 className="w-4 h-4" /> 詳細結果を見る
+              <BarChart3 className="w-4 h-4" /> 詳細結果（波形+数値）
             </button>
             <button onClick={onViewReport} className="btn-secondary flex items-center gap-2">
-              <FileText className="w-4 h-4" /> 成績書を見る
+              <FileText className="w-4 h-4" /> 成績書
             </button>
-            <button onClick={onNext} className="px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 flex items-center gap-2">
-              <RefreshCw className="w-4 h-4" /> 次の測定へ
+            <button onClick={onReset} className="px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 flex items-center gap-2">
+              <RefreshCw className="w-4 h-4" /> 新規測定
             </button>
           </div>
         </div>
@@ -798,6 +918,41 @@ function SettingsTab({
             <p className="text-xs text-slate-500 mt-1 ml-7">M11(アンクランプ) → 移動 → M10(クランプ) → ドゥエル の順で出力されます</p>
           )}
         </div>
+      </section>
+
+      {/* CARTO自動操作設定 */}
+      <section>
+        <h2 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">
+          CARTO自動操作設定
+        </h2>
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <InputField
+            label="CARTO実行ファイルパス"
+            value={settings.cartoExePath}
+            onChange={(v) => updateSetting("cartoExePath", v)}
+            placeholder="C:\\Program Files\\Renishaw\\CARTO\\CARTO.exe"
+          />
+          <NumberField
+            label="先頭ドゥエル（CARTO準備待ち 秒）"
+            value={settings.initialDwellSec}
+            onChange={(v) => updateSetting("initialDwellSec", v)}
+            min={0}
+            step={10}
+          />
+        </div>
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.cartoAutoSetup}
+            onChange={(e) => updateSetting("cartoAutoSetup", e.target.checked)}
+            className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="text-sm font-medium text-slate-700">CARTO自動セットアップを有効にする（pywinautoスクリプト）</span>
+        </label>
+        <p className="text-xs text-slate-500 mt-2">
+          有効にすると、自動操作スクリプトがCARTOを起動し、ホイール→ウォーム→再現性の条件を自動で切り替えます。
+          CARTOの位置自動検知（feedrate detection）で各ターゲットを自動キャプチャします。
+        </p>
       </section>
 
       {/* Action Buttons */}
@@ -1347,25 +1502,35 @@ function AppHelpContent() {
         </section>
 
         <section>
-          <h3 className="text-md font-bold text-slate-700">割出し精度測定の流れ</h3>
+          <h3 className="text-md font-bold text-slate-700">自動測定フローの流れ</h3>
           <ol className="list-decimal list-inside space-y-1 text-slate-600">
-            <li><strong>[設定]</strong> タブで機械情報・評価パラメータを入力</li>
-            <li>「ターゲットリスト生成」でCW/CCW測定点を生成</li>
-            <li>「NCプログラム生成」でFANUC Gコードを出力</li>
-            <li>NCプログラムを機械で実行、CARTOで測定</li>
-            <li><strong>[測定データ]</strong> タブでCARTOの結果CSVを貼り付け</li>
-            <li>「データ解析」で評価結果・成績書を自動生成</li>
+            <li><strong>[設定]</strong> タブで機械情報・評価パラメータ・CARTO設定を入力</li>
+            <li><strong>[自動測定]</strong> タブで「測定準備開始」→ フェーズ別NC + CARTO自動操作スクリプトがDL</li>
+            <li>スクリプトがCARTOを起動し、ホイール条件を自動設定</li>
+            <li>CARTOで「Start」→ NC自動運転ボタンを押す</li>
+            <li>CARTOが位置到達を自動検知してキャプチャ（F9不要）</li>
+            <li>測定完了後、CARTOからCSVエクスポート → アプリにドロップ</li>
+            <li>スクリプトがCARTOに次の条件（ウォーム）を自動設定 → 繰り返し</li>
+            <li>全フェーズ完了後、波形データ+成績書を自動生成</li>
           </ol>
         </section>
 
         <section>
-          <h3 className="text-md font-bold text-slate-700">再現性測定の流れ</h3>
-          <ol className="list-decimal list-inside space-y-1 text-slate-600">
-            <li><strong>[設定]</strong> タブで再現性パラメータを入力（測定位置・繰り返し回数）</li>
-            <li><strong>[再現性測定]</strong> タブで「ターゲット生成」</li>
-            <li>「NCプログラム保存」でGコードを出力</li>
-            <li>測定後、データを貼り付けて「再現性評価」</li>
-          </ol>
+          <h3 className="text-md font-bold text-slate-700">フェーズ別NCプログラム</h3>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="bg-blue-50 rounded-lg p-3">
+              <p className="font-bold text-blue-800">O2001 ホイール</p>
+              <p className="text-sm text-blue-600">ホイール歯数等分のCW/CCW測定</p>
+            </div>
+            <div className="bg-emerald-50 rounded-lg p-3">
+              <p className="font-bold text-emerald-800">O2002 ウォーム</p>
+              <p className="text-sm text-emerald-600">1ピッチ内等分のCW/CCW測定</p>
+            </div>
+            <div className="bg-amber-50 rounded-lg p-3">
+              <p className="font-bold text-amber-800">O2003 再現性</p>
+              <p className="text-sm text-amber-600">指定位置の繰り返し測定</p>
+            </div>
+          </div>
         </section>
 
         <section>
@@ -1395,11 +1560,11 @@ function AppHelpContent() {
           <h3 className="text-md font-bold text-slate-700">各タブ説明</h3>
           <div className="grid grid-cols-2 gap-2 text-sm">
             {[
-              ["設定", "機械情報・評価パラメータ・監視パラメータ"],
+              ["自動測定", "フェーズ別自動測定フロー（ホイール→ウォーム→再現性）"],
+              ["設定", "機械情報・評価パラメータ・CARTO設定"],
               ["ターゲットリスト", "生成された測定点の一覧"],
-              ["測定制御", "CARTO操作ガイド"],
               ["測定データ", "CSVデータ入力・解析"],
-              ["評価結果", "CW/CCW統計・グラフ"],
+              ["評価結果", "CW/CCW統計・波形グラフ・数値テーブル"],
               ["成績書", "印刷用成績書"],
               ["再現性測定", "再現性専用タブ"],
               ["ヘルプ", "この画面"],
@@ -1458,20 +1623,22 @@ function CartoHelpContent() {
         </section>
 
         <section>
-          <h3 className="text-md font-bold text-slate-700">測定手順</h3>
+          <h3 className="text-md font-bold text-slate-700">測定手順（位置自動キャプチャ方式）</h3>
           <ol className="list-decimal list-inside space-y-2 text-slate-600">
             <li><strong>アライメント</strong> - レーザービームがXR20リフレクターに正しく戻ることを確認</li>
-            <li><strong>ターゲット設定</strong> - 本ツールで生成したリストをCARTOに入力</li>
-            <li><strong>測定開始</strong> - CARTOで「Start」→ NCプログラム実行 → 各位置でF9キャプチャ</li>
+            <li><strong>ターゲット設定</strong> - 本ツールの自動操作スクリプトがCARTOに条件を自動入力</li>
+            <li><strong>測定開始</strong> - CARTOで「Start」→ NCプログラムの自動運転を開始</li>
+            <li><strong>自動キャプチャ</strong> - CARTOのfeedrate detection機能が位置到達を自動検知してデータ取得</li>
             <li><strong>データ確認</strong> - 全点測定後、CSVエクスポート</li>
           </ol>
         </section>
 
         <section>
-          <h3 className="text-md font-bold text-slate-700">F9キーの役割</h3>
-          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-amber-800">
-            CARTOでF9キーは「キャプチャ」（現在の測定値を記録）です。
-            NCプログラムで測定位置に到達しドウェル停止中にF9を押すと角度誤差が記録されます。
+          <h3 className="text-md font-bold text-slate-700">位置自動キャプチャ（Feedrate Detection）</h3>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-blue-800">
+            CARTOのRotaryテストでは、機械軸が各ターゲット位置に到達して停止したことを自動検知し、
+            データを自動的にキャプチャします。NCプログラムのドゥエル中にCARTOが自動で測定値を記録するため、
+            F9キーの手動操作は不要です。
           </div>
         </section>
 
@@ -1490,7 +1657,7 @@ function CartoHelpContent() {
           <div className="space-y-2">
             {[
               ["信号が弱い / 赤色表示", "レーザーとリフレクターのアライメント再調整、光路上の障害物除去、リフレクター面の汚れ確認"],
-              ["F9が反応しない", "CARTOウィンドウがアクティブか確認、測定待機状態か確認"],
+              ["自動キャプチャされない", "CARTOのfeedrate detection設定を確認、ドゥエル時間を長くする、NCプログラムの送り速度を確認"],
               ["測定値がずれる", "環境補正値を確認、XR20の取り付け確認、アライメントやり直し"],
             ].map(([problem, solution]) => (
               <div key={problem} className="bg-red-50 border border-red-100 rounded-lg p-3">
