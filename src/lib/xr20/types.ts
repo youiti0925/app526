@@ -27,10 +27,6 @@ export interface XR20Settings {
   feedRate: number;
   useClamp: boolean;
 
-  // CARTO自動操作
-  cartoExePath: string;          // CARTO実行ファイルパス
-  cartoAutoSetup: boolean;       // CARTO自動セットアップ有効
-  initialDwellSec: number;       // NCプログラム先頭のCARTO準備待ちドゥエル（秒）
 }
 
 export const DEFAULT_SETTINGS: XR20Settings = {
@@ -52,9 +48,6 @@ export const DEFAULT_SETTINGS: XR20Settings = {
   feedMode: "rapid",
   feedRate: 1000,
   useClamp: false,
-  cartoExePath: "C:\\Program Files\\Renishaw\\CARTO\\CARTO.exe",
-  cartoAutoSetup: true,
-  initialDwellSec: 60,
 };
 
 export interface TargetPoint {

@@ -35,7 +35,6 @@ import {
   generateCombinedTargets,
   generateNCProgram,
   generatePhaseNCProgram,
-  generateCartoAutomationScript,
   calculateStats,
   parseCSVData,
   calcRepeatability,
@@ -150,10 +149,6 @@ export default function XR20Page() {
         downloadFile(nc, `${pNum}_XR20_${phase.toUpperCase()}.nc`, "text/plain");
       }
     }
-
-    // CARTO自動操作スクリプト
-    const script = generateCartoAutomationScript(settings, list, phaseOrder);
-    downloadFile(script, "xr20_carto_auto.py", "text/x-python");
 
     // CARTOターゲット参照リスト
     const csv = generateCartoTargetCSV(list);
@@ -441,10 +436,10 @@ function AutoTab({
       <div className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-xl p-6 text-white">
         <h2 className="text-xl font-bold mb-2 flex items-center gap-2">
           <Zap className="w-6 h-6" />
-          自動測定フロー（位置自動キャプチャ方式）
+          測定フロー
         </h2>
         <p className="text-blue-100 text-sm">
-          条件入力 → CARTO自動セットアップ → NC自動運転 → 位置到達でCARTO自動キャプチャ → 次のフェーズへ自動切替
+          ① 準備（ターゲット生成＋NC保存） → ② CARTOでテスト設定＋NC運転 → ③ CSVドロップで自動解析 → 次のフェーズへ
         </p>
       </div>
 
@@ -499,7 +494,7 @@ function AutoTab({
             測定準備開始
           </button>
           <p className="text-xs text-slate-400 mt-3">
-            フェーズ別NCプログラム + CARTO自動操作スクリプト + ターゲット参照リストを一括ダウンロード
+            フェーズ別NCプログラム + ターゲット参照リストを一括ダウンロード
           </p>
         </div>
       )}
@@ -513,29 +508,20 @@ function AutoTab({
               {phaseLabels[currentPhase].label}測定 — CARTO＆NC準備
             </h3>
             <ol className="list-decimal list-inside space-y-2 text-sm text-slate-700">
-              {currentPhaseIdx === 0 ? (
+              {currentPhaseIdx === 0 && (
                 <>
-                  <li>CARTO自動操作スクリプトを実行: <code className="bg-white px-2 py-0.5 rounded text-xs font-mono">python xr20_carto_auto.py</code></li>
-                  <li>CARTOが起動し、<strong>{phaseLabels[currentPhase].label}</strong>テスト条件が自動設定される</li>
-                  <li>CARTOで「<strong>Start</strong>」を押して測定待機状態にする</li>
-                  <li><strong>{phaseLabels[currentPhase].ncFile}</strong> を機械に転送</li>
-                </>
-              ) : (
-                <>
-                  <li>スクリプトが次のフェーズ（<strong>{phaseLabels[currentPhase].label}</strong>）を自動設定中...</li>
-                  <li>CARTOで「<strong>Start</strong>」を押す</li>
-                  <li><strong>{phaseLabels[currentPhase].ncFile}</strong> を機械に転送</li>
+                  <li>CARTO Captureを起動 → <strong>ロータリモード</strong>を選択</li>
+                  <li>XR20をBluetooth接続（「開いて参照」→ シリアル番号で検索）</li>
+                  <li>「参照」でXR20の基準位置を確立、アライメント確認（信号強度が緑）</li>
                 </>
               )}
-              <li>
-                <strong>NC自動運転ボタン</strong>を押す
-                {settings.initialDwellSec > 0 && (
-                  <span className="text-xs text-slate-500 ml-1">
-                    （先頭に{settings.initialDwellSec}秒のドゥエルあり — CARTO準備の時間）
-                  </span>
-                )}
-              </li>
-              <li>CARTOが各位置で<strong>自動的にキャプチャ</strong>（位置自動検知）</li>
+              <li>[テスト情報] 機械名・シリアル番号を入力</li>
+              <li>[ターゲット] <strong>{phaseLabels[currentPhase].label}</strong>の条件を設定（ダウンロードしたターゲット参照リストを参照）</li>
+              <li>[装置] トリガータイプを<strong>「位置」</strong>に設定（公差・安定時間・安定範囲を確認）</li>
+              <li>[送り速度検出] またはCARTOの<strong>パートプログラム生成</strong>機能でNCを作成。あるいは <strong>{phaseLabels[currentPhase].ncFile}</strong> を機械に転送</li>
+              <li>CARTOで<strong>「テスト開始」</strong>を押す</li>
+              <li>機械コントローラの<strong>サイクルスタート</strong>を押す</li>
+              <li>トリガータイプが「位置」の場合、<strong>データは自動的に収集される</strong></li>
             </ol>
           </div>
 
@@ -558,8 +544,8 @@ function AutoTab({
               {phaseLabels[currentPhase].label}測定中...
             </h3>
             <p className="text-sm text-blue-600">
-              CARTOが位置自動検知で各ターゲットをキャプチャしています。<br />
-              測定完了後、CARTOから<strong>CSV</strong>をエクスポートして下にドロップしてください。
+              トリガータイプ「位置」でデータが自動収集されています。<br />
+              テスト完了後、CARTOで「保存」→ Exploreで<strong>CSVエクスポート</strong>して下にドロップしてください。
             </p>
           </div>
 
@@ -608,7 +594,7 @@ function AutoTab({
               {phaseLabels[currentPhase].label}測定 完了
             </h3>
             <p className="text-sm text-green-600">
-              次のフェーズに進みます。スクリプトがCARTOに次の条件を自動設定します。
+              次のフェーズに進みます。CARTOで新しいテストを作成し、次の条件を設定してください。
             </p>
           </div>
 
@@ -918,41 +904,6 @@ function SettingsTab({
             <p className="text-xs text-slate-500 mt-1 ml-7">M11(アンクランプ) → 移動 → M10(クランプ) → ドゥエル の順で出力されます</p>
           )}
         </div>
-      </section>
-
-      {/* CARTO自動操作設定 */}
-      <section>
-        <h2 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">
-          CARTO自動操作設定
-        </h2>
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          <InputField
-            label="CARTO実行ファイルパス"
-            value={settings.cartoExePath}
-            onChange={(v) => updateSetting("cartoExePath", v)}
-            placeholder="C:\\Program Files\\Renishaw\\CARTO\\CARTO.exe"
-          />
-          <NumberField
-            label="先頭ドゥエル（CARTO準備待ち 秒）"
-            value={settings.initialDwellSec}
-            onChange={(v) => updateSetting("initialDwellSec", v)}
-            min={0}
-            step={10}
-          />
-        </div>
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={settings.cartoAutoSetup}
-            onChange={(e) => updateSetting("cartoAutoSetup", e.target.checked)}
-            className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-          />
-          <span className="text-sm font-medium text-slate-700">CARTO自動セットアップを有効にする（pywinautoスクリプト）</span>
-        </label>
-        <p className="text-xs text-slate-500 mt-2">
-          有効にすると、自動操作スクリプトがCARTOを起動し、ホイール→ウォーム→再現性の条件を自動で切り替えます。
-          CARTOの位置自動検知（feedrate detection）で各ターゲットを自動キャプチャします。
-        </p>
       </section>
 
       {/* Action Buttons */}
@@ -1502,16 +1453,16 @@ function AppHelpContent() {
         </section>
 
         <section>
-          <h3 className="text-md font-bold text-slate-700">自動測定フローの流れ</h3>
+          <h3 className="text-md font-bold text-slate-700">測定フローの流れ</h3>
           <ol className="list-decimal list-inside space-y-1 text-slate-600">
-            <li><strong>[設定]</strong> タブで機械情報・評価パラメータ・CARTO設定を入力</li>
-            <li><strong>[自動測定]</strong> タブで「測定準備開始」→ フェーズ別NC + CARTO自動操作スクリプトがDL</li>
-            <li>スクリプトがCARTOを起動し、ホイール条件を自動設定</li>
-            <li>CARTOで「Start」→ NC自動運転ボタンを押す</li>
-            <li>CARTOが位置到達を自動検知してキャプチャ（F9不要）</li>
-            <li>測定完了後、CARTOからCSVエクスポート → アプリにドロップ</li>
-            <li>スクリプトがCARTOに次の条件（ウォーム）を自動設定 → 繰り返し</li>
-            <li>全フェーズ完了後、波形データ+成績書を自動生成</li>
+            <li><strong>[設定]</strong> タブで機械情報・評価パラメータを入力</li>
+            <li><strong>[自動測定]</strong> タブで「測定準備開始」→ フェーズ別NCプログラム + ターゲット参照リストがDL</li>
+            <li>CARTO Captureでロータリテストを作成し、ターゲット・トリガー設定</li>
+            <li>CARTOで「テスト開始」→ 機械のサイクルスタート</li>
+            <li>トリガータイプ「位置」でCARTOが自動的にデータ収集</li>
+            <li>テスト完了後、CARTOで保存 → ExploreからCSVエクスポート → アプリにドロップ</li>
+            <li>次のフェーズ（ウォーム等）のテストをCARTOで新規作成 → 繰り返し</li>
+            <li>全フェーズ完了後、評価結果+成績書を確認</li>
           </ol>
         </section>
 
@@ -1561,7 +1512,7 @@ function AppHelpContent() {
           <div className="grid grid-cols-2 gap-2 text-sm">
             {[
               ["自動測定", "フェーズ別自動測定フロー（ホイール→ウォーム→再現性）"],
-              ["設定", "機械情報・評価パラメータ・CARTO設定"],
+              ["設定", "機械情報・ギヤパラメータ・NCプログラム設定"],
               ["ターゲットリスト", "生成された測定点の一覧"],
               ["測定データ", "CSVデータ入力・解析"],
               ["評価結果", "CW/CCW統計・波形グラフ・数値テーブル"],
@@ -1584,81 +1535,95 @@ function AppHelpContent() {
 function CartoHelpContent() {
   return (
     <div className="prose prose-sm max-w-none">
-      <h2 className="text-lg font-bold text-slate-800 border-b pb-2">CARTO（Renishaw）操作ガイド</h2>
+      <h2 className="text-lg font-bold text-slate-800 border-b pb-2">CARTO Capture 操作ガイド（公式マニュアル準拠）</h2>
 
       <div className="space-y-6 mt-4">
         <section>
-          <h3 className="text-md font-bold text-slate-700">CARTOとは</h3>
-          <p className="text-slate-600">
-            Renishaw社が提供するレーザー測定ソフトウェアです。
-            XR20回転分割測定器と組み合わせて回転軸の精度測定を行います。
-          </p>
-        </section>
-
-        <section>
-          <h3 className="text-md font-bold text-slate-700">XR20測定のセットアップ</h3>
-          <ol className="list-decimal list-inside space-y-2 text-slate-600">
-            <li>
-              <strong>ハードウェア接続</strong>
-              <ul className="list-disc list-inside ml-4 mt-1">
-                <li>XL-80レーザーユニットを機械テーブル上に設置</li>
-                <li>XR20回転分割測定器を測定対象の回転軸に取り付け</li>
-                <li>USBケーブルでPCに接続</li>
-              </ul>
-            </li>
-            <li>
-              <strong>CARTOの起動と設定</strong>
-              <ul className="list-disc list-inside ml-4 mt-1">
-                <li>「Rotary」テストタイプを選択</li>
-                <li>XR20デバイスが認識されていることを確認</li>
-              </ul>
-            </li>
-            <li>
-              <strong>環境補正</strong>
-              <ul className="list-disc list-inside ml-4 mt-1">
-                <li>温度・気圧・湿度センサーの値を確認</li>
-              </ul>
-            </li>
-          </ol>
-        </section>
-
-        <section>
-          <h3 className="text-md font-bold text-slate-700">測定手順（位置自動キャプチャ方式）</h3>
-          <ol className="list-decimal list-inside space-y-2 text-slate-600">
-            <li><strong>アライメント</strong> - レーザービームがXR20リフレクターに正しく戻ることを確認</li>
-            <li><strong>ターゲット設定</strong> - 本ツールの自動操作スクリプトがCARTOに条件を自動入力</li>
-            <li><strong>測定開始</strong> - CARTOで「Start」→ NCプログラムの自動運転を開始</li>
-            <li><strong>自動キャプチャ</strong> - CARTOのfeedrate detection機能が位置到達を自動検知してデータ取得</li>
-            <li><strong>データ確認</strong> - 全点測定後、CSVエクスポート</li>
-          </ol>
-        </section>
-
-        <section>
-          <h3 className="text-md font-bold text-slate-700">位置自動キャプチャ（Feedrate Detection）</h3>
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-blue-800">
-            CARTOのRotaryテストでは、機械軸が各ターゲット位置に到達して停止したことを自動検知し、
-            データを自動的にキャプチャします。NCプログラムのドゥエル中にCARTOが自動で測定値を記録するため、
-            F9キーの手動操作は不要です。
+          <h3 className="text-md font-bold text-slate-700">CARTOソフトウェアスイート</h3>
+          <p className="text-slate-600">Renishaw社のCARTOは3つのアプリケーションで構成されます：</p>
+          <div className="grid grid-cols-3 gap-3 mt-2">
+            <div className="bg-blue-50 rounded-lg p-3">
+              <p className="font-bold text-blue-800">Capture</p>
+              <p className="text-sm text-blue-600">計測データの取得</p>
+            </div>
+            <div className="bg-emerald-50 rounded-lg p-3">
+              <p className="font-bold text-emerald-800">Explore</p>
+              <p className="text-sm text-emerald-600">国際規格に則った解析</p>
+            </div>
+            <div className="bg-amber-50 rounded-lg p-3">
+              <p className="font-bold text-amber-800">Compensate</p>
+              <p className="text-sm text-amber-600">補正ファイルの生成</p>
+            </div>
           </div>
         </section>
 
         <section>
-          <h3 className="text-md font-bold text-slate-700">CSVエクスポート手順</h3>
-          <ol className="list-decimal list-inside space-y-1 text-slate-600">
-            <li>測定完了後、CARTOメニューから「Export」選択</li>
-            <li>「CSV」形式を選択</li>
-            <li>ファイルを保存</li>
-            <li>本ツールの「測定データ」タブで読み込み</li>
+          <h3 className="text-md font-bold text-slate-700">オンアクシスロータリ テスト手順</h3>
+          <ol className="list-decimal list-inside space-y-2 text-slate-600">
+            <li><strong>Capture起動</strong> → ロータリモードを選択</li>
+            <li><strong>XR20接続</strong> →「開いて参照」からXR20をBluetooth接続（シリアル番号で検索）</li>
+            <li><strong>「参照」</strong>を選択 → XR20の向きを調整し基準位置を確立</li>
+            <li><strong>[テスト情報]タブ</strong> → テストタイトル、機械オペレータ、メモ等を入力</li>
+            <li><strong>[機械]タブ</strong> → 機械名、シリアル番号、ターゲット分解能、軸名を入力</li>
+            <li><strong>[ターゲット]タブ</strong> → 二方向（CW/CCW）、最初/最後のターゲット、間隔、実行回数、オーバーランを設定</li>
+            <li><strong>[装置]タブ</strong> → 平均化処理とトリガーパラメータ（公差・安定時間・安定範囲）を設定</li>
+            <li><strong>[送り速度検出]</strong> → 自動/手動/位置追跡 を選択</li>
+            <li><strong>パートプログラム作成</strong>（任意）→ CARTOがNCプログラムを自動生成可能</li>
+            <li><strong>「テスト開始」</strong>を押す → XR20のキャリブレーションサイクル開始</li>
+            <li><strong>機械のサイクルスタート</strong>を押す</li>
           </ol>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">トリガータイプ「位置」（自動データ収集）</h3>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-blue-800">
+            <p className="font-bold mb-2">公式マニュアルより：</p>
+            <p className="italic">「[トリガータイプ]を[位置]にしている場合は、データが自動的に収集されます。」</p>
+            <div className="mt-3 space-y-1 text-sm">
+              <p><strong>公差</strong> — 許容範囲内とみなすターゲット値からの差（両側）</p>
+              <p><strong>安定時間</strong> — 機械が安定範囲内にとどまっていなければならない時間</p>
+              <p><strong>安定範囲</strong> — 許容範囲内にあるとみなされる位置の最大値</p>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">テスト完了後</h3>
+          <ol className="list-decimal list-inside space-y-1 text-slate-600">
+            <li>テストステータスに「完了」が表示される</li>
+            <li>テストを<strong>保存</strong></li>
+            <li><strong>「解析」</strong>を押すとExploreが起動</li>
+            <li>Exploreで国際規格に基づく解析、PDFレポート生成、CSVエクスポートが可能</li>
+          </ol>
+        </section>
+
+        <section>
+          <h3 className="text-md font-bold text-slate-700">XR20ステータスLED</h3>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            {[
+              ["緑 点灯", "電源ON、通信未確立"],
+              ["青 点灯", "通信確立、測定待機中"],
+              ["青 点滅", "通信確認中 / 測定中"],
+              ["オレンジ 点灯", "ローバッテリ（測定待機）"],
+              ["オレンジ 点滅", "ローバッテリ（測定中）"],
+              ["赤 点灯", "不具合（トラブルシューティング参照）"],
+            ].map(([led, meaning]) => (
+              <div key={led} className="bg-slate-50 rounded p-2 flex gap-2">
+                <span className="font-bold text-slate-700 shrink-0">{led}</span>
+                <span className="text-slate-600">{meaning}</span>
+              </div>
+            ))}
+          </div>
         </section>
 
         <section>
           <h3 className="text-md font-bold text-slate-700">トラブルシューティング</h3>
           <div className="space-y-2">
             {[
-              ["信号が弱い / 赤色表示", "レーザーとリフレクターのアライメント再調整、光路上の障害物除去、リフレクター面の汚れ確認"],
-              ["自動キャプチャされない", "CARTOのfeedrate detection設定を確認、ドゥエル時間を長くする、NCプログラムの送り速度を確認"],
-              ["測定値がずれる", "環境補正値を確認、XR20の取り付け確認、アライメントやり直し"],
+              ["信号が弱い / 赤色表示", "レーザーとXR20リフレクターのアライメント再調整。XL-80使用時は±1mm以内、XMシステム使用時は±0.25mm以内の精度が必要"],
+              ["XR20がPCに接続できない", "Bluetooth設定を確認。CARTOはMicrosoftのBluetoothスタックのみ対応。USB Bluetoothドングルが必要な場合あり"],
+              ["データが自動収集されない", "装置タブのトリガータイプが「位置」になっているか確認。公差・安定時間・安定範囲の値を調整"],
+              ["測定値がずれる", "環境補正ユニットの値を確認。XR20の取り付けを確認（センタリングエイドで回転中心に合わせる）"],
             ].map(([problem, solution]) => (
               <div key={problem} className="bg-red-50 border border-red-100 rounded-lg p-3">
                 <p className="font-bold text-red-800 text-sm">{problem}</p>
@@ -1666,16 +1631,6 @@ function CartoHelpContent() {
               </div>
             ))}
           </div>
-        </section>
-
-        <section>
-          <h3 className="text-md font-bold text-slate-700">注意事項</h3>
-          <ul className="list-disc list-inside space-y-1 text-slate-600">
-            <li>測定中はレーザー光路を遮らないこと</li>
-            <li>温度変化が大きい場合は環境補正を更新</li>
-            <li>XR20のバッテリー残量に注意</li>
-            <li>精密な測定には十分なウォームアップ時間が必要</li>
-          </ul>
         </section>
       </div>
     </div>
