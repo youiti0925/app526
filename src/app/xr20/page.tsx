@@ -37,6 +37,7 @@ import {
   generatePhaseNCProgram,
   calculateStats,
   parseCSVData,
+  parseCartoData,
   calcRepeatability,
   generateCartoTargetCSV,
 } from "@/lib/xr20/calculations";
@@ -122,15 +123,21 @@ export default function XR20Page() {
     downloadFile(csv, "XR20_CARTO_TARGETS.csv", "text/csv");
   }, [targets]);
 
+  const [dataPhase, setDataPhase] = useState<"wheel" | "worm" | "repeat">("wheel");
+
   const handleParseData = useCallback(() => {
-    if (targets.length === 0) {
-      alert("先にターゲットリストを生成してください。");
+    if (!csvInput.trim()) {
+      alert("CARTOからコピーしたデータを貼り付けてください。");
       return;
     }
-    const rows = parseCSVData(csvInput, targets);
-    setMeasurements(rows);
-    if (rows.length > 0) setActiveTab("results");
-  }, [csvInput, targets]);
+    const rows = parseCartoData(csvInput, dataPhase);
+    if (rows.length === 0) {
+      alert("有効なデータが見つかりませんでした。CARTOの「テスト偏差の編集」からCtrl+Cでコピーしてください。");
+      return;
+    }
+    setMeasurements(prev => [...prev, ...rows]);
+    setActiveTab("results");
+  }, [csvInput, dataPhase]);
 
   // === 自動化フロー（フェーズ別: ホイール → ウォーム → 再現性） ===
 
@@ -166,9 +173,8 @@ export default function XR20Page() {
 
   // STEP 3: フェーズ完了 → CSVドロップで解析
   const handlePhaseCSVDrop = useCallback((csvText: string, filename: string) => {
-    if (targets.length === 0) return;
-    const phaseTargets = targets.filter(t => t.phase === currentPhase);
-    const rows = parseCSVData(csvText, phaseTargets);
+    // CARTOデータ形式でパース（テスト偏差の編集 → Ctrl+C）
+    const rows = parseCartoData(csvText, currentPhase);
     if (rows.length === 0) {
       alert("有効なデータが見つかりませんでした。CSVの形式を確認してください。");
       return;
@@ -309,6 +315,8 @@ export default function XR20Page() {
                   setCsvInput={setCsvInput}
                   onParse={handleParseData}
                   measurements={measurements}
+                  dataPhase={dataPhase}
+                  setDataPhase={setDataPhase}
                 />
               )}
               {activeTab === "results" && (
@@ -1062,23 +1070,45 @@ function DataTab({
   setCsvInput,
   onParse,
   measurements,
+  dataPhase,
+  setDataPhase,
 }: {
   csvInput: string;
   setCsvInput: (v: string) => void;
   onParse: () => void;
   measurements: MeasurementRow[];
+  dataPhase: "wheel" | "worm" | "repeat";
+  setDataPhase: (v: "wheel" | "worm" | "repeat") => void;
 }) {
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-bold text-slate-800 mb-2">測定データ入力</h2>
         <p className="text-sm text-slate-500 mb-4">
-          CARTOからエクスポートしたCSVデータを貼り付けてください。
-          形式: ターゲット角度, 測定角度, 誤差(arc sec) （カンマまたはタブ区切り）
+          CARTO Exploreの「テスト偏差の編集」を開き、データを<strong>Ctrl+C</strong>でコピーして下に貼り付け。
         </p>
+        <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 text-xs text-slate-600 font-mono">
+          <p className="font-bold text-slate-700 mb-1">CARTOデータ形式（タブ区切り）:</p>
+          <p>インデックス &nbsp; ターゲット(°) &nbsp; Run1(+) &nbsp; Run1(-) &nbsp; [Run2(+) &nbsp; Run2(-) ...]</p>
+          <p className="mt-1 text-slate-500">(+)=CW方向、(-)=CCW方向、単位: arcseconds</p>
+        </div>
+
+        {/* フェーズ選択 */}
+        <div className="mb-3">
+          <label className="block text-sm font-medium text-slate-700 mb-2">データの種類</label>
+          <div className="flex gap-3">
+            {([["wheel", "ホイール"], ["worm", "ウォーム"], ["repeat", "再現性"]] as const).map(([val, label]) => (
+              <label key={val} className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer ${dataPhase === val ? "bg-blue-50 border-blue-400 text-blue-700" : "border-slate-300 text-slate-600"}`}>
+                <input type="radio" name="dataPhase" value={val} checked={dataPhase === val} onChange={() => setDataPhase(val)} className="sr-only" />
+                {label}
+              </label>
+            ))}
+          </div>
+        </div>
+
         <textarea
           className="w-full h-64 border border-slate-300 rounded-lg p-4 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          placeholder={`0.0000, 0.0002, 0.72\n10.0000, 10.0001, 0.36\n20.0000, 19.9998, -0.72\n...`}
+          placeholder={`1\t0.00000\t0.0\t61.1\n2\t8.00000\t-2.1\t59.1\n3\t16.00000\t-1.5\t56.4\n...`}
           value={csvInput}
           onChange={(e) => setCsvInput(e.target.value)}
         />

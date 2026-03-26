@@ -275,9 +275,67 @@ export function calculateStats(rows: MeasurementRow[]): EvaluationStats {
 }
 
 // ============================================================
-// CSVパース（ホイール + ウォーム + 再現性 自動分離）
+// CARTOデータパース（テスト偏差の編集 → Ctrl+C形式）
 // ============================================================
+// フォーマット（タブ区切り）:
+//   割出し精度: インデックス \t ターゲット(°) \t Run1(+) \t Run1(-)
+//   再現性:     インデックス \t ターゲット(°) \t Run1(+) \t Run1(-) \t Run2(+) \t Run2(-) \t ...
+//   (+) = CW、(-) = CCW、単位: arcseconds
 
+export function parseCartoData(
+  text: string,
+  phase: "wheel" | "worm" | "repeat"
+): MeasurementRow[] {
+  const lines = text
+    .trim()
+    .split("\n")
+    .filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("//") && !l.startsWith("インデックス"));
+
+  const rows: MeasurementRow[] = [];
+  let no = 1;
+
+  for (const line of lines) {
+    const parts = line.split(/\t/).map((s) => s.trim());
+    if (parts.length < 4) continue;
+
+    const targetAngle = parseFloat(parts[1]);
+    if (isNaN(targetAngle)) continue;
+
+    // Run pairs: parts[2]=Run1(+), parts[3]=Run1(-), parts[4]=Run2(+), parts[5]=Run2(-), ...
+    const numRuns = Math.floor((parts.length - 2) / 2);
+    for (let run = 0; run < numRuns; run++) {
+      const cwVal = parseFloat(parts[2 + run * 2]);
+      const ccwVal = parseFloat(parts[3 + run * 2]);
+
+      if (!isNaN(cwVal)) {
+        rows.push({
+          no: no++,
+          targetAngle,
+          measuredAngle: targetAngle + cwVal / 3600,  // arcsec → degree offset
+          errorArcSec: cwVal,
+          direction: "cw",
+          phase,
+          trial: phase === "repeat" ? run + 1 : 0,
+        });
+      }
+      if (!isNaN(ccwVal)) {
+        rows.push({
+          no: no++,
+          targetAngle,
+          measuredAngle: targetAngle + ccwVal / 3600,
+          errorArcSec: ccwVal,
+          direction: "ccw",
+          phase,
+          trial: phase === "repeat" ? run + 1 : 0,
+        });
+      }
+    }
+  }
+
+  return rows;
+}
+
+// 旧パーサー（後方互換）
 export function parseCSVData(csv: string, targets: TargetPoint[]): MeasurementRow[] {
   const lines = csv
     .trim()
