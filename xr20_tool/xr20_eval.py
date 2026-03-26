@@ -587,500 +587,261 @@ def _build_move_cmd(ax: str, angle: float, feed_mode: str, feed_rate: int) -> st
 
 
 # ============================================================
-# CARTO監視
+# CARTOデータパース（テスト偏差の編集 → Ctrl+C形式）
 # ============================================================
-
-# Windows API定数
-WM_KEYDOWN = 0x0100
-WM_KEYUP = 0x0101
-VK_F9 = 0x78
-
-
-def find_window_by_title(title_part: str) -> int:
-    """ウィンドウタイトルの部分一致検索"""
-    if not HAS_WIN32:
-        return 0
-    results = []
-    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
-
-    def callback(hwnd, _):
-        length = user32.GetWindowTextLengthW(hwnd)
-        if length > 0:
-            buf = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, buf, length + 1)
-            if title_part.lower() in buf.value.lower():
-                results.append(hwnd)
-        return True
-
-    user32.EnumWindows(WNDENUMPROC(callback), 0)
-    return results[0] if results else 0
+# フォーマット（タブ区切り）:
+#   割出し精度: インデックス \t ターゲット(°) \t Run1(+) \t Run1(-)
+#   再現性:     インデックス \t ターゲット(°) \t Run1(+) \t Run1(-) \t Run2(+) \t Run2(-) \t ...
+#   (+) = CW、(-) = CCW、単位: arcseconds
 
 
-def send_f9_key(hwnd: int) -> bool:
-    """PostMessageでF9キーを送信"""
-    if not HAS_WIN32 or not hwnd:
+def parse_carto_data(text: str, phase: str = "wheel") -> list[MeasurementRow]:
+    """CARTOの「テスト偏差の編集」からCtrl+Cでコピーしたデータをパース"""
+    lines = [l for l in text.strip().splitlines()
+             if l.strip() and not l.startswith("#") and not l.startswith("インデックス")]
+    rows = []
+    no = 1
+    for line in lines:
+        parts = [s.strip() for s in line.split("\t")]
+        if len(parts) < 4:
+            continue
+        try:
+            target_angle = float(parts[1])
+        except ValueError:
+            continue
+        num_runs = (len(parts) - 2) // 2
+        for run in range(num_runs):
+            try:
+                cw_val = float(parts[2 + run * 2])
+                rows.append(MeasurementRow(
+                    no=no, target_angle=target_angle,
+                    measured_angle=target_angle + cw_val / 3600,
+                    error_arcsec=cw_val, direction="cw", phase=phase,
+                    trial=run + 1 if phase == "repeat" else 0))
+                no += 1
+            except (ValueError, IndexError):
+                pass
+            try:
+                ccw_val = float(parts[3 + run * 2])
+                rows.append(MeasurementRow(
+                    no=no, target_angle=target_angle,
+                    measured_angle=target_angle + ccw_val / 3600,
+                    error_arcsec=ccw_val, direction="ccw", phase=phase,
+                    trial=run + 1 if phase == "repeat" else 0))
+                no += 1
+            except (ValueError, IndexError):
+                pass
+    return rows
+
+
+# ============================================================
+# CARTO自動操作（pywinauto）
+# ============================================================
+# UI要素名はCARTO実画面スクリーンショット（2026/03/26）から確認。
+# 実際のAutomation IDと異なる場合は dump_carto_controls() で確認して修正。
+
+
+def _safe_click(win, **kwargs) -> bool:
+    """UI要素を探してクリック。見つからなければFalse。"""
+    if not HAS_PYWINAUTO:
         return False
     try:
-        user32.PostMessageW(hwnd, WM_KEYDOWN, VK_F9, 0)
-        time.sleep(0.05)
-        user32.PostMessageW(hwnd, WM_KEYUP, VK_F9, 0)
+        ctrl = win.child_window(**kwargs)
+        ctrl.wait("visible", timeout=10)
+        ctrl.click_input()
+        time.sleep(0.5)
         return True
     except Exception:
         return False
 
 
-class CartoMonitor:
-    """CARTO画面監視＆自動F9送信"""
-
-    def __init__(self, cfg: XR20Config, on_log=None, on_capture=None, on_status=None,
-                 total_targets=0, on_all_complete=None):
-        self.cfg = cfg
-        self.on_log = on_log or (lambda msg: None)
-        self.on_capture = on_capture or (lambda n: None)
-        self.on_status = on_status or (lambda s: None)
-        self.total_targets = total_targets          # 全ターゲット数（0=無制限）
-        self.on_all_complete = on_all_complete or (lambda: None)  # 全完了時コールバック
-        self._running = False
-        self._paused = False
-        self._thread: Optional[threading.Thread] = None
-        self._capture_count = 0
-        self._values: list[tuple[float, float]] = []
-        self._movement_detected = False
-        self._stable_since: Optional[float] = None
-
-    def start(self):
-        if self._running:
-            return
-        self._running = True
-        self._paused = False
-        self._capture_count = 0
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def pause(self):
-        self._paused = not self._paused
-        state = "一時停止" if self._paused else "再開"
-        self.on_log(f"監視{state}")
-        self.on_status("paused" if self._paused else "running")
-
-    def stop(self):
-        self._running = False
-        self.on_status("idle")
-
-    def _run(self):
-        self.on_status("running")
-        self.on_log("CARTO監視を開始します...")
-
-        hwnd = find_window_by_title(self.cfg.carto_window_title)
-        if not hwnd:
-            self.on_log(f"エラー: CARTOウィンドウが見つかりません (タイトル: '{self.cfg.carto_window_title}')")
-            self.on_status("idle")
-            self._running = False
-            return
-
-        self.on_log(f"CARTOウィンドウ検出: hwnd=0x{hwnd:08X}")
-
-        # 値読み取り方法の初期化
-        reader = self._init_reader()
-        if not reader:
-            self.on_log("エラー: 値読み取り方法が利用できません")
-            self.on_status("idle")
-            self._running = False
-            return
-
-        interval = self.cfg.monitor_interval_ms / 1000.0
-        self._values = []
-        self._movement_detected = False
-        self._stable_since = None
-
-        while self._running:
-            if self._paused:
-                time.sleep(0.1)
-                continue
-
-            value = reader()
-            if value is None:
-                time.sleep(interval)
-                continue
-
-            state = self._update_stability(value)
-
-            if state == "moving":
-                self.on_log(f"  移動中... {value:.4f}°")
-            elif state == "stable":
-                self._capture_count += 1
-                self.on_log(f"  安定検出 {value:.4f}° → F9送信 (#{self._capture_count})")
-
-                if send_f9_key(hwnd):
-                    self.on_log(f"  キャプチャ #{self._capture_count} 完了")
-                    self.on_capture(self._capture_count)
-                else:
-                    self.on_log("  F9送信失敗 - リトライ...")
-                    time.sleep(0.5)
-                    if send_f9_key(hwnd):
-                        self.on_log(f"  キャプチャ #{self._capture_count} 完了(リトライ)")
-                        self.on_capture(self._capture_count)
-                    else:
-                        self.on_log("  F9送信失敗")
-
-                self._values = []
-                self._movement_detected = False
-                self._stable_since = None
-                time.sleep(self.cfg.post_f9_wait_ms / 1000.0)
-
-                # 全ターゲット測定完了チェック
-                if self.total_targets > 0 and self._capture_count >= self.total_targets:
-                    self.on_log(f"全{self.total_targets}点の測定が完了しました！")
-                    self._running = False
-                    self.on_all_complete()
-
-            time.sleep(interval)
-
-        self.on_log(f"監視停止 (合計キャプチャ: {self._capture_count})")
-        self.on_status("idle")
-
-    def _init_reader(self):
-        # UI Automation (pywinauto)
-        if HAS_PYWINAUTO:
-            try:
-                app = Application(backend="uia").connect(title_re=f".*{self.cfg.carto_window_title}.*", timeout=5)
-                dlg = app.window(title_re=f".*{self.cfg.carto_window_title}.*")
-                self.on_log("UI Automation方式で接続")
-
-                def read_uia():
-                    try:
-                        for ctrl in dlg.descendants():
-                            try:
-                                text = ctrl.window_text()
-                                if text and self._is_angle_text(text):
-                                    return float(text.replace("°", "").strip())
-                            except Exception:
-                                continue
-                    except Exception:
-                        pass
-                    return None
-
-                return read_uia
-            except Exception as e:
-                self.on_log(f"UI Automation利用不可: {e}")
-
-        self.on_log("注意: pywinautoが未インストールのため、CARTO値の自動読み取りができません")
-        self.on_log("pip install pywinauto でインストールしてください")
-        return None
-
-    @staticmethod
-    def _is_angle_text(text: str) -> bool:
-        t = text.replace("°", "").replace(" ", "").replace("+", "").replace("-", "")
-        try:
-            v = float(t)
-            return -3600 < v < 3600
-        except ValueError:
-            return False
-
-    def _update_stability(self, value: float) -> str:
-        now = time.time()
-        self._values.append((now, value))
-
-        if len(self._values) < 2:
-            return "idle"
-
-        prev = self._values[-2][1]
-        if abs(value - prev) > self.cfg.stability_threshold:
-            self._movement_detected = True
-            self._stable_since = None
-            return "moving"
-
-        if not self._movement_detected:
-            return "idle"
-
-        if len(self._values) >= self.cfg.stability_count:
-            recent = self._values[-self.cfg.stability_count :]
-            vals = [v for _, v in recent]
-            if max(vals) - min(vals) <= self.cfg.stability_threshold:
-                if self._stable_since is None:
-                    self._stable_since = now
-                if (now - self._stable_since) * 1000 >= self.cfg.stability_min_time_ms:
-                    return "stable"
-                return "stabilizing"
-            self._stable_since = None
-            return "moving"
-
-        return "stabilizing"
-
-
-# ============================================================
-# CARTO自動化
-# ============================================================
-
-class CartoAutomation:
-    """
-    CARTO GUI操作の自動化クラス (pywinauto使用)
-    - 起動 / ターゲットリストインポート / 手動トリガーモード設定 / CSVエクスポート
-    """
-
-    def __init__(self, cfg: XR20Config, on_log=None):
-        self.cfg = cfg
-        self.on_log = on_log or (lambda msg: None)
-
-    # ----------------------------------------------------------
-    # CARTOを起動してウィンドウが現れるまで待機
-    # ----------------------------------------------------------
-    def launch_carto(self) -> bool:
-        """CARTOを起動する。既に起動していればそのまま返す。"""
-        if not self.cfg.carto_exe_path:
-            self.on_log("エラー: CARTOの実行ファイルパスが設定されていません。")
-            return False
-
-        if not os.path.exists(self.cfg.carto_exe_path):
-            self.on_log(f"エラー: 指定されたCARTOが見つかりません: {self.cfg.carto_exe_path}")
-            return False
-
-        # すでに起動しているか確認
-        hwnd = find_window_by_title(self.cfg.carto_window_title)
-        if hwnd:
-            self.on_log(f"CARTOは既に起動しています (hwnd=0x{hwnd:08X})")
-            return True
-
-        import subprocess
-        self.on_log(f"CARTOを起動中: {self.cfg.carto_exe_path}")
-        try:
-            subprocess.Popen([self.cfg.carto_exe_path])
-        except Exception as e:
-            self.on_log(f"起動失敗: {e}")
-            return False
-
-        # ウィンドウが現れるまで最大30秒待機
-        for i in range(60):
-            time.sleep(0.5)
-            hwnd = find_window_by_title(self.cfg.carto_window_title)
-            if hwnd:
-                self.on_log(f"CARTO起動完了 (hwnd=0x{hwnd:08X})")
-                time.sleep(2.0)  # 初期化待ち
-                return True
-            if i % 10 == 9:
-                self.on_log(f"  起動待機中... ({(i+1)//2}秒)")
-
-        self.on_log("エラー: CARTOウィンドウが30秒以内に表示されませんでした。")
+def _safe_set_text(win, value: str, **kwargs) -> bool:
+    """UI入力欄にテキストをセット。"""
+    if not HAS_PYWINAUTO:
+        return False
+    try:
+        from pywinauto.keyboard import send_keys
+        ctrl = win.child_window(**kwargs)
+        ctrl.wait("visible", timeout=10)
+        ctrl.click_input()
+        time.sleep(0.2)
+        send_keys("^a")
+        time.sleep(0.1)
+        send_keys(value, with_spaces=True)
+        time.sleep(0.3)
+        return True
+    except Exception:
         return False
 
-    # ----------------------------------------------------------
-    # ターゲットリストのインポート
-    # ----------------------------------------------------------
-    def import_target_list(self, csv_path: str) -> bool:
-        """
-        CARTOにターゲットリストCSVをインポートする。
-        File > Import Target List メニューを操作。
-        """
-        if not HAS_PYWINAUTO:
-            self.on_log("エラー: pywinautoが未インストールです。pip install pywinauto でインストールしてください。")
-            return False
 
-        if not os.path.exists(csv_path):
-            self.on_log(f"エラー: CSVファイルが見つかりません: {csv_path}")
-            return False
+def connect_carto():
+    """既に起動しているCARTOに接続。"""
+    if not HAS_PYWINAUTO:
+        return None
+    try:
+        app = Application(backend="uia").connect(title_re=".*CARTO.*", timeout=5)
+        return app
+    except Exception:
+        return None
 
+
+def launch_carto(exe_path: str):
+    """CARTOを起動。"""
+    if not HAS_PYWINAUTO:
+        return None
+    if not os.path.exists(exe_path):
+        return None
+    try:
+        app = Application(backend="uia").start(exe_path)
+        time.sleep(8)
+        return app
+    except Exception:
+        return None
+
+
+def get_or_launch_carto(exe_path: str):
+    """CARTOに接続、なければ起動。"""
+    app = connect_carto()
+    if app:
+        return app
+    app = launch_carto(exe_path)
+    return app
+
+
+def carto_select_rotary(app):
+    """ようこそ画面からロータリテスト選択。"""
+    win = app.top_window()
+    if not _safe_click(win, title="ロータリ", control_type="Button"):
+        _safe_click(win, title="Rotary", control_type="Button")
+    time.sleep(3)
+
+
+def carto_setup_targets(app, first_target: float, last_target: float,
+                        interval: float, overrun: float, runs: int = 1):
+    """ターゲットタブ設定。"""
+    win = app.top_window()
+    _safe_click(win, title="ターゲット", control_type="Button")
+    time.sleep(1)
+    # 二方向チェック
+    try:
+        cb = win.child_window(title="二方向", control_type="CheckBox")
+        if not cb.get_toggle_state():
+            cb.click_input()
+    except Exception:
+        pass
+    _safe_set_text(win, f"{first_target:.5f}", title="最初のターゲット")
+    _safe_set_text(win, f"{last_target:.5f}", title="最後のターゲット")
+    _safe_set_text(win, f"{interval:.5f}", title="間隔")
+    _safe_set_text(win, str(runs), title="実行回数")
+    _safe_set_text(win, f"{overrun:.5f}", title="オーバーラン")
+
+
+def carto_setup_trigger(app, tolerance=0.25, stability_time=1.0, stability_range=0.001):
+    """装置タブ: 位置トリガー設定。"""
+    win = app.top_window()
+    _safe_click(win, title="装置", control_type="Button")
+    time.sleep(1)
+    try:
+        combo = win.child_window(title="トリガータイプ", control_type="ComboBox")
+        combo.select("位置")
+    except Exception:
+        pass
+    _safe_set_text(win, f"{tolerance:.5f}", title="公差")
+    _safe_set_text(win, str(stability_time), title="安定時間")
+    _safe_set_text(win, f"{stability_range:.5f}", title="安定範囲")
+    _safe_click(win, title="自動", control_type="Button")
+
+
+def carto_start_test(app):
+    """データ取得タブでテスト開始。"""
+    win = app.top_window()
+    _safe_click(win, title="データ取得", control_type="Button")
+    time.sleep(2)
+    if not _safe_click(win, title="テスト開始", control_type="Button"):
+        _safe_click(win, title="Start", control_type="Button")
+    time.sleep(3)
+
+
+def carto_wait_for_complete(app, poll_interval=2.0) -> bool:
+    """「テストを完了しました」テキスト表示まで待つ。"""
+    while True:
         try:
-            app = Application(backend="uia").connect(
-                title_re=f".*{self.cfg.carto_window_title}.*", timeout=10
-            )
-            dlg = app.window(title_re=f".*{self.cfg.carto_window_title}.*")
-            dlg.set_focus()
-            time.sleep(0.3)
-
-            self.on_log("File メニューを開いています...")
-            # Fileメニューを開く
-            try:
-                dlg.menu_select("File->Import Target List")
-            except Exception:
-                try:
-                    dlg.menu_select("ファイル->ターゲットリストのインポート")
-                except Exception as e:
-                    self.on_log(f"メニュー操作失敗: {e}")
-                    self.on_log("ヒント: CARTOのメニュー名が異なる可能性があります。手動でインポートしてください。")
-                    return False
-
-            time.sleep(1.0)
-
-            # ファイル選択ダイアログにパスを入力
-            from pywinauto import keyboard
-            import pywinauto.findwindows as fw
-            # ファイルダイアログが開くまで待機
-            for _ in range(20):
-                time.sleep(0.3)
-                try:
-                    open_dlg = app.window(title_re=".*(開|Open|参照|Browse).*")
-                    if open_dlg.exists():
-                        break
-                except Exception:
-                    pass
-
-            try:
-                # ファイル名欄に直接パスを入力
-                open_dlg = app.window(title_re=".*(開|Open|参照|Browse).*")
-                file_edit = open_dlg.child_window(class_name="Edit")
-                file_edit.set_text(csv_path)
-                time.sleep(0.2)
-                keyboard.send_keys("{ENTER}")
-                time.sleep(1.0)
-                self.on_log(f"ターゲットリストをインポートしました: {csv_path}")
+            win = app.top_window()
+            texts = win.texts()
+            all_text = " ".join(str(t) for t in texts if t)
+            if "テストを完了しました" in all_text or "Test complete" in all_text:
                 return True
-            except Exception as e:
-                self.on_log(f"ファイルダイアログ操作失敗: {e}")
-                self.on_log("ヒント: ファイルダイアログにパスを手動で入力してください。")
-                return False
+        except Exception:
+            pass
+        time.sleep(poll_interval)
 
-        except Exception as e:
-            self.on_log(f"CARTOへの接続失敗: {e}")
-            return False
 
-    # ----------------------------------------------------------
-    # 手動トリガーモードの確認・設定
-    # ----------------------------------------------------------
-    def set_manual_trigger_mode(self) -> bool:
-        """CARTOを手動トリガーモードに設定する。"""
-        if not HAS_PYWINAUTO:
-            self.on_log("pywinautoが未インストールのためスキップ。CARTOを手動でトリガーモードに設定してください。")
-            return False
+def carto_save_test(app):
+    """テスト保存。"""
+    win = app.top_window()
+    if not _safe_click(win, title="保存", control_type="Button"):
+        if not _safe_click(win, title="Save", control_type="Button"):
+            from pywinauto.keyboard import send_keys
+            send_keys("^s")
+    time.sleep(5)
 
-        try:
-            app = Application(backend="uia").connect(
-                title_re=f".*{self.cfg.carto_window_title}.*", timeout=10
-            )
-            dlg = app.window(title_re=f".*{self.cfg.carto_window_title}.*")
-            dlg.set_focus()
-            time.sleep(0.3)
 
-            # Measurement > Manual Trigger もしくは Settings > Trigger Mode
-            for menu_path in [
-                "Measurement->Manual Trigger",
-                "Measure->Manual Trigger",
-                "Settings->Trigger Mode->Manual",
-                "測定->手動トリガー",
-                "設定->トリガーモード->手動",
-            ]:
-                try:
-                    dlg.menu_select(menu_path)
-                    self.on_log(f"手動トリガーモードに設定: {menu_path}")
-                    time.sleep(0.5)
-                    return True
-                except Exception:
-                    continue
+def carto_open_explore_and_copy(app) -> Optional[str]:
+    """Explore起動 → テスト偏差の編集 → Ctrl+C → クリップボードデータ取得。"""
+    win = app.top_window()
+    if not _safe_click(win, title="解析", control_type="Button"):
+        _safe_click(win, title="Explore", control_type="Button")
+    time.sleep(5)
 
-            self.on_log("手動トリガーモードの自動設定に失敗。CARTOで手動設定してください。")
-            return False
+    try:
+        explore_app = Application(backend="uia").connect(title_re=".*CARTO.*Explore.*", timeout=10)
+        explore_win = explore_app.top_window()
+    except Exception:
+        return None
 
-        except Exception as e:
-            self.on_log(f"CARTO接続失敗: {e}")
-            return False
+    _safe_click(explore_win, title="生データ", control_type="Button")
+    time.sleep(2)
+    _safe_click(explore_win, title="テスト偏差の編集", control_type="Button")
+    time.sleep(2)
 
-    # ----------------------------------------------------------
-    # 測定結果CSVのエクスポート
-    # ----------------------------------------------------------
-    def export_measurement_csv(self) -> Optional[str]:
-        """
-        CARTOから測定結果CSVをエクスポートする。
-        File > Export Results を操作。
-        エクスポートしたファイルパスを返す。
-        """
-        if not HAS_PYWINAUTO:
-            self.on_log("エラー: pywinautoが未インストールです。pip install pywinauto でインストールしてください。")
-            return None
+    try:
+        from pywinauto.keyboard import send_keys
+        send_keys("^a")
+        time.sleep(0.5)
+        send_keys("^c")
+        time.sleep(0.5)
+        import subprocess
+        result = subprocess.run(["powershell", "-command", "Get-Clipboard"],
+                                capture_output=True, text=True, timeout=5)
+        data = result.stdout.strip()
+        if data:
+            dialog = explore_app.top_window()
+            _safe_click(dialog, title="キャンセル", control_type="Button")
+            return data
+    except Exception:
+        pass
+    return None
 
-        try:
-            app = Application(backend="uia").connect(
-                title_re=f".*{self.cfg.carto_window_title}.*", timeout=10
-            )
-            dlg = app.window(title_re=f".*{self.cfg.carto_window_title}.*")
-            dlg.set_focus()
-            time.sleep(0.3)
 
-            self.on_log("測定結果をエクスポート中...")
+def carto_go_home(app):
+    """ホーム画面に戻る。"""
+    win = app.top_window()
+    if not _safe_click(win, title="ホーム", control_type="Button"):
+        _safe_click(win, title="Home", control_type="Button")
+    time.sleep(2)
 
-            # エクスポート先パスを決定
-            export_dir = self.cfg.carto_export_dir or os.path.dirname(os.path.abspath(__file__))
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_path = os.path.join(export_dir, f"XR20_result_{timestamp}.csv")
 
-            # File > Export Results
-            for menu_path in [
-                "File->Export Results",
-                "File->Export->Results",
-                "File->Export->CSV",
-                "ファイル->結果のエクスポート",
-                "ファイル->エクスポート->CSV",
-            ]:
-                try:
-                    dlg.menu_select(menu_path)
-                    self.on_log(f"エクスポートメニュー開きました: {menu_path}")
-                    time.sleep(1.0)
-                    break
-                except Exception:
-                    continue
-            else:
-                self.on_log("エクスポートメニューが見つかりませんでした。手動でエクスポートしてください。")
-                return None
+def dump_carto_controls():
+    """CARTOのUI要素一覧を出力（デバッグ用）。"""
+    app = connect_carto()
+    if not app:
+        print("CARTOに接続できません。CARTOを起動してから実行してください。")
+        return
+    win = app.top_window()
+    print(f"ウィンドウタイトル: {win.window_text()}")
+    win.print_control_identifiers()
 
-            # 保存ダイアログ操作
-            from pywinauto import keyboard
-            for _ in range(20):
-                time.sleep(0.3)
-                try:
-                    save_dlg = app.window(title_re=".*(保存|Save|名前を付け).*")
-                    if save_dlg.exists():
-                        break
-                except Exception:
-                    pass
 
-            try:
-                save_dlg = app.window(title_re=".*(保存|Save|名前を付け).*")
-                file_edit = save_dlg.child_window(class_name="Edit")
-                file_edit.set_text(save_path)
-                time.sleep(0.2)
-                keyboard.send_keys("{ENTER}")
-                time.sleep(1.5)
-                if os.path.exists(save_path):
-                    self.on_log(f"エクスポート完了: {save_path}")
-                    return save_path
-                else:
-                    self.on_log(f"エクスポートファイルが見つかりません: {save_path}")
-                    return None
-            except Exception as e:
-                self.on_log(f"保存ダイアログ操作失敗: {e}")
-                return None
-
-        except Exception as e:
-            self.on_log(f"エクスポート失敗: {e}")
-            return None
-
-    # ----------------------------------------------------------
-    # 全自動シーケンス: 起動 → インポート → 手動トリガー設定
-    # ----------------------------------------------------------
-    def prepare_measurement(self, target_csv_path: str) -> bool:
-        """
-        測定準備の全自動シーケンス:
-          1. CARTO起動 (auto_launchが有効な場合)
-          2. ターゲットリストインポート
-          3. 手動トリガーモード設定
-        """
-        if self.cfg.carto_auto_launch:
-            if not self.launch_carto():
-                return False
-
-        # ウィンドウ存在確認
-        hwnd = find_window_by_title(self.cfg.carto_window_title)
-        if not hwnd:
-            self.on_log("エラー: CARTOが起動していません。先にCARTOを起動してください。")
-            return False
-
-        # ターゲットリストインポート
-        if not self.import_target_list(target_csv_path):
-            self.on_log("ターゲットリストのインポートに失敗しました。手動でインポートしてください。")
-
-        # 手動トリガーモード設定
-        self.set_manual_trigger_mode()
-
-        self.on_log("測定準備完了。NCプログラムを実行して測定を開始してください。")
-        return True
 
 
 # ============================================================
@@ -1240,7 +1001,6 @@ class XR20App:
         self.measurements: list[MeasurementRow] = []
         self.repeat_targets: list[RepeatTargetPoint] = []
         self.repeat_measurements: list[RepeatMeasurementRow] = []
-        self.monitor: Optional[CartoMonitor] = None
 
         # スタイル
         style = ttk.Style()
@@ -1317,14 +1077,6 @@ class XR20App:
         self._add_entry(sec, "repeat_positions", "測定位置 (カンマ区切り °)", self.cfg.repeat_positions)
         self._add_entry(sec, "repeat_count", "繰り返し回数", str(self.cfg.repeat_count))
 
-        # 監視パラメータ
-        sec = self._add_section(inner, "監視パラメータ")
-        self._add_entry(sec, "monitor_interval_ms", "監視間隔 (ms)", str(self.cfg.monitor_interval_ms))
-        self._add_entry(sec, "stability_count", "安定判定回数", str(self.cfg.stability_count))
-        self._add_entry(sec, "stability_threshold", "安定閾値 (°)", str(self.cfg.stability_threshold))
-        self._add_entry(sec, "post_f9_wait_ms", "F9送信後待機 (ms)", str(self.cfg.post_f9_wait_ms))
-        self._add_entry(sec, "stability_min_time_ms", "安定最小時間 (ms)", str(self.cfg.stability_min_time_ms))
-
         # NCプログラム設定
         sec = self._add_section(inner, "NCプログラム設定")
         self._add_entry(sec, "control_axis", "制御軸 (例: A, B, C)", self.cfg.control_axis)
@@ -1346,37 +1098,6 @@ class XR20App:
         ttk.Label(clamp_row, text="", width=30, anchor="e").pack(side="left", padx=(0, 10))
         self._use_clamp_var = tk.BooleanVar(value=self.cfg.use_clamp)
         ttk.Checkbutton(clamp_row, text="クランプあり (M10/M11)", variable=self._use_clamp_var).pack(side="left")
-
-        # CARTO設定
-        sec = self._add_section(inner, "CARTO設定")
-        self._add_entry(sec, "carto_window_title", "CARTOウィンドウタイトル（部分一致）", self.cfg.carto_window_title)
-
-        # CARTO自動化設定
-        sec2 = self._add_section(inner, "CARTO自動化設定")
-
-        # exe パス
-        exe_row = ttk.Frame(sec2)
-        exe_row.pack(fill="x", pady=2)
-        ttk.Label(exe_row, text="CARTO実行ファイルパス", width=30, anchor="e").pack(side="left", padx=(0, 10))
-        self._carto_exe_var = tk.StringVar(value=self.cfg.carto_exe_path)
-        ttk.Entry(exe_row, textvariable=self._carto_exe_var, width=40).pack(side="left")
-        ttk.Button(exe_row, text="参照", command=self._browse_carto_exe).pack(side="left", padx=5)
-
-        # エクスポート先ディレクトリ
-        dir_row = ttk.Frame(sec2)
-        dir_row.pack(fill="x", pady=2)
-        ttk.Label(dir_row, text="CSVエクスポート先フォルダ", width=30, anchor="e").pack(side="left", padx=(0, 10))
-        self._carto_export_dir_var = tk.StringVar(value=self.cfg.carto_export_dir)
-        ttk.Entry(dir_row, textvariable=self._carto_export_dir_var, width=40).pack(side="left")
-        ttk.Button(dir_row, text="参照", command=self._browse_export_dir).pack(side="left", padx=5)
-
-        # 自動化オプション
-        opt_row = ttk.Frame(sec2)
-        opt_row.pack(fill="x", pady=4)
-        self._carto_auto_launch_var = tk.BooleanVar(value=self.cfg.carto_auto_launch)
-        self._carto_auto_export_var = tk.BooleanVar(value=self.cfg.carto_auto_export)
-        ttk.Checkbutton(opt_row, text="CARTO自動起動", variable=self._carto_auto_launch_var).pack(side="left", padx=10)
-        ttk.Checkbutton(opt_row, text="全測定完了後にCSV自動エクスポート", variable=self._carto_auto_export_var).pack(side="left", padx=10)
 
         # ボタン
         btn_frame = ttk.Frame(inner)
@@ -1442,39 +1163,16 @@ class XR20App:
         self.cfg.overrun_angle = float(v["overrun_angle"].get() or 10.0)
         self.cfg.repeat_positions = v["repeat_positions"].get() or "0,90,180,270"
         self.cfg.repeat_count = int(v["repeat_count"].get() or 7)
-        self.cfg.monitor_interval_ms = int(v["monitor_interval_ms"].get() or 150)
-        self.cfg.stability_count = int(v["stability_count"].get() or 10)
-        self.cfg.stability_threshold = float(v["stability_threshold"].get() or 0.001)
-        self.cfg.post_f9_wait_ms = int(v["post_f9_wait_ms"].get() or 1000)
-        self.cfg.stability_min_time_ms = int(v["stability_min_time_ms"].get() or 1000)
-        self.cfg.carto_window_title = v["carto_window_title"].get()
         self.cfg.dwell_time_ms = int(v["dwell_time_ms"].get() or 5000)
         self.cfg.control_axis = (v["control_axis"].get() or "A").upper()
         self.cfg.feed_mode = self._feed_mode_var.get()
         self.cfg.feed_rate = int(v["feed_rate"].get() or 1000)
         self.cfg.use_clamp = self._use_clamp_var.get()
-        self.cfg.carto_exe_path = self._carto_exe_var.get()
-        self.cfg.carto_export_dir = self._carto_export_dir_var.get()
-        self.cfg.carto_auto_launch = self._carto_auto_launch_var.get()
-        self.cfg.carto_auto_export = self._carto_auto_export_var.get()
 
     def _save_config(self):
         self._apply_config()
         self.cfg.save()
         messagebox.showinfo("保存完了", "設定を保存しました。")
-
-    def _browse_carto_exe(self):
-        path = filedialog.askopenfilename(
-            title="CARTOの実行ファイルを選択",
-            filetypes=[("実行ファイル", "*.exe"), ("全てのファイル", "*.*")],
-        )
-        if path:
-            self._carto_exe_var.set(path)
-
-    def _browse_export_dir(self):
-        path = filedialog.askdirectory(title="CSVエクスポート先フォルダを選択")
-        if path:
-            self._carto_export_dir_var.set(path)
 
     def _generate_targets(self):
         self._apply_config()
@@ -1591,85 +1289,39 @@ class XR20App:
     # -------------------------------------------------------
     def _build_control_tab(self):
         frame = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(frame, text=" 測定制御 ")
+        self.notebook.add(frame, text=" CARTO自動測定 ")
 
-        # ステータス表示
-        status_frame = ttk.LabelFrame(frame, text="  ステータス  ", padding=10)
-        status_frame.pack(fill="x", pady=(0, 10))
+        # 説明
+        ttk.Label(frame, text="CARTO自動操作（pywinauto）", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="CARTOの起動→条件設定→テスト開始→完了監視→データ取得を自動化",
+                  foreground="#666").pack(anchor="w", pady=(0, 10))
 
-        row = ttk.Frame(status_frame)
-        row.pack(fill="x")
-        self._ctrl_status_var = tk.StringVar(value="待機中")
-        self._ctrl_point_var = tk.StringVar(value="0 / 0")
-        self._ctrl_remain_var = tk.StringVar(value="0")
-        self._ctrl_angle_var = tk.StringVar(value="-")
+        # ボタン群
+        btn_frame = ttk.LabelFrame(frame, text="  自動操作  ", padding=10)
+        btn_frame.pack(fill="x", pady=(0, 10))
 
-        for label_text, var in [
-            ("ステータス", self._ctrl_status_var),
-            ("測定点", self._ctrl_point_var),
-            ("残り", self._ctrl_remain_var),
-            ("読み取り値", self._ctrl_angle_var),
-        ]:
-            col = ttk.Frame(row)
-            col.pack(side="left", expand=True, padx=10)
-            ttk.Label(col, text=label_text, style="Header.TLabel").pack()
-            ttk.Label(col, textvariable=var, style="Stat.TLabel").pack()
+        row1 = ttk.Frame(btn_frame)
+        row1.pack(fill="x", pady=3)
+        ttk.Button(row1, text="CARTO接続テスト",
+                   command=self._test_carto_auto).pack(side="left", padx=5)
+        ttk.Button(row1, text="UI要素ダンプ（デバッグ）",
+                   command=self._dump_carto).pack(side="left", padx=5)
 
-        # CARTO自動化ボタン群
-        auto_frame = ttk.LabelFrame(frame, text="  CARTO自動化  ", padding=8)
-        auto_frame.pack(fill="x", pady=(0, 8))
+        row2 = ttk.Frame(btn_frame)
+        row2.pack(fill="x", pady=3)
+        ttk.Button(row2, text="全自動測定開始（ホイール→ウォーム→再現性）",
+                   command=self._run_full_auto).pack(side="left", padx=5)
 
-        auto_row1 = ttk.Frame(auto_frame)
-        auto_row1.pack(fill="x", pady=2)
-        ttk.Button(auto_row1, text="① CARTOを起動", command=self._carto_launch).pack(side="left", padx=5)
-        ttk.Button(auto_row1, text="② ターゲットリストをCARTOへ送信", command=self._carto_import_targets).pack(side="left", padx=5)
-        ttk.Button(auto_row1, text="③ 手動トリガーモード設定", command=self._carto_set_trigger_mode).pack(side="left", padx=5)
-
-        auto_row2 = ttk.Frame(auto_frame)
-        auto_row2.pack(fill="x", pady=2)
-        ttk.Button(auto_row2, text="⑤ 結果CSVをCARTOからエクスポート", command=self._carto_export_csv).pack(side="left", padx=5)
-        ttk.Button(auto_row2, text="エクスポートCSVを自動読み込み", command=self._carto_load_exported_csv).pack(side="left", padx=5)
-
-        auto_hint = ttk.Label(auto_frame,
-            text="① 起動 → ② ターゲット送信 → ③ トリガー設定 → ④ NCプログラム実行（機械側） → ⑤ CSVエクスポート → 自動読み込み",
-            foreground="#666666", font=("", 9))
-        auto_hint.pack(pady=(4, 0))
-
-        self._carto_auto_status_var = tk.StringVar(value="")
-        ttk.Label(auto_frame, textvariable=self._carto_auto_status_var, foreground="#0066cc").pack(pady=2)
-
-        # 監視制御ボタン
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill="x", pady=10)
-        ttk.Label(btn_frame, text="F9自動送信監視:", font=("", 9, "bold")).pack(side="left", padx=(0, 5))
-        self._btn_start = ttk.Button(btn_frame, text="▶ 監視開始", command=self._start_monitor)
-        self._btn_start.pack(side="left", padx=5)
-        self._btn_pause = ttk.Button(btn_frame, text="⏸ 一時停止", command=self._pause_monitor, state="disabled")
-        self._btn_pause.pack(side="left", padx=5)
-        self._btn_stop = ttk.Button(btn_frame, text="⏹ 停止", command=self._stop_monitor, state="disabled")
-        self._btn_stop.pack(side="left", padx=5)
-
-        # CARTO接続テスト
-        carto_frame = ttk.Frame(frame)
-        carto_frame.pack(fill="x", pady=5)
-        ttk.Button(carto_frame, text="CARTO接続テスト", command=self._test_carto_connection).pack(side="left", padx=5)
-        self._carto_status_var = tk.StringVar(value="未接続")
-        self._carto_status_label = ttk.Label(carto_frame, textvariable=self._carto_status_var, foreground="gray")
-        self._carto_status_label.pack(side="left", padx=10)
-
-        if not HAS_WIN32:
-            warn = ttk.Label(frame, text="※ Windows環境でないため、CARTO監視機能は利用できません。", foreground="red")
-            warn.pack(pady=5)
-
-        # 状態遷移図
-        state_frame = ttk.LabelFrame(frame, text="  状態遷移  ", padding=10)
-        state_frame.pack(fill="x", pady=(0, 10))
-        ttk.Label(state_frame, text="[待機中] → 数値変化検出 → [移動中] → 数値安定検出 → [安定] → F9送信 → [キャプチャ完了] → [待機中]", wraplength=800).pack()
+        self._auto_status_var = tk.StringVar(value="")
+        ttk.Label(btn_frame, textvariable=self._auto_status_var,
+                  foreground="#0066cc", wraplength=800).pack(pady=5)
 
         # ログ
         log_frame = ttk.LabelFrame(frame, text="  動作ログ  ", padding=5)
         log_frame.pack(fill="both", expand=True)
-        self._log_text = scrolledtext.ScrolledText(log_frame, height=12, font=("Consolas", 9), state="disabled", bg="#1e1e1e", fg="#4ec9b0")
+        self._log_text = scrolledtext.ScrolledText(
+            log_frame, height=20, font=("Consolas", 9),
+            state="disabled", bg="#1e1e1e", fg="#4ec9b0")
         self._log_text.pack(fill="both", expand=True)
 
     def _log(self, msg):
@@ -1679,175 +1331,121 @@ class XR20App:
         self._log_text.see("end")
         self._log_text.configure(state="disabled")
 
-    # -------------------------------------------------------
-    # CARTO自動化ボタンハンドラ
-    # -------------------------------------------------------
-    def _carto_automation(self) -> CartoAutomation:
-        self._apply_config()
-        return CartoAutomation(self.cfg, on_log=lambda msg: self.root.after(0, self._log, msg))
-
-    def _carto_launch(self):
-        self._carto_auto_status_var.set("CARTOを起動中...")
-        def _do():
-            ok = self._carto_automation().launch_carto()
-            self.root.after(0, self._carto_auto_status_var.set,
-                            "CARTO起動完了" if ok else "起動失敗 (ログを確認)")
-        threading.Thread(target=_do, daemon=True).start()
-
-    def _carto_import_targets(self):
-        self._apply_config()
-        if not self.targets:
-            self.targets = generate_targets(self.cfg)
-            self._refresh_targets_tab()
-
-        # 一時CSVを保存してからインポート
-        tmp_path = os.path.join(
-            self.cfg.carto_export_dir or os.path.dirname(os.path.abspath(__file__)),
-            "_xr20_targets_tmp.csv"
-        )
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(generate_carto_target_csv(self.targets))
-        except Exception as e:
-            messagebox.showerror("エラー", f"一時CSVの保存に失敗: {e}")
-            return
-
-        self._carto_auto_status_var.set("ターゲットリストをインポート中...")
-        def _do():
-            ok = self._carto_automation().import_target_list(tmp_path)
-            self.root.after(0, self._carto_auto_status_var.set,
-                            "インポート完了" if ok else "インポート失敗 (手動で実行してください)")
-        threading.Thread(target=_do, daemon=True).start()
-
-    def _carto_set_trigger_mode(self):
-        self._carto_auto_status_var.set("手動トリガーモードを設定中...")
-        def _do():
-            ok = self._carto_automation().set_manual_trigger_mode()
-            self.root.after(0, self._carto_auto_status_var.set,
-                            "手動トリガーモード設定完了" if ok else "設定失敗 (手動で設定してください)")
-        threading.Thread(target=_do, daemon=True).start()
-
-    def _carto_export_csv(self):
-        self._carto_auto_status_var.set("CSVをエクスポート中...")
-        def _do():
-            path = self._carto_automation().export_measurement_csv()
-            if path:
-                self._last_exported_csv = path
-                self.root.after(0, self._carto_auto_status_var.set, f"エクスポート完了: {os.path.basename(path)}")
-            else:
-                self.root.after(0, self._carto_auto_status_var.set, "エクスポート失敗 (手動でエクスポートしてください)")
-        threading.Thread(target=_do, daemon=True).start()
-
-    def _carto_load_exported_csv(self):
-        """エクスポートされたCSVを測定データタブに読み込む"""
-        path = getattr(self, "_last_exported_csv", None)
-        if not path:
-            # ファイルダイアログで選択
-            path = filedialog.askopenfilename(
-                title="エクスポートされたCSVを選択",
-                filetypes=[("CSV", "*.csv"), ("テキスト", "*.txt"), ("全て", "*.*")],
-                initialdir=self.cfg.carto_export_dir or None,
-            )
-        if not path or not os.path.exists(path):
-            return
-        try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                content = f.read()
-            self._csv_text.delete("1.0", "end")
-            self._csv_text.insert("1.0", content)
-            self.notebook.select(3)  # 測定データタブへ
-            self._carto_auto_status_var.set(f"読み込み完了: {os.path.basename(path)}")
-            self._log(f"CSVを読み込みました: {path}")
-        except Exception as e:
-            messagebox.showerror("エラー", f"CSV読み込み失敗: {e}")
-
-    def _on_all_measurements_complete(self):
-        """全ターゲット測定完了時のコールバック"""
-        self._log("=== 全測定完了 ===")
-        self._on_monitor_status("idle")
-        self._btn_start.config(state="normal")
-        self._btn_pause.config(state="disabled")
-        self._btn_stop.config(state="disabled")
-
-        if self.cfg.carto_auto_export:
-            self._log("自動エクスポートを開始します...")
-            self._carto_auto_status_var.set("CSVを自動エクスポート中...")
-            def _do():
-                path = self._carto_automation().export_measurement_csv()
-                if path:
-                    self._last_exported_csv = path
-                    self.root.after(0, self._carto_auto_status_var.set, f"エクスポート完了: {os.path.basename(path)}")
-                    # CSVを自動読み込み
-                    self.root.after(500, self._carto_load_exported_csv)
-                else:
-                    self.root.after(0, self._carto_auto_status_var.set, "エクスポート失敗 (手動でエクスポートしてください)")
-            threading.Thread(target=_do, daemon=True).start()
-
-    def _start_monitor(self):
-        self._apply_config()
-        if not self.targets:
-            self.targets = generate_targets(self.cfg)
-            self._refresh_targets_tab()
-
-        self._ctrl_point_var.set(f"0 / {len(self.targets)}")
-        self._ctrl_remain_var.set(str(len(self.targets)))
-
-        self.monitor = CartoMonitor(
-            self.cfg,
-            on_log=lambda msg: self.root.after(0, self._log, msg),
-            on_capture=lambda n: self.root.after(0, self._on_capture, n),
-            on_status=lambda s: self.root.after(0, self._on_monitor_status, s),
-            total_targets=len(self.targets),
-            on_all_complete=lambda: self.root.after(0, self._on_all_measurements_complete),
-        )
-        self.monitor.start()
-        self._btn_start.config(state="disabled")
-        self._btn_pause.config(state="normal")
-        self._btn_stop.config(state="normal")
-
-    def _pause_monitor(self):
-        if self.monitor:
-            self.monitor.pause()
-
-    def _stop_monitor(self):
-        if self.monitor:
-            self.monitor.stop()
-        self._btn_start.config(state="normal")
-        self._btn_pause.config(state="disabled")
-        self._btn_stop.config(state="disabled")
-
-    def _on_capture(self, n):
-        total = len(self.targets)
-        self._ctrl_point_var.set(f"{n} / {total}")
-        self._ctrl_remain_var.set(str(max(0, total - n)))
-        if n <= len(self.targets):
-            self.targets[n - 1].status = "measured"
-            self._refresh_targets_tab()
-
-    def _test_carto_connection(self):
-        """CARTOウィンドウの接続テスト"""
-        self._apply_config()
-        if not HAS_WIN32:
-            self._carto_status_var.set("Windows環境でないため利用不可")
-            self._carto_status_label.config(foreground="red")
-            return
-        hwnd = find_window_by_title(self.cfg.carto_window_title)
-        if hwnd:
-            self._carto_status_var.set(f"接続OK (hwnd=0x{hwnd:08X})")
-            self._carto_status_label.config(foreground="green")
-            self._log(f"CARTO接続テスト成功: hwnd=0x{hwnd:08X}")
+    def _test_carto_auto(self):
+        """CARTO接続テスト（pywinauto）"""
+        app = connect_carto()
+        if app:
+            self._log("CARTO接続OK")
+            self._auto_status_var.set("CARTO接続OK")
         else:
-            self._carto_status_var.set(f"未検出 (タイトル: '{self.cfg.carto_window_title}')")
-            self._carto_status_label.config(foreground="red")
-            self._log(f"CARTO接続テスト失敗: ウィンドウ '{self.cfg.carto_window_title}' が見つかりません")
+            self._log("CARTOに接続できません。CARTOを起動してから試してください。")
+            self._auto_status_var.set("CARTO未検出")
 
-    def _on_monitor_status(self, status):
-        labels = {"idle": "待機中", "running": "監視中", "paused": "一時停止"}
-        self._ctrl_status_var.set(labels.get(status, status))
-        if status == "idle":
-            self._btn_start.config(state="normal")
-            self._btn_pause.config(state="disabled")
-            self._btn_stop.config(state="disabled")
+    def _dump_carto(self):
+        """CARTOのUI要素名をログに出力"""
+        self._log("UI要素ダンプ中...")
+        def _do():
+            app = connect_carto()
+            if not app:
+                self.root.after(0, self._log, "CARTOに接続できません")
+                return
+            win = app.top_window()
+            self.root.after(0, self._log, f"ウィンドウ: {win.window_text()}")
+            # print_control_identifiersはstdoutに出力するので、ログには簡易情報のみ
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                win.print_control_identifiers(depth=2)
+            for line in buf.getvalue().splitlines()[:50]:
+                self.root.after(0, self._log, line)
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _run_full_auto(self):
+        """全自動測定: ホイール→ウォーム→再現性"""
+        self._apply_config()
+        cfg = self.cfg
+
+        self._auto_status_var.set("全自動測定を開始...")
+        self._log("=== 全自動測定開始 ===")
+
+        def _do():
+            app = get_or_launch_carto(r"C:\Program Files\Renishaw\CARTO\CARTO.exe")
+            if not app:
+                self.root.after(0, self._log, "CARTOに接続できません。手動で起動してください。")
+                self.root.after(0, self._auto_status_var.set, "CARTO接続失敗")
+                return
+
+            all_data = {}
+
+            # --- ホイール ---
+            self.root.after(0, self._log, "--- フェーズ1: ホイール ---")
+            self.root.after(0, self._auto_status_var.set, "ホイール測定中...")
+            wheel_step = 360.0 / cfg.wheel_teeth
+            carto_select_rotary(app)
+            carto_setup_targets(app, 0.0, 360.0 - wheel_step, wheel_step, cfg.overrun_angle)
+            carto_setup_trigger(app)
+            carto_start_test(app)
+            self.root.after(0, self._log, ">>> サイクルスタートを押してください <<<")
+            carto_wait_for_complete(app)
+            self.root.after(0, self._log, "ホイール測定完了")
+            carto_save_test(app)
+            data = carto_open_explore_and_copy(app)
+            if data:
+                all_data["wheel"] = data
+                rows = parse_carto_data(data, "wheel")
+                self.root.after(0, lambda: self._merge_measurements(rows))
+                self.root.after(0, self._log, f"ホイールデータ取得: {len(rows)}点")
+            carto_go_home(app)
+
+            # --- ウォーム ---
+            self.root.after(0, self._log, "--- フェーズ2: ウォーム ---")
+            self.root.after(0, self._auto_status_var.set, "ウォーム測定中...")
+            pitch = (360.0 / cfg.wheel_teeth) * cfg.worm_starts
+            worm_step = pitch / cfg.worm_divisions
+            carto_select_rotary(app)
+            carto_setup_targets(app, 0.0, pitch - worm_step, worm_step, cfg.overrun_angle)
+            carto_setup_trigger(app)
+            carto_start_test(app)
+            self.root.after(0, self._log, ">>> サイクルスタートを押してください <<<")
+            carto_wait_for_complete(app)
+            self.root.after(0, self._log, "ウォーム測定完了")
+            carto_save_test(app)
+            data = carto_open_explore_and_copy(app)
+            if data:
+                all_data["worm"] = data
+                rows = parse_carto_data(data, "worm")
+                self.root.after(0, lambda: self._merge_measurements(rows))
+                self.root.after(0, self._log, f"ウォームデータ取得: {len(rows)}点")
+            carto_go_home(app)
+
+            # --- 再現性 ---
+            self.root.after(0, self._log, "--- フェーズ3: 再現性 ---")
+            self.root.after(0, self._auto_status_var.set, "再現性測定中...")
+            self.root.after(0, self._log, "再現性はターゲットが等間隔でないため、CARTOの「ターゲットの編集」で手動設定が必要です")
+            self.root.after(0, self._log, f"位置: {cfg.repeat_positions} / 回数: {cfg.repeat_count}")
+            # 再現性の完了待ち＆データ取得は人が操作してから
+            self.root.after(0, self._auto_status_var.set, "再現性: CARTOで手動設定後、テスト完了を待機中...")
+            carto_wait_for_complete(app)
+            carto_save_test(app)
+            data = carto_open_explore_and_copy(app)
+            if data:
+                all_data["repeat"] = data
+                rows = parse_carto_data(data, "repeat")
+                self.root.after(0, lambda: self._merge_measurements(rows))
+                self.root.after(0, self._log, f"再現性データ取得: {len(rows)}点")
+
+            # 完了
+            self.root.after(0, self._log, "=== 全自動測定完了 ===")
+            self.root.after(0, self._auto_status_var.set, "全フェーズ完了！")
+            # 結果タブに切り替え
+            self.root.after(0, lambda: self.notebook.select(4))
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _merge_measurements(self, rows):
+        """測定データをマージして画面に反映"""
+        self.measurements.extend(rows)
+        self._refresh_results_tab()
 
     # -------------------------------------------------------
     # タブ4: 測定データ
@@ -1856,8 +1454,8 @@ class XR20App:
         frame = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(frame, text=" 測定データ ")
 
-        ttk.Label(frame, text="CARTOからエクスポートしたCSVデータを貼り付けてください", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(frame, text="形式: ターゲット角度, 測定角度, 誤差(arc sec)  （カンマまたはタブ区切り）").pack(anchor="w", pady=(0, 5))
+        ttk.Label(frame, text="CARTOの「テスト偏差の編集」からCtrl+Cでコピーしたデータを貼り付けてください", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="形式: インデックス \\t ターゲット(°) \\t Run1(+) \\t Run1(-) [\\t Run2(+) \\t Run2(-) ...]  単位:arcseconds").pack(anchor="w", pady=(0, 5))
 
         self._data_text = scrolledtext.ScrolledText(frame, height=15, font=("Consolas", 10))
         self._data_text.pack(fill="both", expand=True, pady=(0, 5))
