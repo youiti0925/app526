@@ -1590,34 +1590,63 @@ class XR20App:
 
             all_data = {}
 
-            # --- デバイス状態チェック ---
-            self.root.after(0, self._log, "--- デバイス状態チェック ---")
-            self.root.after(0, self._auto_status_var.set, "デバイス状態確認中...")
-            dev_status = carto_check_devices(app)
-            for key, val in dev_status.items():
-                if key != "errors":
-                    self.root.after(0, self._log, f"  {key}: {val}")
-            for err in dev_status.get("errors", []):
-                self.root.after(0, self._log, f"  ⚠ {err}")
+            # --- 現在の画面を判定 ---
+            win = app.top_window()
+            is_welcome = False
+            is_test_screen = False
+            try:
+                # ようこそ画面にはLandingScreenModes_XR20DeviceButtonがある
+                win.child_window(auto_id="LandingScreenModes_XR20DeviceButton", control_type="TabItem").wait("exists", timeout=2)
+                is_welcome = True
+            except Exception:
+                pass
 
-            if not dev_status["xr20_ok"]:
-                self.root.after(0, self._log, "XR20が接続されていません。接続してから再試行してください。")
-                self.root.after(0, self._auto_status_var.set, "XR20未接続")
-                return
+            if not is_welcome:
+                # テスト画面にはDataCaptureView_StartButtonがある
+                try:
+                    win.child_window(auto_id="DataCaptureView_StartButton", control_type="Button").wait("exists", timeout=2)
+                    is_test_screen = True
+                except Exception:
+                    pass
 
-            if not dev_status["signal_ok"]:
-                self.root.after(0, self._log, "信号強度が不足しています。アライメントを調整してください。")
-                self.root.after(0, self._log, "調整後、もう一度「全自動測定開始」を押してください。")
-                self.root.after(0, self._auto_status_var.set, "信号弱い — アライメント調整必要")
-                return
+            self.root.after(0, self._log, f"画面判定: {'ようこそ' if is_welcome else 'テスト' if is_test_screen else '不明'}")
 
-            self.root.after(0, self._log, "デバイスチェックOK")
+            # --- デバイス状態チェック（テスト画面の場合のみ） ---
+            if is_test_screen:
+                self.root.after(0, self._log, "--- デバイス状態チェック ---")
+                self.root.after(0, self._auto_status_var.set, "デバイス状態確認中...")
+                dev_status = carto_check_devices(app)
+                for key, val in dev_status.items():
+                    if key != "errors":
+                        self.root.after(0, self._log, f"  {key}: {val}")
+                for err in dev_status.get("errors", []):
+                    self.root.after(0, self._log, f"  ⚠ {err}")
+
+                if not dev_status["signal_ok"] and dev_status["xr20_ok"]:
+                    self.root.after(0, self._log, "信号強度が不足しています。アライメントを調整してください。")
+                    self.root.after(0, self._auto_status_var.set, "信号弱い — アライメント調整必要")
+                    return
+
+                self.root.after(0, self._log, "デバイスチェックOK")
+            else:
+                self.root.after(0, self._log, "ようこそ画面のためデバイスチェックはスキップ（テスト開始後に確認されます）")
 
             # --- ホイール ---
             self.root.after(0, self._log, "--- フェーズ1: ホイール ---")
-            self.root.after(0, self._auto_status_var.set, "ホイール測定中...")
+            self.root.after(0, self._auto_status_var.set, "ホイール: ロータリテスト選択中...")
             wheel_step = 360.0 / cfg.wheel_teeth
-            carto_select_rotary(app)
+
+            if is_welcome:
+                # ようこそ画面 → ロータリ選択
+                carto_select_rotary(app)
+            elif is_test_screen:
+                # 既にテスト画面 → ホームに戻ってからロータリ選択
+                self.root.after(0, self._log, "テスト画面を閉じてホームに戻ります...")
+                carto_go_home(app)
+                time.sleep(2)
+                carto_select_rotary(app)
+
+            self.root.after(0, self._auto_status_var.set, "ホイール: ターゲット設定中...")
             carto_setup_targets(app, 0.0, 360.0 - wheel_step, wheel_step, cfg.overrun_angle)
             carto_setup_trigger(app)
             carto_start_test(app)
