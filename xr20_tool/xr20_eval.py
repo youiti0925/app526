@@ -708,6 +708,108 @@ def get_or_launch_carto(exe_path: str):
     return app
 
 
+def carto_check_devices(app) -> dict:
+    """XR20とレーザーの接続状態・信号強度をチェック。"""
+    result = {"laser_ok": False, "xr20_ok": False, "signal_ok": False, "errors": []}
+    win = app.top_window()
+
+    # レーザー状態
+    try:
+        laser_status = win.child_window(
+            auto_id="LaserForRotaryStatusView_StatusTextBox", control_type="Text"
+        ).window_text()
+        if laser_status and "初期化" not in laser_status:
+            result["laser_ok"] = True
+            result["laser_status"] = laser_status
+        else:
+            result["errors"].append(f"レーザー未接続または初期化中: {laser_status}")
+    except Exception:
+        result["errors"].append("レーザー状態を取得できません")
+
+    # XR20状態
+    try:
+        xr20_status = win.child_window(
+            auto_id="XR20StatusView_Status", control_type="Text"
+        ).window_text()
+        xr20_model = win.child_window(
+            auto_id="XR20StatusView_ModelName", control_type="Text"
+        ).window_text()
+        xr20_reading = win.child_window(
+            auto_id="XR20StatusView_Reading", control_type="Text"
+        ).window_text()
+
+        if xr20_model:  # モデル名が表示されていれば接続済み
+            result["xr20_ok"] = True
+            result["xr20_model"] = xr20_model
+            result["xr20_reading"] = xr20_reading
+        else:
+            result["errors"].append("XR20が接続されていません")
+
+        if xr20_status:
+            result["xr20_status"] = xr20_status
+    except Exception:
+        result["errors"].append("XR20状態を取得できません")
+
+    # 信号強度
+    try:
+        signal_bar = win.child_window(
+            auto_id="DROView_SignalStrengthBar", control_type="ProgressBar"
+        )
+        # ProgressBarのValueプロパティで信号強度を取得
+        try:
+            value = signal_bar.get_value()
+            result["signal_value"] = value
+            # 値が0でなければ信号あり
+            if value and float(str(value).replace("%", "")) > 0:
+                result["signal_ok"] = True
+            else:
+                result["errors"].append("信号強度が0です — アライメントを確認してください")
+        except Exception:
+            # get_value()が使えない場合はサイズから推測
+            rect = signal_bar.rectangle()
+            if rect.width() > 50:  # 最小幅より大きければ表示されている
+                result["signal_ok"] = True
+    except Exception:
+        result["errors"].append("信号強度バーを取得できません")
+
+    # ファームウェア警告
+    try:
+        fw_text = win.child_window(
+            auto_id="LaserForRotaryStatusView_FirmwareStatusTextBox", control_type="Text"
+        ).window_text()
+        if fw_text and "アップグレード" in fw_text:
+            result["errors"].append(f"ファームウェア警告: {fw_text}")
+    except Exception:
+        pass
+
+    return result
+
+
+def carto_wait_for_devices_ready(app, timeout=60, on_log=None) -> bool:
+    """デバイスが準備完了になるまで待つ。タイムアウトで失敗。"""
+    log = on_log or (lambda msg: None)
+    start = time.time()
+    while time.time() - start < timeout:
+        status = carto_check_devices(app)
+        if status["xr20_ok"]:
+            log(f"XR20接続OK: {status.get('xr20_model', '')} / 読取値: {status.get('xr20_reading', '')}")
+            if status["signal_ok"]:
+                log("信号強度OK")
+                return True
+            else:
+                log("信号弱い — アライメントを調整してください")
+        else:
+            log("XR20接続待ち...")
+
+        for err in status.get("errors", []):
+            log(f"  警告: {err}")
+
+        time.sleep(3)
+
+    log(f"タイムアウト({timeout}秒): デバイスの準備が完了しませんでした")
+    return False
+
+
 def carto_select_rotary(app):
     """ようこそ画面からロータリテスト選択。"""
     win = app.top_window()
@@ -1383,6 +1485,8 @@ class XR20App:
         row1.pack(fill="x", pady=3)
         ttk.Button(row1, text="CARTO接続テスト",
                    command=self._test_carto_auto).pack(side="left", padx=5)
+        ttk.Button(row1, text="デバイス状態チェック",
+                   command=self._check_devices).pack(side="left", padx=5)
         ttk.Button(row1, text="UI要素ダンプ（デバッグ）",
                    command=self._dump_carto).pack(side="left", padx=5)
 
@@ -1419,6 +1523,29 @@ class XR20App:
         else:
             self._log("CARTOに接続できません。CARTOを起動してから試してください。")
             self._auto_status_var.set("CARTO未検出")
+
+    def _check_devices(self):
+        """XR20・レーザー・信号強度のチェック"""
+        self._log("デバイス状態チェック中...")
+        def _do():
+            app = connect_carto()
+            if not app:
+                self.root.after(0, self._log, "CARTOに接続できません")
+                self.root.after(0, self._auto_status_var.set, "CARTO未検出")
+                return
+            status = carto_check_devices(app)
+            for key, val in status.items():
+                if key != "errors":
+                    self.root.after(0, self._log, f"  {key}: {val}")
+            for err in status.get("errors", []):
+                self.root.after(0, self._log, f"  ⚠ {err}")
+            if status["xr20_ok"] and status["signal_ok"]:
+                self.root.after(0, self._auto_status_var.set, "デバイスOK — 測定準備完了")
+            elif status["xr20_ok"] and not status["signal_ok"]:
+                self.root.after(0, self._auto_status_var.set, "XR20接続OK / 信号弱い — アライメント調整必要")
+            elif not status["xr20_ok"]:
+                self.root.after(0, self._auto_status_var.set, "XR20未接続")
+        threading.Thread(target=_do, daemon=True).start()
 
     def _dump_carto(self):
         """CARTOのUI要素名をログに出力 + ファイル保存"""
@@ -1462,6 +1589,29 @@ class XR20App:
                 return
 
             all_data = {}
+
+            # --- デバイス状態チェック ---
+            self.root.after(0, self._log, "--- デバイス状態チェック ---")
+            self.root.after(0, self._auto_status_var.set, "デバイス状態確認中...")
+            dev_status = carto_check_devices(app)
+            for key, val in dev_status.items():
+                if key != "errors":
+                    self.root.after(0, self._log, f"  {key}: {val}")
+            for err in dev_status.get("errors", []):
+                self.root.after(0, self._log, f"  ⚠ {err}")
+
+            if not dev_status["xr20_ok"]:
+                self.root.after(0, self._log, "XR20が接続されていません。接続してから再試行してください。")
+                self.root.after(0, self._auto_status_var.set, "XR20未接続")
+                return
+
+            if not dev_status["signal_ok"]:
+                self.root.after(0, self._log, "信号強度が不足しています。アライメントを調整してください。")
+                self.root.after(0, self._log, "調整後、もう一度「全自動測定開始」を押してください。")
+                self.root.after(0, self._auto_status_var.set, "信号弱い — アライメント調整必要")
+                return
+
+            self.root.after(0, self._log, "デバイスチェックOK")
 
             # --- ホイール ---
             self.root.after(0, self._log, "--- フェーズ1: ホイール ---")
