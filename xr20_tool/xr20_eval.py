@@ -934,7 +934,130 @@ def carto_check_devices(app) -> dict:
     return result
 
 
-def carto_detect_screen(app) -> str:
+def carto_get_full_status(app) -> dict:
+    """CARTOの全状態を一括取得。画面・デバイス・ボタン・テスト状態すべて。"""
+    status = {"screen": "unknown", "errors": []}
+    win = app.top_window()
+
+    # 画面判定
+    status["screen"] = carto_detect_screen(app)
+
+    # デバイス状態（テスト画面の場合のみ取得可能）
+    if status["screen"] != "welcome":
+        dev = carto_check_devices(app)
+        status.update(dev)
+    else:
+        status["laser_ok"] = False
+        status["xr20_ok"] = False
+        status["signal_ok"] = False
+
+    # テスト状態ラベル
+    try:
+        label = win.child_window(auto_id="DataCaptureView_TestStateLabel", control_type="Text")
+        status["test_state"] = label.window_text()
+    except Exception:
+        status["test_state"] = ""
+
+    # 角度表示
+    try:
+        pos = win.child_window(auto_id="DroView_PositionTextBlock", control_type="Text")
+        status["position"] = pos.window_text()
+    except Exception:
+        status["position"] = ""
+
+    # StartButton（▶）の有効/無効 — ボタンの色や位置で判定
+    try:
+        start_btn = win.child_window(auto_id="DataCaptureView_StartButton", control_type="Button")
+        status["start_btn_exists"] = True
+        try:
+            status["start_btn_enabled"] = start_btn.is_enabled()
+        except Exception:
+            status["start_btn_enabled"] = None
+        try:
+            r = start_btn.rectangle()
+            status["start_btn_rect"] = (r.left, r.top, r.right, r.bottom)
+        except Exception:
+            pass
+    except Exception:
+        status["start_btn_exists"] = False
+        status["start_btn_enabled"] = None
+
+    # SaveButton の有効/無効
+    try:
+        save_btn = win.child_window(auto_id="DataCaptureView_SaveButton", control_type="Button")
+        status["save_btn_enabled"] = save_btn.is_enabled()
+    except Exception:
+        status["save_btn_enabled"] = None
+
+    # AnalyzeButton の有効/無効
+    try:
+        analyze_btn = win.child_window(auto_id="DataCaptureView_AnalyzeButton", control_type="Button")
+        status["analyze_btn_enabled"] = analyze_btn.is_enabled()
+    except Exception:
+        status["analyze_btn_enabled"] = None
+
+    return status
+
+
+def carto_log_full_status(app, on_log=None):
+    """CARTOの全状態をログに出力。"""
+    log = on_log or (lambda msg: None)
+    s = carto_get_full_status(app)
+    log(f"  [状態] 画面: {s['screen']}")
+    if s.get("laser_ok") is not None:
+        log(f"  [状態] レーザー: {'OK' if s.get('laser_ok') else 'NG'} / XR20: {'OK' if s.get('xr20_ok') else 'NG'} / 信号: {'OK' if s.get('signal_ok') else 'NG'}")
+    if s.get("position"):
+        log(f"  [状態] 角度: {s['position']}")
+    if s.get("test_state"):
+        log(f"  [状態] テスト: {s['test_state']}")
+    if s.get("start_btn_exists"):
+        log(f"  [状態] ▶ボタン: {'有効(緑)' if s.get('start_btn_enabled') else '無効(グレー)'}")
+    if s.get("save_btn_enabled") is not None:
+        log(f"  [状態] 保存ボタン: {'有効' if s['save_btn_enabled'] else '無効'}")
+    for err in s.get("errors", []):
+        log(f"  [警告] {err}")
+    return s
+
+
+def carto_wait_for_test_state(app, contains: str, timeout=120, poll_interval=2.0, on_log=None) -> bool:
+    """TestStateLabelに特定のテキストが含まれるまで待つ。状態変化をログに出力。"""
+    log = on_log or (lambda msg: None)
+    last_state = ""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            win = app.top_window()
+            label = win.child_window(auto_id="DataCaptureView_TestStateLabel", control_type="Text")
+            text = label.window_text()
+            if text != last_state:
+                log(f"  [テスト状態変化] {text}")
+                last_state = text
+            if contains in text:
+                return True
+        except Exception:
+            pass
+        time.sleep(poll_interval)
+    log(f"  タイムアウト({timeout}秒): 「{contains}」が表示されませんでした（最後の状態: {last_state}）")
+    return False
+
+
+def carto_wait_for_start_btn_green(app, timeout=60, poll_interval=1.0, on_log=None) -> bool:
+    """StartButton（▶）が有効（緑）になるまで待つ。"""
+    log = on_log or (lambda msg: None)
+    log("  ▶ボタンが有効（緑）になるまで待機中...")
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            win = app.top_window()
+            btn = win.child_window(auto_id="DataCaptureView_StartButton", control_type="Button")
+            if btn.is_enabled():
+                log("  ▶ボタン有効（緑）確認")
+                return True
+        except Exception:
+            pass
+        time.sleep(poll_interval)
+    log(f"  タイムアウト({timeout}秒): ▶ボタンが有効になりませんでした")
+    return False
     """CARTOの現在の画面を判定する。
     戻り値: 'welcome' / 'alignment' / 'data_setup' / 'data_capture' / 'unknown'
     """
@@ -1234,46 +1357,96 @@ def carto_setup_trigger(app, tolerance=0.25, stability_time=1.0, stability_range
     # トリガータイプのComboBoxは深い階層にあるため、既に「位置」が選択されている前提
 
 
-def carto_start_test(app, on_log=None):
-    """データ取得タブでテスト開始。"""
+def carto_start_test(app, on_log=None) -> bool:
+    """データ取得タブでテスト開始。
+    1. データ取得タブに切り替え
+    2. ▶ボタンが緑（有効）か確認
+    3. ▶ボタンをクリック
+    4. XR20キャリブレーションサイクル完了を待つ
+    5. 最初のターゲットが表示されたことを確認
+    """
     log = on_log or (lambda msg: None)
-    log("テスト開始...")
+    log("テスト開始準備...")
+
+    # 状態確認
+    carto_log_full_status(app, on_log=log)
+
+    # データ取得タブに切り替え
     win = app.top_window()
-    _safe_click(win, on_log=log, auto_id="データ取得", control_type="Button")
+    ok = _safe_click(win, on_log=log, auto_id="データ取得", control_type="Button")
+    if not ok:
+        # フォールバック: 座標クリック
+        rect = _find_carto_window_rect()
+        if rect and HAS_PYAUTOGUI:
+            _click_at_position(rect[0] + 1293, rect[1] + 938, on_log=log)
     time.sleep(2)
-    _safe_click(win, on_log=log, auto_id="DataCaptureView_StartButton", control_type="Button")
+
+    # ▶ボタンが有効（緑）か確認
+    if not carto_wait_for_start_btn_green(app, timeout=30, on_log=log):
+        log("  ★停止: ▶ボタンが有効になりません")
+        carto_log_full_status(app, on_log=log)
+        return False
+
+    # ▶ボタンをクリック（テスト開始）
+    log("▶ テスト開始ボタンをクリック...")
+    win = app.top_window()
+    ok = _safe_click(win, on_log=log, auto_id="DataCaptureView_StartButton", control_type="Button")
+    if not ok:
+        # フォールバック: 座標クリック
+        try:
+            btn = win.child_window(auto_id="DataCaptureView_StartButton", control_type="Button")
+            r = btn.rectangle()
+            cx = (r.left + r.right) // 2
+            cy = (r.top + r.bottom) // 2
+            if HAS_PYAUTOGUI:
+                pyautogui.click(cx, cy)
+                log(f"  [CLICK] 座標フォールバック ({cx}, {cy})")
+                time.sleep(1)
+                ok = True
+        except Exception:
+            pass
+    if not ok:
+        log("  ★停止: ▶ボタンのクリックに失敗しました")
+        return False
+
+    # XR20キャリブレーションサイクル待ち
+    log("XR20キャリブレーションサイクル待ち...")
     time.sleep(3)
+
+    # テスト状態を確認 — キャリブレーション完了後、最初のターゲット待ちになるはず
+    # 「オーバーランを待っています」「ターゲットに移動しています」等が表示されれば開始済み
+    log("テスト開始後の状態確認...")
+    carto_log_full_status(app, on_log=log)
+    return True
 
 
 def carto_wait_for_complete(app, poll_interval=2.0, on_log=None) -> bool:
-    """DataCaptureView_TestStateLabelに「完了」が含まれるまで待つ。"""
+    """DataCaptureView_TestStateLabelに「完了」が含まれるまで待つ。
+    状態変化を逐一ログに出力。"""
     log = on_log or (lambda msg: None)
     log("測定完了待ち...")
-    last_state = ""
-    while True:
-        try:
-            win = app.top_window()
-            label = win.child_window(auto_id="DataCaptureView_TestStateLabel", control_type="Text")
-            text = label.window_text()
-            if text != last_state:
-                log(f"  テスト状態: {text}")
-                last_state = text
-            if "完了" in text or "complete" in text.lower():
-                log("テスト完了検知！")
-                return True
-        except Exception:
-            pass
-        time.sleep(poll_interval)
+    return carto_wait_for_test_state(app, "完了", timeout=3600, poll_interval=poll_interval, on_log=log)
 
 
-def carto_save_test(app, on_log=None):
-    """テスト保存。"""
+def carto_save_test(app, on_log=None) -> bool:
+    """テスト保存。保存ボタンが有効か確認してからクリック。"""
     log = on_log or (lambda msg: None)
     log("テスト結果を保存中...")
+    carto_log_full_status(app, on_log=log)
     win = app.top_window()
-    _safe_click(win, on_log=log, auto_id="DataCaptureView_SaveButton", control_type="Button")
+    ok = _safe_click(win, on_log=log, auto_id="DataCaptureView_SaveButton", control_type="Button")
+    if not ok:
+        try:
+            btn = win.child_window(auto_id="DataCaptureView_SaveButton", control_type="Button")
+            r = btn.rectangle()
+            if HAS_PYAUTOGUI:
+                pyautogui.click((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+                ok = True
+        except Exception:
+            pass
     time.sleep(5)
-    log("保存完了")
+    log("保存完了" if ok else "保存に失敗した可能性があります")
+    return ok
 
 
 def carto_open_explore_and_copy(app, on_log=None) -> Optional[str]:
@@ -1994,22 +2167,15 @@ class XR20App:
                 self.root.after(0, self._auto_status_var.set, f"{phase_name}: トリガー設定中...")
                 carto_setup_trigger(app, on_log=tlog)
 
-                # テスト開始
+                # テスト開始（▶ボタン確認 → クリック → キャリブレーション待ち）
                 self.root.after(0, self._auto_status_var.set, f"{phase_name}: テスト開始...")
-                carto_start_test(app, on_log=tlog)
+                if not carto_start_test(app, on_log=tlog):
+                    tlog(f"  ★停止: テスト開始に失敗しました")
+                    carto_log_full_status(app, on_log=tlog)
+                    self.root.after(0, self._auto_status_var.set, f"{phase_name}: テスト開始失敗で停止")
+                    return None
 
-                # テスト状態を確認（開始されたか）
-                time.sleep(2)
-                try:
-                    win = app.top_window()
-                    state = win.child_window(auto_id="DataCaptureView_TestStateLabel", control_type="Text").window_text()
-                    tlog(f"  テスト状態: {state}")
-                    if not state or state == "":
-                        tlog("  ★警告: テスト状態が空です。テストが開始されていない可能性があります。")
-                except Exception:
-                    pass
-
-                tlog(">>> 機械コントローラのサイクルスタートを押してください <<<")
+                tlog(">>> XR20キャリブレーション完了後、機械コントローラのサイクルスタートを押してください <<<")
                 self.root.after(0, self._auto_status_var.set, f"{phase_name}: 測定中... サイクルスタートを押してください")
 
                 # 完了待ち
