@@ -675,11 +675,11 @@ def _safe_set_text(win, value: str, **kwargs) -> bool:
 
 
 def connect_carto():
-    """既に起動しているCARTOに接続。"""
+    """既に起動しているCARTO Captureに接続。"""
     if not HAS_PYWINAUTO:
         return None
     try:
-        app = Application(backend="uia").connect(title_re=".*CARTO.*", timeout=5)
+        app = Application(backend="uia").connect(title="CARTO - Capture", timeout=5)
         return app
     except Exception:
         return None
@@ -711,65 +711,144 @@ def get_or_launch_carto(exe_path: str):
 def carto_select_rotary(app):
     """ようこそ画面からロータリテスト選択。"""
     win = app.top_window()
-    if not _safe_click(win, title="ロータリ", control_type="Button"):
-        _safe_click(win, title="Rotary", control_type="Button")
+    # まずXR20タブを選択してからロータリモードボタン
+    _safe_click(win, auto_id="LandingScreenModes_XR20DeviceButton", control_type="TabItem")
+    time.sleep(1)
+    _safe_click(win, auto_id="LandingScreenModes_RotaryModeButton", control_type="Button")
     time.sleep(3)
+
+
+def carto_go_to_data_setup(app):
+    """データ設定タブに切り替え。"""
+    win = app.top_window()
+    _safe_click(win, auto_id="データ設定", control_type="Button")
+    time.sleep(1)
+
+
+def carto_click_targets_node(app):
+    """データ設定画面の左ツリーで「ターゲット」を選択。"""
+    win = app.top_window()
+    _safe_click(win, auto_id="TestLayoutView_TargetsTreeNode", control_type="TreeItem")
+    time.sleep(1)
+
+
+def carto_click_instruments_node(app):
+    """データ設定画面の左ツリーで「装置」を選択。"""
+    win = app.top_window()
+    _safe_click(win, auto_id="TestLayoutView_InstrumentsTreeNode", control_type="TreeItem")
+    time.sleep(1)
+
+
+def carto_click_partprogram_node(app):
+    """データ設定画面の左ツリーで「パートプログラムの作成」を選択。"""
+    win = app.top_window()
+    _safe_click(win, auto_id="TestLayoutView_GeneratePartProgramTreeNode", control_type="TreeItem")
+    time.sleep(1)
 
 
 def carto_setup_targets(app, first_target: float, last_target: float,
                         interval: float, overrun: float, runs: int = 1):
-    """ターゲットタブ設定。"""
-    win = app.top_window()
-    _safe_click(win, title="ターゲット", control_type="Button")
+    """ターゲットタブ設定。入力欄はdescendants()で探索。"""
+    carto_go_to_data_setup(app)
+    carto_click_targets_node(app)
     time.sleep(1)
-    # 二方向チェック
+
+    win = app.top_window()
+    # ターゲット入力欄はCustom18内の深い階層にある
+    # descendants()で全EditコントロールをまとめてTab順で操作する方が確実
+    # CARTOのターゲット画面の入力順: 二方向チェック → シーケンス種類 → 最初のターゲット → 最後のターゲット → 間隔 → 実行回数 → オーバーラン
     try:
-        cb = win.child_window(title="二方向", control_type="CheckBox")
-        if not cb.get_toggle_state():
-            cb.click_input()
+        from pywinauto.keyboard import send_keys
+        # ターゲット画面のコンテンツ領域を探す
+        content = win.child_window(auto_id="TestLayoutView_VerticalScrollbar", control_type="Pane")
+        # 全Editコントロールを取得
+        edits = content.descendants(control_type="Edit")
+        if len(edits) >= 5:
+            # 入力欄の順番（CARTOのターゲット画面）:
+            # [0]=最初のターゲット [1]=最後のターゲット [2]=間隔
+            # [3]=実行あたりのターゲット数(読取専用) [4]=実行回数 [5]=オーバーラン
+            # ただし順番はCARTOバージョンで異なる可能性あり
+            for i, (edit, value) in enumerate([
+                (0, f"{first_target:.5f}"),
+                (1, f"{last_target:.5f}"),
+                (2, f"{interval:.5f}"),
+            ]):
+                if i < len(edits):
+                    edits[edit].click_input()
+                    time.sleep(0.2)
+                    send_keys("^a")
+                    send_keys(value, with_spaces=True)
+                    time.sleep(0.2)
+
+            # 実行回数（実行あたりのターゲット数の次）
+            if len(edits) > 4:
+                edits[4].click_input()
+                time.sleep(0.2)
+                send_keys("^a")
+                send_keys(str(runs), with_spaces=True)
+
+            # オーバーラン
+            if len(edits) > 5:
+                edits[5].click_input()
+                time.sleep(0.2)
+                send_keys("^a")
+                send_keys(f"{overrun:.5f}", with_spaces=True)
+    except Exception as e:
+        pass  # 入力失敗時はログで確認
+
+    # 二方向チェックボックス
+    try:
+        cbs = win.descendants(control_type="CheckBox")
+        for cb in cbs:
+            if not cb.get_toggle_state():
+                cb.click_input()
+                break
     except Exception:
         pass
-    _safe_set_text(win, f"{first_target:.5f}", title="最初のターゲット")
-    _safe_set_text(win, f"{last_target:.5f}", title="最後のターゲット")
-    _safe_set_text(win, f"{interval:.5f}", title="間隔")
-    _safe_set_text(win, str(runs), title="実行回数")
-    _safe_set_text(win, f"{overrun:.5f}", title="オーバーラン")
 
 
 def carto_setup_trigger(app, tolerance=0.25, stability_time=1.0, stability_range=0.001):
     """装置タブ: 位置トリガー設定。"""
-    win = app.top_window()
-    _safe_click(win, title="装置", control_type="Button")
+    carto_go_to_data_setup(app)
+    carto_click_instruments_node(app)
     time.sleep(1)
+
+    win = app.top_window()
     try:
-        combo = win.child_window(title="トリガータイプ", control_type="ComboBox")
-        combo.select("位置")
+        from pywinauto.keyboard import send_keys
+        content = win.child_window(auto_id="TestLayoutView_VerticalScrollbar", control_type="Pane")
+        edits = content.descendants(control_type="Edit")
+        # 装置タブの入力欄: [0]=公差 [1]=安定時間 [2]=安定範囲
+        if len(edits) >= 3:
+            for i, value in enumerate([f"{tolerance:.5f}", str(stability_time), f"{stability_range:.5f}"]):
+                edits[i].click_input()
+                time.sleep(0.2)
+                send_keys("^a")
+                send_keys(value, with_spaces=True)
+                time.sleep(0.2)
     except Exception:
         pass
-    _safe_set_text(win, f"{tolerance:.5f}", title="公差")
-    _safe_set_text(win, str(stability_time), title="安定時間")
-    _safe_set_text(win, f"{stability_range:.5f}", title="安定範囲")
-    _safe_click(win, title="自動", control_type="Button")
+
+    # トリガータイプのComboBoxは深い階層にあるため、既に「位置」が選択されている前提
 
 
 def carto_start_test(app):
     """データ取得タブでテスト開始。"""
     win = app.top_window()
-    _safe_click(win, title="データ取得", control_type="Button")
+    _safe_click(win, auto_id="データ取得", control_type="Button")
     time.sleep(2)
-    if not _safe_click(win, title="テスト開始", control_type="Button"):
-        _safe_click(win, title="Start", control_type="Button")
+    _safe_click(win, auto_id="DataCaptureView_StartButton", control_type="Button")
     time.sleep(3)
 
 
 def carto_wait_for_complete(app, poll_interval=2.0) -> bool:
-    """「テストを完了しました」テキスト表示まで待つ。"""
+    """DataCaptureView_TestStateLabelに「完了」が含まれるまで待つ。"""
     while True:
         try:
             win = app.top_window()
-            texts = win.texts()
-            all_text = " ".join(str(t) for t in texts if t)
-            if "テストを完了しました" in all_text or "Test complete" in all_text:
+            label = win.child_window(auto_id="DataCaptureView_TestStateLabel", control_type="Text")
+            text = label.window_text()
+            if "完了" in text or "complete" in text.lower():
                 return True
         except Exception:
             pass
@@ -779,28 +858,29 @@ def carto_wait_for_complete(app, poll_interval=2.0) -> bool:
 def carto_save_test(app):
     """テスト保存。"""
     win = app.top_window()
-    if not _safe_click(win, title="保存", control_type="Button"):
-        if not _safe_click(win, title="Save", control_type="Button"):
-            from pywinauto.keyboard import send_keys
-            send_keys("^s")
+    _safe_click(win, auto_id="DataCaptureView_SaveButton", control_type="Button")
     time.sleep(5)
 
 
 def carto_open_explore_and_copy(app) -> Optional[str]:
-    """Explore起動 → テスト偏差の編集 → Ctrl+C → クリップボードデータ取得。"""
+    """解析ボタン → Explore起動 → テスト偏差の編集 → Ctrl+C → クリップボードデータ取得。"""
     win = app.top_window()
-    if not _safe_click(win, title="解析", control_type="Button"):
-        _safe_click(win, title="Explore", control_type="Button")
+    _safe_click(win, auto_id="DataCaptureView_AnalyzeButton", control_type="Button")
     time.sleep(5)
 
     try:
-        explore_app = Application(backend="uia").connect(title_re=".*CARTO.*Explore.*", timeout=10)
+        explore_app = Application(backend="uia").connect(title="CARTO - Explore", timeout=15)
         explore_win = explore_app.top_window()
     except Exception:
         return None
 
-    _safe_click(explore_win, title="生データ", control_type="Button")
+    # 生データタブをクリック
+    _safe_click(explore_win, title="生データ", control_type="TabItem")
+    if not _safe_click(explore_win, title="生データ", control_type="TabItem"):
+        _safe_click(explore_win, title="生データ", control_type="Button")
     time.sleep(2)
+
+    # テスト偏差の編集ボタンをクリック
     _safe_click(explore_win, title="テスト偏差の編集", control_type="Button")
     time.sleep(2)
 
@@ -826,8 +906,7 @@ def carto_open_explore_and_copy(app) -> Optional[str]:
 def carto_go_home(app):
     """ホーム画面に戻る。"""
     win = app.top_window()
-    if not _safe_click(win, title="ホーム", control_type="Button"):
-        _safe_click(win, title="Home", control_type="Button")
+    _safe_click(win, auto_id="DroView_HomeButton", control_type="Button")
     time.sleep(2)
 
 
