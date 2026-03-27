@@ -792,6 +792,62 @@ def carto_check_devices(app) -> dict:
     return result
 
 
+def carto_detect_screen(app) -> str:
+    """CARTOの現在の画面を判定する。
+    戻り値: 'welcome' / 'alignment' / 'data_setup' / 'data_capture' / 'unknown'
+    """
+    win = app.top_window()
+
+    # ようこそ画面
+    try:
+        win.child_window(auto_id="LandingScreenModes_XR20DeviceButton", control_type="TabItem").wait("exists", timeout=1)
+        return "welcome"
+    except Exception:
+        pass
+
+    # データ取得画面（テスト開始ボタンがある）
+    try:
+        state_label = win.child_window(auto_id="DataCaptureView_TestStateLabel", control_type="Text")
+        state_label.wait("exists", timeout=1)
+        # データ取得タブが表示されているか、テスト状態ラベルの位置で判定
+        rect = state_label.rectangle()
+        if rect.width() > 0:  # 表示されていればデータ取得画面
+            return "data_capture"
+    except Exception:
+        pass
+
+    # データ設定画面（ツリーノードがある）
+    try:
+        win.child_window(auto_id="TestLayoutView_TargetsTreeNode", control_type="TreeItem").wait("exists", timeout=1)
+        return "data_setup"
+    except Exception:
+        pass
+
+    # アライメント画面（XR20 3Dビュー）
+    try:
+        win.child_window(auto_id="XR20AlignmentView_ReferenceButton", control_type="Button").wait("exists", timeout=1)
+        return "alignment"
+    except Exception:
+        pass
+
+    return "unknown"
+
+
+def carto_wait_for_screen(app, expected: str, timeout=15, on_log=None) -> bool:
+    """期待する画面になるまで待つ。タイムアウトでFalse。"""
+    log = on_log or (lambda msg: None)
+    start = time.time()
+    while time.time() - start < timeout:
+        current = carto_detect_screen(app)
+        if current == expected:
+            log(f"  画面確認OK: {current}")
+            return True
+        time.sleep(1)
+    current = carto_detect_screen(app)
+    log(f"  画面確認NG: 期待={expected} / 実際={current}（{timeout}秒タイムアウト）")
+    return False
+
+
 def carto_wait_for_devices_ready(app, timeout=60, on_log=None) -> bool:
     """デバイスが準備完了になるまで待つ。タイムアウトで失敗。"""
     log = on_log or (lambda msg: None)
@@ -817,56 +873,69 @@ def carto_wait_for_devices_ready(app, timeout=60, on_log=None) -> bool:
     return False
 
 
-def carto_select_rotary(app, on_log=None):
-    """ようこそ画面からロータリテスト選択。"""
+def carto_select_rotary(app, on_log=None) -> bool:
+    """ようこそ画面からロータリテスト選択。成功したらTrue。"""
     log = on_log or (lambda msg: None)
     log("ロータリテスト選択中...")
     win = app.top_window()
     log(f"  ウィンドウタイトル: {win.window_text()}")
-    # まずXR20タブを選択してからロータリモードボタン
+
+    # 現在の画面がようこそ画面であることを確認
+    current = carto_detect_screen(app)
+    if current != "welcome":
+        log(f"  エラー: ようこそ画面ではありません（現在: {current}）")
+        return False
+
     ok1 = _safe_click(win, on_log=log, auto_id="LandingScreenModes_XR20DeviceButton", control_type="TabItem")
     time.sleep(1)
     ok2 = _safe_click(win, on_log=log, auto_id="LandingScreenModes_RotaryModeButton", control_type="Button")
+    if not (ok1 and ok2):
+        log("  ロータリテスト選択のクリックに失敗しました")
+        return False
+
+    # 画面がテスト画面に遷移したか確認（alignment/data_setup/data_captureのいずれか）
     time.sleep(3)
-    if ok1 and ok2:
-        log("ロータリテスト選択完了")
-    else:
-        log("ロータリテスト選択に失敗しました")
+    for expected in ["alignment", "data_setup", "data_capture"]:
+        if carto_wait_for_screen(app, expected, timeout=5, on_log=log):
+            log(f"ロータリテスト選択完了 → {expected}画面")
+            return True
+
+    current = carto_detect_screen(app)
+    log(f"  エラー: ロータリ選択後、テスト画面に遷移しませんでした（現在: {current}）")
+    return False
 
 
-def carto_go_to_data_setup(app, on_log=None):
-    """データ設定タブに切り替え。"""
+def carto_go_to_data_setup(app, on_log=None) -> bool:
+    """データ設定タブに切り替え。成功したらTrue。"""
     log = on_log or (lambda msg: None)
     log("データ設定タブに切り替え...")
     win = app.top_window()
     _safe_click(win, on_log=log, auto_id="データ設定", control_type="Button")
     time.sleep(1)
+    return carto_wait_for_screen(app, "data_setup", timeout=10, on_log=log)
 
 
-def carto_click_targets_node(app, on_log=None):
+def carto_click_targets_node(app, on_log=None) -> bool:
     """データ設定画面の左ツリーで「ターゲット」を選択。"""
     log = on_log or (lambda msg: None)
     log("ターゲットノード選択中...")
     win = app.top_window()
-    _safe_click(win, on_log=log, auto_id="TestLayoutView_TargetsTreeNode", control_type="TreeItem")
-    time.sleep(1)
+    return _safe_click(win, on_log=log, auto_id="TestLayoutView_TargetsTreeNode", control_type="TreeItem")
 
 
-def carto_click_instruments_node(app, on_log=None):
+def carto_click_instruments_node(app, on_log=None) -> bool:
     """データ設定画面の左ツリーで「装置」を選択。"""
     log = on_log or (lambda msg: None)
     log("装置ノード選択中...")
     win = app.top_window()
-    _safe_click(win, on_log=log, auto_id="TestLayoutView_InstrumentsTreeNode", control_type="TreeItem")
-    time.sleep(1)
+    return _safe_click(win, on_log=log, auto_id="TestLayoutView_InstrumentsTreeNode", control_type="TreeItem")
 
 
-def carto_click_partprogram_node(app, on_log=None):
+def carto_click_partprogram_node(app, on_log=None) -> bool:
     """データ設定画面の左ツリーで「パートプログラムの作成」を選択。"""
     log = on_log or (lambda msg: None)
     win = app.top_window()
-    _safe_click(win, on_log=log, auto_id="TestLayoutView_GeneratePartProgramTreeNode", control_type="TreeItem")
-    time.sleep(1)
+    return _safe_click(win, on_log=log, auto_id="TestLayoutView_GeneratePartProgramTreeNode", control_type="TreeItem")
 
 
 def carto_setup_targets(app, first_target: float, last_target: float,
@@ -1682,55 +1751,98 @@ class XR20App:
             else:
                 tlog("ようこそ画面のためデバイスチェックはスキップ")
 
-            # --- ホイール ---
-            tlog("--- フェーズ1: ホイール ---")
-            self.root.after(0, self._auto_status_var.set, "ホイール: ロータリテスト選択中...")
-            wheel_step = 360.0 / cfg.wheel_teeth
+            # === 1フェーズ分の測定を実行する関数 ===
+            def run_phase(phase_name, first_t, last_t, interval, overrun, runs=1):
+                """1フェーズ分。成功したらデータ文字列、失敗したらNone。"""
+                tlog(f"--- {phase_name} ---")
+                self.root.after(0, self._auto_status_var.set, f"{phase_name}: ロータリテスト選択中...")
 
-            if is_welcome:
-                carto_select_rotary(app, on_log=tlog)
-            elif is_test_screen:
-                tlog("テスト画面を閉じてホームに戻ります...")
-                carto_go_home(app, on_log=tlog)
+                # 現在の画面を確認
+                current = carto_detect_screen(app)
+                tlog(f"  現在の画面: {current}")
+
+                # ようこそ画面でなければホームに戻る
+                if current != "welcome":
+                    tlog("  ホーム画面に戻ります...")
+                    carto_go_home(app, on_log=tlog)
+                    time.sleep(2)
+                    current = carto_detect_screen(app)
+                    tlog(f"  ホーム後の画面: {current}")
+
+                # ロータリ選択
+                if not carto_select_rotary(app, on_log=tlog):
+                    tlog(f"  ★停止: ロータリテスト選択に失敗しました")
+                    self.root.after(0, self._auto_status_var.set, f"{phase_name}: ロータリ選択失敗で停止")
+                    return None
+
+                # データ設定 → ターゲット入力
+                self.root.after(0, self._auto_status_var.set, f"{phase_name}: ターゲット設定中...")
+                if not carto_go_to_data_setup(app, on_log=tlog):
+                    tlog(f"  ★停止: データ設定画面に遷移できませんでした")
+                    self.root.after(0, self._auto_status_var.set, f"{phase_name}: データ設定遷移失敗で停止")
+                    return None
+
+                carto_setup_targets(app, first_t, last_t, interval, overrun, runs=runs, on_log=tlog)
+
+                # トリガー設定
+                self.root.after(0, self._auto_status_var.set, f"{phase_name}: トリガー設定中...")
+                carto_setup_trigger(app, on_log=tlog)
+
+                # テスト開始
+                self.root.after(0, self._auto_status_var.set, f"{phase_name}: テスト開始...")
+                carto_start_test(app, on_log=tlog)
+
+                # テスト状態を確認（開始されたか）
                 time.sleep(2)
-                carto_select_rotary(app, on_log=tlog)
+                try:
+                    win = app.top_window()
+                    state = win.child_window(auto_id="DataCaptureView_TestStateLabel", control_type="Text").window_text()
+                    tlog(f"  テスト状態: {state}")
+                    if not state or state == "":
+                        tlog("  ★警告: テスト状態が空です。テストが開始されていない可能性があります。")
+                except Exception:
+                    pass
 
-            self.root.after(0, self._auto_status_var.set, "ホイール: ターゲット設定中...")
-            carto_setup_targets(app, 0.0, 360.0 - wheel_step, wheel_step, cfg.overrun_angle, on_log=tlog)
-            carto_setup_trigger(app, on_log=tlog)
-            carto_start_test(app, on_log=tlog)
-            tlog(">>> サイクルスタートを押してください <<<")
-            carto_wait_for_complete(app, on_log=tlog)
-            tlog("ホイール測定完了")
-            carto_save_test(app, on_log=tlog)
-            data = carto_open_explore_and_copy(app, on_log=tlog)
+                tlog(">>> 機械コントローラのサイクルスタートを押してください <<<")
+                self.root.after(0, self._auto_status_var.set, f"{phase_name}: 測定中... サイクルスタートを押してください")
+
+                # 完了待ち
+                carto_wait_for_complete(app, on_log=tlog)
+                tlog(f"{phase_name}測定完了")
+
+                # 保存
+                self.root.after(0, self._auto_status_var.set, f"{phase_name}: 保存中...")
+                carto_save_test(app, on_log=tlog)
+
+                # Explore → データ取得
+                self.root.after(0, self._auto_status_var.set, f"{phase_name}: データ取得中...")
+                data = carto_open_explore_and_copy(app, on_log=tlog)
+                return data
+
+            # === ホイール ===
+            wheel_step = 360.0 / cfg.wheel_teeth
+            data = run_phase("ホイール", 0.0, 360.0 - wheel_step, wheel_step, cfg.overrun_angle)
             if data:
                 all_data["wheel"] = data
                 rows = parse_carto_data(data, "wheel")
-                self.root.after(0, lambda: self._merge_measurements(rows))
+                self.root.after(0, lambda r=rows: self._merge_measurements(r))
                 tlog(f"ホイールデータ取得: {len(rows)}点")
-            carto_go_home(app, on_log=tlog)
+            elif data is None:
+                tlog("ホイールフェーズ失敗。処理を中断します。")
+                return
 
-            # --- ウォーム ---
-            tlog("--- フェーズ2: ウォーム ---")
-            self.root.after(0, self._auto_status_var.set, "ウォーム測定中...")
+            # === ウォーム ===
             pitch = (360.0 / cfg.wheel_teeth) * cfg.worm_starts
             worm_step = pitch / cfg.worm_divisions
-            carto_select_rotary(app, on_log=tlog)
-            carto_setup_targets(app, 0.0, pitch - worm_step, worm_step, cfg.overrun_angle, on_log=tlog)
-            carto_setup_trigger(app, on_log=tlog)
-            carto_start_test(app, on_log=tlog)
-            tlog(">>> サイクルスタートを押してください <<<")
-            carto_wait_for_complete(app, on_log=tlog)
-            tlog("ウォーム測定完了")
-            carto_save_test(app, on_log=tlog)
-            data = carto_open_explore_and_copy(app, on_log=tlog)
+            data = run_phase("ウォーム", 0.0, pitch - worm_step, worm_step, cfg.overrun_angle)
             if data:
                 all_data["worm"] = data
                 rows = parse_carto_data(data, "worm")
-                self.root.after(0, lambda: self._merge_measurements(rows))
+                self.root.after(0, lambda r=rows: self._merge_measurements(r))
                 tlog(f"ウォームデータ取得: {len(rows)}点")
-            carto_go_home(app, on_log=tlog)
+            elif data is None:
+                tlog("ウォームフェーズ失敗。処理を中断します。")
+                return
 
             # --- 再現性 ---
             tlog("--- フェーズ3: 再現性 ---")
