@@ -64,6 +64,16 @@ try:
 except ImportError:
     pass
 
+# --- pyautogui (画面キャプチャ+座標クリック) ---
+HAS_PYAUTOGUI = False
+try:
+    import pyautogui
+    pyautogui.FAILSAFE = True  # 画面左上にマウスで緊急停止
+    pyautogui.PAUSE = 0.3
+    HAS_PYAUTOGUI = True
+except ImportError:
+    pass
+
 # ============================================================
 # データクラス
 # ============================================================
@@ -640,6 +650,138 @@ def parse_carto_data(text: str, phase: str = "wheel") -> list[MeasurementRow]:
 # UI要素名はCARTO実画面スクリーンショット（2026/03/26）から確認。
 # 実際のAutomation IDと異なる場合は dump_carto_controls() で確認して修正。
 
+# ============================================================
+# 画面キャプチャベースのCARTO操作（pyautogui）
+# ============================================================
+# pywinautoのUI Automationが効かない場合のフォールバック。
+# CARTOウィンドウのスクリーンショットを撮り、画像内のテキストや色で
+# ボタン位置を特定してクリックする。
+
+
+def _find_carto_window_rect() -> Optional[tuple]:
+    """CARTOウィンドウの座標(left, top, right, bottom)を取得。"""
+    if not HAS_WIN32:
+        return None
+    hwnd = 0
+    results = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+    def callback(h, _):
+        length = user32.GetWindowTextLengthW(h)
+        if length > 0:
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(h, buf, length + 1)
+            if "CARTO" in buf.value and "Capture" in buf.value:
+                results.append(h)
+        return True
+    user32.EnumWindows(WNDENUMPROC(callback), 0)
+    if not results:
+        return None
+    hwnd = results[0]
+    rect = ctypes.wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    return (rect.left, rect.top, rect.right, rect.bottom)
+
+
+def _click_at_position(x: int, y: int, on_log=None):
+    """画面上の絶対座標をクリック。"""
+    log = on_log or (lambda msg: None)
+    if HAS_PYAUTOGUI:
+        log(f"  [CLICK] 座標 ({x}, {y})")
+        pyautogui.click(x, y)
+        time.sleep(0.5)
+    else:
+        log("  [SKIP] pyautogui未インストール")
+
+
+def _capture_carto_screen(on_log=None):
+    """CARTOウィンドウのスクリーンショットをPIL Imageで返す。"""
+    log = on_log or (lambda msg: None)
+    if not HAS_PYAUTOGUI:
+        log("  pyautogui未インストール")
+        return None, None
+    rect = _find_carto_window_rect()
+    if not rect:
+        log("  CARTOウィンドウが見つかりません")
+        return None, None
+    l, t, r, b = rect
+    try:
+        img = pyautogui.screenshot(region=(l, t, r - l, b - t))
+        return img, rect
+    except Exception as e:
+        log(f"  スクリーンショット失敗: {e}")
+        return None, None
+
+
+def _find_and_click_by_color(target_color, tolerance=30, region_hint=None, on_log=None) -> bool:
+    """画面上で特定の色のピクセルを探してクリック。
+    target_color: (R, G, B) 例: オレンジ = (230, 150, 50)
+    """
+    log = on_log or (lambda msg: None)
+    img, rect = _capture_carto_screen(on_log=log)
+    if img is None:
+        return False
+    l, t, r, b = rect
+    width, height = img.size
+    tr, tg, tb = target_color
+
+    # 探索範囲を限定（region_hintがあれば）
+    x_start, y_start, x_end, y_end = 0, 0, width, height
+    if region_hint:
+        x_start, y_start, x_end, y_end = region_hint
+
+    # 色一致するピクセルを集めて中心をクリック
+    matches = []
+    step = 5  # 5ピクセル刻みで探索（速度のため）
+    for y in range(y_start, y_end, step):
+        for x in range(x_start, x_end, step):
+            px = img.getpixel((x, y))
+            if (abs(px[0] - tr) < tolerance and
+                abs(px[1] - tg) < tolerance and
+                abs(px[2] - tb) < tolerance):
+                matches.append((x, y))
+
+    if matches:
+        # 一致するピクセルの中心座標
+        cx = sum(m[0] for m in matches) // len(matches)
+        cy = sum(m[1] for m in matches) // len(matches)
+        abs_x = l + cx
+        abs_y = t + cy
+        log(f"  色マッチ: {len(matches)}点 → 中心 ({abs_x}, {abs_y})")
+        _click_at_position(abs_x, abs_y, on_log=log)
+        return True
+    else:
+        log(f"  色マッチなし: RGB={target_color} tolerance={tolerance}")
+        return False
+
+
+def _find_and_click_by_image_text(text_to_find: str, on_log=None) -> bool:
+    """pyautogui.locateOnScreenでテキスト画像を探す代わりに、
+    pywinautoで座標を取得してpyautoguiでクリックする方式。"""
+    log = on_log or (lambda msg: None)
+    if not HAS_PYWINAUTO:
+        return False
+    try:
+        app = Application(backend="uia").connect(title="CARTO - Capture", timeout=5)
+        win = app.top_window()
+        # テキストを含む要素を探す
+        for elem in win.descendants():
+            try:
+                if text_to_find in (elem.window_text() or ""):
+                    rect = elem.rectangle()
+                    if rect.width() > 0 and rect.height() > 0:
+                        cx = (rect.left + rect.right) // 2
+                        cy = (rect.top + rect.bottom) // 2
+                        log(f"  テキスト '{text_to_find}' 発見: ({cx}, {cy})")
+                        if HAS_PYAUTOGUI:
+                            pyautogui.click(cx, cy)
+                            time.sleep(0.5)
+                            return True
+            except Exception:
+                continue
+    except Exception as e:
+        log(f"  テキスト検索失敗: {e}")
+    return False
+
 
 def _safe_click(win, on_log=None, **kwargs) -> bool:
     """UI要素を探してクリック。見つからなければFalse。"""
@@ -874,7 +1016,10 @@ def carto_wait_for_devices_ready(app, timeout=60, on_log=None) -> bool:
 
 
 def carto_select_rotary(app, on_log=None) -> bool:
-    """ようこそ画面からロータリテスト選択。成功したらTrue。"""
+    """ようこそ画面からロータリテスト選択。成功したらTrue。
+    方法1: pywinauto UI Automation
+    方法2: pyautogui 座標クリック（フォールバック）
+    """
     log = on_log or (lambda msg: None)
     log("ロータリテスト選択中...")
     win = app.top_window()
@@ -886,19 +1031,68 @@ def carto_select_rotary(app, on_log=None) -> bool:
         log(f"  エラー: ようこそ画面ではありません（現在: {current}）")
         return False
 
+    # --- 方法1: pywinauto ---
+    log("  方法1: pywinauto UI Automationでクリック...")
     ok1 = _safe_click(win, on_log=log, auto_id="LandingScreenModes_XR20DeviceButton", control_type="TabItem")
     time.sleep(1)
-    ok2 = _safe_click(win, on_log=log, auto_id="LandingScreenModes_RotaryModeButton", control_type="Button")
-    if not (ok1 and ok2):
-        log("  ロータリテスト選択のクリックに失敗しました")
+
+    # XR20タブが実際に選択されたか確認（画面変化があるか）
+    if ok1:
+        ok2 = _safe_click(win, on_log=log, auto_id="LandingScreenModes_RotaryModeButton", control_type="Button")
+    else:
+        ok2 = False
+
+    if ok1 and ok2:
+        time.sleep(3)
+        for expected in ["alignment", "data_setup", "data_capture"]:
+            if carto_wait_for_screen(app, expected, timeout=5, on_log=log):
+                log(f"ロータリテスト選択完了 → {expected}画面")
+                return True
+
+    # --- 方法2: pyautogui 座標クリック ---
+    log("  方法2: pyautogui 座標クリックでフォールバック...")
+
+    # CARTOウィンドウの座標を取得
+    rect = _find_carto_window_rect()
+    if not rect:
+        log("  CARTOウィンドウが見つかりません")
         return False
 
-    # 画面がテスト画面に遷移したか確認（alignment/data_setup/data_captureのいずれか）
-    time.sleep(3)
-    for expected in ["alignment", "data_setup", "data_capture"]:
-        if carto_wait_for_screen(app, expected, timeout=5, on_log=log):
-            log(f"ロータリテスト選択完了 → {expected}画面")
-            return True
+    l, t, r, b = rect
+    log(f"  CARTOウィンドウ: ({l}, {t}) - ({r}, {b})")
+
+    # まずCARTOウィンドウを前面に
+    if HAS_PYAUTOGUI:
+        try:
+            win.set_focus()
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+        # XR20タブをクリック
+        # UIダンプより: XR20 TabItem位置 = (L818, T204, R1052, B444) ※ようこそ画面内の相対位置
+        # ようこそ画面のコンテンツ領域は (L333, T151, R1311, B923)
+        # XR20タブの中心 = (935, 324) ※ウィンドウ相対
+        xr20_tab_x = l + 935
+        xr20_tab_y = t + 324
+        log(f"  XR20タブクリック: ({xr20_tab_x}, {xr20_tab_y})")
+        pyautogui.click(xr20_tab_x, xr20_tab_y)
+        time.sleep(1.5)
+
+        # ロータリモードボタンをクリック
+        # UIダンプより: RotaryModeButton位置 = (L362, T456, R572, B666)
+        # 中心 = (467, 561) ※ウィンドウ相対
+        rotary_btn_x = l + 467
+        rotary_btn_y = t + 561
+        log(f"  ロータリボタンクリック: ({rotary_btn_x}, {rotary_btn_y})")
+        pyautogui.click(rotary_btn_x, rotary_btn_y)
+        time.sleep(3)
+
+        # 画面遷移を確認
+        for expected in ["alignment", "data_setup", "data_capture"]:
+            if carto_wait_for_screen(app, expected, timeout=10, on_log=log):
+                log(f"ロータリテスト選択完了（座標クリック） → {expected}画面")
+                return True
 
     current = carto_detect_screen(app)
     log(f"  エラー: ロータリ選択後、テスト画面に遷移しませんでした（現在: {current}）")
@@ -910,9 +1104,21 @@ def carto_go_to_data_setup(app, on_log=None) -> bool:
     log = on_log or (lambda msg: None)
     log("データ設定タブに切り替え...")
     win = app.top_window()
-    _safe_click(win, on_log=log, auto_id="データ設定", control_type="Button")
+    ok = _safe_click(win, on_log=log, auto_id="データ設定", control_type="Button")
     time.sleep(1)
-    return carto_wait_for_screen(app, "data_setup", timeout=10, on_log=log)
+    if ok and carto_wait_for_screen(app, "data_setup", timeout=10, on_log=log):
+        return True
+
+    # フォールバック: pyautoguiで下部タブの「データ設定」の位置をクリック
+    # UIダンプより: データ設定ボタン = (L1052, T893, R1232, B983)
+    log("  フォールバック: pyautoguiで座標クリック...")
+    rect = _find_carto_window_rect()
+    if rect and HAS_PYAUTOGUI:
+        l, t, r, b = rect
+        _click_at_position(l + 1142, t + 938, on_log=log)
+        time.sleep(1)
+        return carto_wait_for_screen(app, "data_setup", timeout=10, on_log=log)
+    return False
 
 
 def carto_click_targets_node(app, on_log=None) -> bool:
