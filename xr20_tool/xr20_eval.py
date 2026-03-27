@@ -1342,8 +1342,8 @@ class XR20App:
             self._auto_status_var.set("CARTO未検出")
 
     def _dump_carto(self):
-        """CARTOのUI要素名をログに出力"""
-        self._log("UI要素ダンプ中...")
+        """CARTOのUI要素名をログに出力 + ファイル保存"""
+        self._log("UI要素ダンプ中（深さ6）...")
         def _do():
             app = connect_carto()
             if not app:
@@ -1351,12 +1351,19 @@ class XR20App:
                 return
             win = app.top_window()
             self.root.after(0, self._log, f"ウィンドウ: {win.window_text()}")
-            # print_control_identifiersはstdoutに出力するので、ログには簡易情報のみ
             import io, contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                win.print_control_identifiers(depth=2)
-            for line in buf.getvalue().splitlines()[:50]:
+                win.print_control_identifiers(depth=6)
+            dump_text = buf.getvalue()
+            # ファイルに保存
+            dump_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "carto_ui_dump.txt")
+            with open(dump_path, "w", encoding="utf-8") as f:
+                f.write(dump_text)
+            self.root.after(0, self._log, f"UI要素ダンプ保存: {dump_path}")
+            self.root.after(0, self._log, f"合計 {len(dump_text.splitlines())} 行")
+            # ログには先頭100行だけ
+            for line in dump_text.splitlines()[:100]:
                 self.root.after(0, self._log, line)
         threading.Thread(target=_do, daemon=True).start()
 
