@@ -1359,49 +1359,44 @@ def carto_setup_trigger(app, tolerance=0.25, stability_time=1.0, stability_range
 
 def carto_start_test(app, on_log=None) -> bool:
     """データ取得タブでテスト開始。
+    正しい手順（公式マニュアル + 実機確認）:
     1. データ取得タブに切り替え
     2. ▶ボタンが緑（有効）か確認
     3. ▶ボタンをクリック
-    4. XR20キャリブレーションサイクル完了を待つ
-    5. 最初のターゲットが表示されたことを確認
+    4. 「リファレンス」ダイアログが表示される → ⊕ボタンをクリック
+    5. 光学キャリブレーションサイクル完了を待つ（自動）
+    6. キャリブレーション完了後、自動的にテスト開始
+    7. 「オーバーランを待っています」が表示されたことを確認
     """
     log = on_log or (lambda msg: None)
     log("テスト開始準備...")
-
-    # 状態確認
     carto_log_full_status(app, on_log=log)
 
-    # データ取得タブに切り替え
+    # 1. データ取得タブに切り替え
     win = app.top_window()
     ok = _safe_click(win, on_log=log, auto_id="データ取得", control_type="Button")
     if not ok:
-        # フォールバック: 座標クリック
         rect = _find_carto_window_rect()
         if rect and HAS_PYAUTOGUI:
             _click_at_position(rect[0] + 1293, rect[1] + 938, on_log=log)
     time.sleep(2)
 
-    # ▶ボタンが有効（緑）か確認
+    # 2. ▶ボタンが有効（緑）か確認
     if not carto_wait_for_start_btn_green(app, timeout=30, on_log=log):
         log("  ★停止: ▶ボタンが有効になりません")
         carto_log_full_status(app, on_log=log)
         return False
 
-    # ▶ボタンをクリック（テスト開始）
+    # 3. ▶ボタンをクリック
     log("▶ テスト開始ボタンをクリック...")
     win = app.top_window()
     ok = _safe_click(win, on_log=log, auto_id="DataCaptureView_StartButton", control_type="Button")
     if not ok:
-        # フォールバック: 座標クリック
         try:
             btn = win.child_window(auto_id="DataCaptureView_StartButton", control_type="Button")
             r = btn.rectangle()
-            cx = (r.left + r.right) // 2
-            cy = (r.top + r.bottom) // 2
             if HAS_PYAUTOGUI:
-                pyautogui.click(cx, cy)
-                log(f"  [CLICK] 座標フォールバック ({cx}, {cy})")
-                time.sleep(1)
+                pyautogui.click((r.left + r.right) // 2, (r.top + r.bottom) // 2)
                 ok = True
         except Exception:
             pass
@@ -1409,14 +1404,70 @@ def carto_start_test(app, on_log=None) -> bool:
         log("  ★停止: ▶ボタンのクリックに失敗しました")
         return False
 
-    # XR20キャリブレーションサイクル待ち
-    log("XR20キャリブレーションサイクル待ち...")
-    time.sleep(3)
+    # 4. リファレンスダイアログの⊕ボタンをクリック
+    log("リファレンスダイアログ待ち...")
+    time.sleep(2)
 
-    # テスト状態を確認 — キャリブレーション完了後、最初のターゲット待ちになるはず
-    # 「オーバーランを待っています」「ターゲットに移動しています」等が表示されれば開始済み
-    log("テスト開始後の状態確認...")
+    # ⊕ボタンを探してクリック（pywinauto）
+    ref_clicked = False
+    win = app.top_window()
+    try:
+        # リファレンスダイアログ内のボタンを探す
+        # ⊕は最初のボタン、■は2番目
+        for elem in win.descendants(control_type="Button"):
+            try:
+                r = elem.rectangle()
+                # リファレンスダイアログは画面中央付近に表示される
+                # 画面のおおよそ中央にある小さいボタンを探す
+                if 600 < r.left < 900 and 350 < r.top < 500 and r.width() < 80 and r.height() < 80:
+                    log(f"  リファレンス⊕ボタン候補発見: ({r.left}, {r.top}, {r.right}, {r.bottom})")
+                    elem.click_input()
+                    ref_clicked = True
+                    log("  [OK] リファレンス⊕ボタンクリック")
+                    break
+            except Exception:
+                continue
+    except Exception as e:
+        log(f"  リファレンスボタン検索エラー: {e}")
+
+    if not ref_clicked:
+        # フォールバック: 座標クリック
+        # スクリーンショットより⊕ボタンの位置はダイアログ中央左側
+        log("  フォールバック: リファレンス⊕を座標クリック...")
+        rect = _find_carto_window_rect()
+        if rect and HAS_PYAUTOGUI:
+            # リファレンスダイアログの⊕ボタン位置（スクリーンショットから推定）
+            # ダイアログは画面中央、⊕は左側のボタン
+            dialog_cx = (rect[0] + rect[2]) // 2 - 40
+            dialog_cy = (rect[1] + rect[3]) // 2 + 50
+            _click_at_position(dialog_cx, dialog_cy, on_log=log)
+            ref_clicked = True
+
+    if not ref_clicked:
+        log("  ★停止: リファレンス⊕ボタンのクリックに失敗しました")
+        return False
+
+    # 5. 光学キャリブレーションサイクル完了を待つ
+    log("光学キャリブレーションサイクル実行中...")
+    # 「オーバーランを待っています」が表示されればキャリブレーション完了+テスト自動開始済み
+    if carto_wait_for_test_state(app, "オーバーラン", timeout=120, on_log=log):
+        log("キャリブレーション完了 → テスト自動開始 → 「オーバーランを待っています」")
+        carto_log_full_status(app, on_log=log)
+        return True
+
+    # 「ターゲットに移動しています」でもテスト開始済み
+    try:
+        win = app.top_window()
+        state = win.child_window(auto_id="DataCaptureView_TestStateLabel", control_type="Text").window_text()
+        if "ターゲット" in state or "移動" in state:
+            log(f"テスト開始済み: {state}")
+            return True
+    except Exception:
+        pass
+
+    log("  ★警告: キャリブレーション完了後のテスト状態が確認できません")
     carto_log_full_status(app, on_log=log)
+    return True  # 状態不明でも続行（テストは開始されている可能性）
     return True
 
 
