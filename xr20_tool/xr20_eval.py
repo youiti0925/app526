@@ -1553,53 +1553,116 @@ def carto_save_test(app, on_log=None) -> bool:
 
 
 def carto_open_explore_and_copy(app, on_log=None) -> Optional[str]:
-    """解析ボタン → Explore起動 → テスト偏差の編集 → Ctrl+C → クリップボードデータ取得。"""
+    """解析ボタン → Explore起動 → テスト偏差の編集 → Ctrl+C → クリップボードデータ取得。
+    実機確認済みの手順:
+    1. Captureの📊(解析)ボタンクリック → Explore起動
+    2. Exploreで✏️(テスト偏差の編集)ボタンクリック（生データタブ不要）
+    3. ダイアログでCtrl+A → Ctrl+C
+    4. 「キャンセル」で閉じる
+    """
     log = on_log or (lambda msg: None)
     log("Explore起動中...")
-    win = app.top_window()
-    _safe_click(win, on_log=log, auto_id="DataCaptureView_AnalyzeButton", control_type="Button")
-    time.sleep(5)
 
-    try:
-        explore_app = Application(backend="uia").connect(title="CARTO - Explore", timeout=15)
-        explore_win = explore_app.top_window()
-        log("Explore接続OK")
-    except Exception as e:
-        log(f"Explore接続失敗: {e}")
+    # 📊解析ボタンクリック
+    win = app.top_window()
+    ok = _safe_click(win, on_log=log, auto_id="DataCaptureView_AnalyzeButton", control_type="Button")
+    if not ok:
+        try:
+            btn = win.child_window(auto_id="DataCaptureView_AnalyzeButton", control_type="Button")
+            r = btn.rectangle()
+            if HAS_PYAUTOGUI:
+                pyautogui.click((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+                ok = True
+        except Exception:
+            pass
+    if not ok:
+        log("  解析ボタンのクリックに失敗しました")
         return None
 
-    # 生データタブをクリック
-    log("生データタブを選択...")
-    _safe_click(explore_win, on_log=log, title="生データ", control_type="TabItem")
-    if not _safe_click(explore_win, on_log=log, title="生データ", control_type="TabItem"):
-        _safe_click(explore_win, on_log=log, title="生データ", control_type="Button")
+    # Explore起動待ち
+    log("  Exploreウィンドウ待ち...")
+    time.sleep(8)
+    explore_app = None
+    for attempt in range(5):
+        try:
+            explore_app = Application(backend="uia").connect(title="CARTO - Explore", timeout=5)
+            break
+        except Exception:
+            time.sleep(2)
+
+    if not explore_app:
+        log("  Explore接続失敗。手動で解析ボタンを押してください。")
+        return None
+
+    explore_win = explore_app.top_window()
+    log("  Explore接続OK")
     time.sleep(2)
 
-    # テスト偏差の編集ボタンをクリック
-    log("テスト偏差の編集を開く...")
-    _safe_click(explore_win, on_log=log, title="テスト偏差の編集", control_type="Button")
-    time.sleep(2)
+    # ✏️テスト偏差の編集ボタンをクリック（右上の✏️アイコン）
+    log("  テスト偏差の編集ボタンをクリック...")
+    ok = _safe_click(explore_win, on_log=log, title="テスト偏差の編集", control_type="Button")
+    if not ok:
+        # フォールバック: descendants検索
+        try:
+            for elem in explore_win.descendants(control_type="Button"):
+                try:
+                    tip = elem.window_text()
+                    if "偏差" in tip or "編集" in tip:
+                        elem.click_input()
+                        ok = True
+                        log("  [OK] descendants検索でテスト偏差ボタンクリック")
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    if not ok and HAS_PYAUTOGUI:
+        # 座標フォールバック: 右上の✏️ボタン位置
+        log("  座標フォールバック: テスト偏差の編集ボタン...")
+        try:
+            er = explore_win.rectangle()
+            # スクリーンショットより✏️は右上、右から3番目のアイコン
+            _click_at_position(er.right - 120, er.top + 135, on_log=log)
+            ok = True
+        except Exception:
+            pass
 
+    if not ok:
+        log("  テスト偏差の編集ボタンのクリックに失敗しました")
+        return None
+
+    # ダイアログ表示待ち
+    time.sleep(3)
+
+    # Ctrl+A → Ctrl+C でデータコピー
     try:
         from pywinauto.keyboard import send_keys
-        log("データをコピー中（Ctrl+A → Ctrl+C）...")
+        log("  データをコピー中（Ctrl+A → Ctrl+C）...")
         send_keys("^a")
         time.sleep(0.5)
         send_keys("^c")
         time.sleep(0.5)
+
+        # クリップボードからデータ取得
         import subprocess
         result = subprocess.run(["powershell", "-command", "Get-Clipboard"],
                                 capture_output=True, text=True, timeout=5)
         data = result.stdout.strip()
+
         if data:
-            log(f"データコピー成功（{len(data)}文字 / {len(data.splitlines())}行）")
-            dialog = explore_app.top_window()
-            _safe_click(dialog, on_log=log, title="キャンセル", control_type="Button")
+            log(f"  データコピー成功（{len(data)}文字 / {len(data.splitlines())}行）")
+            # キャンセルで閉じる
+            dialog_win = explore_app.top_window()
+            ok = _safe_click(dialog_win, on_log=log, title="キャンセル", control_type="Button")
+            if not ok:
+                from pywinauto.keyboard import send_keys
+                send_keys("{ESCAPE}")
             return data
         else:
-            log("クリップボードが空です")
+            log("  クリップボードが空です")
     except Exception as e:
-        log(f"データコピー失敗: {e}")
+        log(f"  データコピー失敗: {e}")
+
     return None
 
 
