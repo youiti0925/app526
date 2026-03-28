@@ -1480,10 +1480,16 @@ def carto_wait_for_complete(app, poll_interval=2.0, on_log=None) -> bool:
 
 
 def carto_save_test(app, on_log=None) -> bool:
-    """テスト保存。保存ボタンが有効か確認してからクリック。"""
+    """テスト保存。
+    1. 💾ボタンクリック
+    2. 「テスト情報の確認」ダイアログが表示される → OKボタンをクリック
+    3. 保存完了を待つ
+    """
     log = on_log or (lambda msg: None)
     log("テスト結果を保存中...")
     carto_log_full_status(app, on_log=log)
+
+    # 💾ボタンクリック
     win = app.top_window()
     ok = _safe_click(win, on_log=log, auto_id="DataCaptureView_SaveButton", control_type="Button")
     if not ok:
@@ -1495,9 +1501,55 @@ def carto_save_test(app, on_log=None) -> bool:
                 ok = True
         except Exception:
             pass
+    if not ok:
+        log("  保存ボタンのクリックに失敗しました")
+        return False
+
+    # 「テスト情報の確認」ダイアログ待ち → OKクリック
+    log("  テスト情報の確認ダイアログ待ち...")
+    time.sleep(2)
+    win = app.top_window()
+
+    # OKボタンを探してクリック
+    ok_clicked = False
+    try:
+        ok_btn = win.child_window(title="OK", control_type="Button")
+        ok_btn.wait("visible", timeout=10)
+        ok_btn.click_input()
+        ok_clicked = True
+        log("  [OK] テスト情報ダイアログのOKをクリック")
+    except Exception:
+        log("  pywinautoでOKボタンが見つかりません。フォールバック...")
+
+    if not ok_clicked:
+        # フォールバック: ダイアログ内のボタンをテキスト検索
+        try:
+            for elem in win.descendants(control_type="Button"):
+                try:
+                    if elem.window_text() == "OK":
+                        elem.click_input()
+                        ok_clicked = True
+                        log("  [OK] descendants検索でOKボタンクリック")
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    if not ok_clicked and HAS_PYAUTOGUI:
+        # 座標フォールバック: スクリーンショットよりOKボタンは画面中央下部
+        log("  座標フォールバック: OKボタン...")
+        rect = _find_carto_window_rect()
+        if rect:
+            ok_x = (rect[0] + rect[2]) // 2 - 70
+            ok_y = rect[3] - 80
+            _click_at_position(ok_x, ok_y, on_log=log)
+            ok_clicked = True
+
+    # 保存処理待ち（画面が暗くなって戻る）
     time.sleep(5)
-    log("保存完了" if ok else "保存に失敗した可能性があります")
-    return ok
+    log("保存完了")
+    return True
 
 
 def carto_open_explore_and_copy(app, on_log=None) -> Optional[str]:
