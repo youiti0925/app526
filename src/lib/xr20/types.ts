@@ -44,6 +44,7 @@ export interface XR20Settings {
   monitorAppTitle: string;       // 監視対象アプリのウィンドウタイトル
   monitorCaptureButtonName: string; // 取込開始ボタンの名前
   monitorTargetRows: string;     // 監視対象行（カンマ区切り: "HR,WR,WL,HL"）
+  monitorDryRun: boolean;        // リハーサルモード（実際のクリック/SwitchBot操作をスキップ）
 }
 
 export const DEFAULT_SETTINGS: XR20Settings = {
@@ -79,6 +80,7 @@ export const DEFAULT_SETTINGS: XR20Settings = {
   monitorAppTitle: "IK220分割測定KWIN10",
   monitorCaptureButtonName: "取込開始",
   monitorTargetRows: "HR,WR,WL,HL",
+  monitorDryRun: true,
 };
 
 export interface TargetPoint {

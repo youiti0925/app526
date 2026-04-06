@@ -788,6 +788,9 @@ APP_TITLE = ${JSON.stringify(settings.monitorAppTitle)}
 CAPTURE_BUTTON = ${JSON.stringify(settings.monitorCaptureButtonName)}
 WAIT_MINUTES = ${settings.monitorWaitMin}
 
+# リハーサルモード: True=実際のクリック/SwitchBot操作をスキップ（ログのみ）
+DRY_RUN = ${settings.monitorDryRun ? "True" : "False"}
+
 # 行ごとの傾き閾値（秒）— abs(値) で比較
 TILT_THRESHOLDS = {
     "HR": ${settings.monitorThresholdHR},
@@ -836,6 +839,9 @@ class SwitchBotAPI:
                 "Content-Type": "application/json; charset=utf-8"}
 
     def press(self, device_id):
+        if DRY_RUN:
+            log("SwitchBot: [リハーサル] ボタン押下をスキップ")
+            return True
         import requests
         try:
             r = requests.post(f"{self.BASE_URL}/devices/{device_id}/commands",
@@ -1086,6 +1092,9 @@ class IK220Monitor:
           方式3: 画像マッチング（ボタンの位置を画像から検出）
           方式4: 座標クリック（ウィンドウ内の相対座標）
         """
+        if DRY_RUN:
+            log(f"[リハーサル] 「{CAPTURE_BUTTON}」ボタンクリックをスキップ")
+            return True
         if not self._dlg:
             if not self.connect():
                 return False
@@ -1226,52 +1235,82 @@ class AutoRetryMonitor:
     def start(self):
         self.running = True
         self.retry_count = 0
+        # リハーサルモードでは待ち時間を10秒に短縮
+        wait_min = WAIT_MINUTES
+        if DRY_RUN:
+            wait_min = 0.17  # 約10秒
+
         log("=" * 60)
+        if DRY_RUN:
+            log("*** リハーサルモード ***")
+            log("  ボタンクリック・SwitchBot操作は実行されません")
+            log("  待ち時間は10秒に短縮されます")
         log("IK220 自動監視を開始します")
         log(f"  対象アプリ: {APP_TITLE}")
         log(f"  監視行: {', '.join(TARGET_ROWS)}")
         for name in TARGET_ROWS:
             th = TILT_THRESHOLDS.get(name, "?")
             log(f"    {name}: 傾 >= {th}秒 でNG")
-        log(f"  測定待ち: {WAIT_MINUTES}分")
+        log(f"  測定待ち: {WAIT_MINUTES}分" + (" (リハーサル: 10秒)" if DRY_RUN else ""))
         log(f"  SwitchBot: {'設定済み' if self.switchbot else '未設定'}")
         log("=" * 60)
 
-        if not self.ik220.connect():
+        if not DRY_RUN and not self.ik220.connect():
             log("エラー: IK220アプリに接続できません。起動しているか確認してください。")
             self.running = False
             return
 
+        if DRY_RUN:
+            log("リハーサル: IK220アプリ接続をスキップ（ダミーデータで動作確認）")
+
         while self.running:
-            log(f"\\n--- 測定結果待ち ({WAIT_MINUTES}分) ---")
+            wait_sec = int(wait_min * 60)
+            log(f"\\n--- 測定結果待ち ({wait_sec}秒) ---")
 
             # 測定完了を待つ
             waited = 0
-            interval = 30
-            total_wait = WAIT_MINUTES * 60
+            interval = 5 if DRY_RUN else 30
+            total_wait = int(wait_min * 60)
             while waited < total_wait and self.running:
                 time.sleep(interval)
                 waited += interval
                 remaining = total_wait - waited
-                if remaining > 0 and remaining % 60 == 0:
-                    log(f"  待機中... 残り{remaining // 60}分")
+                if remaining > 0:
+                    if DRY_RUN:
+                        log(f"  待機中... 残り{remaining}秒")
+                    elif remaining % 60 == 0:
+                        log(f"  待機中... 残り{remaining // 60}分")
 
             if not self.running:
                 break
 
             # 傾き値を読み取り
             log("\\n測定結果を確認中...")
-            tilt_values = self.ik220.read_tilt_values()
 
-            if not tilt_values:
-                log("警告: 傾き値を読み取れませんでした。5秒後に再試行...")
-                time.sleep(5)
+            if DRY_RUN:
+                # リハーサル: ダミーデータで動作確認（ランダムにNG発生）
+                import random
+                tilt_values = {}
+                for row in TARGET_ROWS:
+                    th = TILT_THRESHOLDS.get(row, 4)
+                    # 70%の確率でOK、30%の確率でNGになるダミー値
+                    if random.random() < 0.3:
+                        tilt_values[row] = th + random.randint(0, 3)  # NG値
+                    else:
+                        tilt_values[row] = random.randint(0, th - 1)  # OK値
+                log(f"[リハーサル] ダミーデータ: {tilt_values}")
+            else:
                 tilt_values = self.ik220.read_tilt_values()
 
-            if not tilt_values:
-                log("エラー: 読み取り失敗。手動確認が必要です。")
-                log("  ヒント: --scan オプションでUI要素を確認してください")
-                continue
+                if not tilt_values:
+                    log("警告: 傾き値を読み取れませんでした。5秒後に再試行...")
+                    time.sleep(5)
+                    tilt_values = self.ik220.read_tilt_values()
+
+                if not tilt_values:
+                    log("エラー: 読み取り失敗。手動確認が必要です。")
+                    log("  ヒント: --scan オプションでUI要素を確認してください")
+                    continue
 
             # 判定
             ng_rows = check_tilt_results(tilt_values)
@@ -1305,7 +1344,7 @@ class AutoRetryMonitor:
                 else:
                     log("警告: SwitchBot未設定。手動でリモコンを押してください。")
 
-                log(f"リトライ完了。{WAIT_MINUTES}分後に再確認。")
+                log(f"リトライ完了。{wait_sec}秒後に再確認。")
 
         log(f"\\n監視終了: 成功 {self.success_count}回, リトライ {self.retry_count}回")
 
@@ -1325,15 +1364,25 @@ def run_gui():
     thread = None
 
     root = tk.Tk()
-    root.title("IK220 自動監視モニター")
+    title = "IK220 自動監視モニター"
+    if DRY_RUN:
+        title += " [リハーサルモード]"
+    root.title(title)
     root.geometry("750x550")
     root.configure(bg="#1e293b")
 
     # ヘッダー
     hdr = tk.Frame(root, bg="#1e293b", pady=10)
     hdr.pack(fill="x", padx=15)
-    tk.Label(hdr, text="IK220 自動監視モニター",
+    tk.Label(hdr, text=title,
              font=("", 16, "bold"), fg="white", bg="#1e293b").pack(side="left")
+
+    # リハーサルモード表示
+    if DRY_RUN:
+        dry_frame = tk.Frame(root, bg="#f59e0b", pady=4, padx=15)
+        dry_frame.pack(fill="x", padx=15, pady=(0, 5))
+        tk.Label(dry_frame, text="リハーサルモード: ボタンクリック・SwitchBot操作は実行されません / 待ち時間10秒 / ダミーデータ使用",
+                 font=("", 9), fg="#1e293b", bg="#f59e0b").pack()
 
     # 閾値表示
     th_frame = tk.Frame(root, bg="#334155", pady=6, padx=15)
@@ -1419,7 +1468,13 @@ def run_gui():
 # エントリーポイント
 # ============================================================
 if __name__ == "__main__":
+    # --dry-run オプションで強制リハーサルモード
+    if "--dry-run" in sys.argv:
+        DRY_RUN = True
+
     print("IK220 自動監視＆リトライスクリプト")
+    if DRY_RUN:
+        print("*** リハーサルモード ***")
     print("=" * 40)
 
     if "--scan" in sys.argv:

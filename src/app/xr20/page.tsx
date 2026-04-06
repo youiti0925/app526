@@ -823,7 +823,7 @@ function MonitorTab({
     setTimeout(scrollToBottom, 50);
   }
 
-  const isConfigured = settings.switchbotToken && settings.switchbotSecret && settings.switchbotDeviceId && settings.monitorAppTitle;
+  const isConfigured = settings.monitorDryRun || (settings.switchbotToken && settings.switchbotSecret && settings.switchbotDeviceId && settings.monitorAppTitle);
 
   return (
     <div className="space-y-6">
@@ -1003,6 +1003,21 @@ function MonitorTab({
                   placeholder="HR,WR,WL,HL"
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
+              </div>
+              {/* リハーサルモード */}
+              <div className={`flex items-center justify-between p-3 rounded-lg border ${settings.monitorDryRun ? "bg-amber-50 border-amber-300" : "bg-slate-50 border-slate-200"}`}>
+                <div>
+                  <span className="text-sm font-medium text-slate-700">リハーサルモード</span>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    ボタンクリック・SwitchBot操作をスキップ、ダミーデータで動作確認
+                  </p>
+                </div>
+                <button
+                  onClick={() => updateSetting("monitorDryRun", !settings.monitorDryRun)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${settings.monitorDryRun ? "bg-amber-500" : "bg-slate-300"}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${settings.monitorDryRun ? "translate-x-6" : "translate-x-1"}`} />
+                </button>
               </div>
             </div>
           </div>
