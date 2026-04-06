@@ -20,6 +20,11 @@ import {
   Upload,
   Zap,
   Save,
+  Eye,
+  Wifi,
+  WifiOff,
+  AlertTriangle,
+  RotateCcw,
 } from "lucide-react";
 import {
   XR20Settings,
@@ -36,6 +41,7 @@ import {
   generateNCProgram,
   generatePhaseNCProgram,
   generateCartoAutomationScript,
+  generateMonitorScript,
   calculateStats,
   parseCSVData,
   calcRepeatability,
@@ -89,6 +95,7 @@ export default function XR20Page() {
 
   const tabs: { id: XR20Tab; label: string; icon: React.ElementType }[] = [
     { id: "auto", label: "自動測定", icon: Zap },
+    { id: "monitor", label: "自動監視", icon: Eye },
     { id: "settings", label: "設定", icon: Settings },
     { id: "targets", label: "ターゲットリスト", icon: List },
     { id: "data", label: "測定データ", icon: Database },
@@ -293,6 +300,12 @@ export default function XR20Page() {
                   onReset={handleAutoReset}
                   onViewResults={() => setActiveTab("results")}
                   onViewReport={() => setActiveTab("report")}
+                />
+              )}
+              {activeTab === "monitor" && (
+                <MonitorTab
+                  settings={settings}
+                  updateSetting={updateSetting}
                 />
               )}
               {activeTab === "settings" && (
@@ -699,6 +712,377 @@ function AutoTab({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* =========================================================
+   Monitor Tab — 自動監視＆リトライ
+   ========================================================= */
+function MonitorTab({
+  settings,
+  updateSetting,
+}: {
+  settings: XR20Settings;
+  updateSetting: <K extends keyof XR20Settings>(key: K, value: XR20Settings[K]) => void;
+}) {
+  const [monitorStatus, setMonitorStatus] = useState<"idle" | "running" | "error">("idle");
+  const [logs, setLogs] = useState<string[]>([]);
+  const [retryCount, setRetryCount] = useState(0);
+  const [successCount, setSuccessCount] = useState(0);
+  const [switchbotDevices, setSwitchbotDevices] = useState<{ deviceId: string; deviceName: string; deviceType: string }[]>([]);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  const addLog = useCallback((msg: string) => {
+    const ts = new Date().toLocaleTimeString("ja-JP");
+    setLogs((prev) => [...prev, `[${ts}] ${msg}`]);
+  }, []);
+
+  // ログ自動スクロール
+  const scrollToBottom = useCallback(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, []);
+
+  // SwitchBotデバイス一覧取得
+  const handleFetchDevices = useCallback(async () => {
+    if (!settings.switchbotToken || !settings.switchbotSecret) {
+      addLog("エラー: SwitchBotのトークンとシークレットを設定してください");
+      return;
+    }
+    setTestingConnection(true);
+    addLog("SwitchBot接続テスト...");
+    try {
+      const res = await fetch(
+        `/api/switchbot?token=${encodeURIComponent(settings.switchbotToken)}&secret=${encodeURIComponent(settings.switchbotSecret)}`
+      );
+      const data = await res.json();
+      if (data.statusCode === 100) {
+        const devices = data.body?.deviceList || [];
+        setSwitchbotDevices(devices);
+        addLog(`接続成功！ ${devices.length}台のデバイスを検出`);
+        devices.forEach((d: { deviceName: string; deviceId: string; deviceType: string }) => {
+          addLog(`  - ${d.deviceName} (${d.deviceType}) ID: ${d.deviceId}`);
+        });
+      } else {
+        addLog(`接続エラー: ${JSON.stringify(data)}`);
+      }
+    } catch (e) {
+      addLog(`通信エラー: ${e}`);
+    }
+    setTestingConnection(false);
+  }, [settings.switchbotToken, settings.switchbotSecret, addLog]);
+
+  // SwitchBotテスト押下
+  const handleTestPress = useCallback(async () => {
+    if (!settings.switchbotDeviceId) {
+      addLog("エラー: デバイスIDを設定してください");
+      return;
+    }
+    addLog("SwitchBotテスト押下...");
+    try {
+      const res = await fetch("/api/switchbot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: settings.switchbotToken,
+          secret: settings.switchbotSecret,
+          deviceId: settings.switchbotDeviceId,
+        }),
+      });
+      const data = await res.json();
+      if (data.statusCode === 100) {
+        addLog("テスト押下成功！");
+      } else {
+        addLog(`テスト押下エラー: ${JSON.stringify(data)}`);
+      }
+    } catch (e) {
+      addLog(`通信エラー: ${e}`);
+    }
+  }, [settings.switchbotToken, settings.switchbotSecret, settings.switchbotDeviceId, addLog]);
+
+  // 監視スクリプトダウンロード
+  const handleDownloadScript = useCallback(() => {
+    const script = generateMonitorScript(settings);
+    const blob = new Blob([script], { type: "text/x-python" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "xr20_monitor.py";
+    a.click();
+    URL.revokeObjectURL(url);
+    addLog("監視スクリプトをダウンロードしました");
+  }, [settings, addLog]);
+
+  // ログ更新時に自動スクロール
+  const prevLogsLength = useRef(0);
+  if (logs.length !== prevLogsLength.current) {
+    prevLogsLength.current = logs.length;
+    setTimeout(scrollToBottom, 50);
+  }
+
+  const isConfigured = settings.switchbotToken && settings.switchbotSecret && settings.switchbotDeviceId && settings.monitorAppTitle;
+
+  return (
+    <div className="space-y-6">
+      {/* ヘッダー */}
+      <div className="bg-gradient-to-r from-emerald-600 to-teal-700 rounded-xl p-6 text-white">
+        <h2 className="text-xl font-bold mb-2 flex items-center gap-2">
+          <Eye className="w-6 h-6" />
+          自動監視＆リトライ
+        </h2>
+        <p className="text-emerald-100 text-sm">
+          測定アプリの「傾き」値を監視し、失敗時に自動でSwitchBot経由でリトライします。
+          PC上で監視スクリプトを実行してください。
+        </p>
+      </div>
+
+      {/* フロー図 */}
+      <div className="bg-slate-50 rounded-xl p-5 border border-slate-200">
+        <h3 className="text-sm font-bold text-slate-700 mb-3">動作フロー</h3>
+        <div className="flex items-center gap-2 text-sm flex-wrap">
+          <span className="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg font-medium">1. 人が測定開始</span>
+          <span className="text-slate-400">→</span>
+          <span className="bg-amber-100 text-amber-700 px-3 py-1.5 rounded-lg font-medium">2. 監視ON</span>
+          <span className="text-slate-400">→</span>
+          <span className="bg-slate-200 text-slate-600 px-3 py-1.5 rounded-lg font-medium">3. {settings.monitorWaitMin}分待機</span>
+          <span className="text-slate-400">→</span>
+          <span className="bg-purple-100 text-purple-700 px-3 py-1.5 rounded-lg font-medium">4. 傾き確認</span>
+          <span className="text-slate-400">→</span>
+          <span className="bg-red-100 text-red-700 px-3 py-1.5 rounded-lg font-medium flex items-center gap-1">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            {settings.monitorThresholdSec}秒以上?
+          </span>
+          <span className="text-slate-400">→</span>
+          <span className="bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-lg font-medium flex items-center gap-1">
+            <RotateCcw className="w-3.5 h-3.5" />
+            自動リトライ
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* 左: SwitchBot設定 */}
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl border border-slate-200 p-5">
+            <h3 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
+              <Wifi className="w-4 h-4 text-blue-500" />
+              SwitchBot 設定
+            </h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">APIトークン</label>
+                <input
+                  type="password"
+                  value={settings.switchbotToken}
+                  onChange={(e) => updateSetting("switchbotToken", e.target.value)}
+                  placeholder="SwitchBotアプリ → 設定 → 開発者オプション"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">APIシークレット</label>
+                <input
+                  type="password"
+                  value={settings.switchbotSecret}
+                  onChange={(e) => updateSetting("switchbotSecret", e.target.value)}
+                  placeholder="SwitchBotアプリの開発者オプションから取得"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">デバイスID</label>
+                <div className="flex gap-2">
+                  <input
+                    value={settings.switchbotDeviceId}
+                    onChange={(e) => updateSetting("switchbotDeviceId", e.target.value)}
+                    placeholder="下の「デバイス取得」で確認"
+                    className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  {switchbotDevices.length > 0 && (
+                    <select
+                      onChange={(e) => updateSetting("switchbotDeviceId", e.target.value)}
+                      value={settings.switchbotDeviceId}
+                      className="px-2 py-2 border border-slate-300 rounded-lg text-sm"
+                    >
+                      <option value="">選択...</option>
+                      {switchbotDevices.map((d) => (
+                        <option key={d.deviceId} value={d.deviceId}>
+                          {d.deviceName} ({d.deviceType})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={handleFetchDevices}
+                  disabled={testingConnection}
+                  className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {testingConnection ? "接続中..." : "デバイス取得"}
+                </button>
+                <button
+                  onClick={handleTestPress}
+                  disabled={!settings.switchbotDeviceId}
+                  className="px-4 py-2 bg-amber-600 text-white text-sm rounded-lg hover:bg-amber-700 disabled:opacity-50"
+                >
+                  テスト押下
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* 監視パラメータ */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5">
+            <h3 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
+              <Settings className="w-4 h-4 text-slate-500" />
+              監視パラメータ
+            </h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">測定アプリのウィンドウタイトル</label>
+                <input
+                  value={settings.monitorAppTitle}
+                  onChange={(e) => updateSetting("monitorAppTitle", e.target.value)}
+                  placeholder="例: CARTO、XR20 Measurement など"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">取り込みボタン名</label>
+                <input
+                  value={settings.monitorCaptureButtonName}
+                  onChange={(e) => updateSetting("monitorCaptureButtonName", e.target.value)}
+                  placeholder="例: 取り込み開始"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-500 mb-1">傾き閾値（秒）</label>
+                  <input
+                    type="number"
+                    value={settings.monitorThresholdSec}
+                    onChange={(e) => updateSetting("monitorThresholdSec", Number(e.target.value))}
+                    min={0}
+                    step={0.5}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-500 mb-1">測定待ち時間（分）</label>
+                  <input
+                    type="number"
+                    value={settings.monitorWaitMin}
+                    onChange={(e) => updateSetting("monitorWaitMin", Number(e.target.value))}
+                    min={1}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 右: ログ＆操作 */}
+        <div className="space-y-4">
+          {/* ステータス */}
+          <div className={`rounded-xl border p-4 ${
+            monitorStatus === "running"
+              ? "bg-emerald-50 border-emerald-300"
+              : monitorStatus === "error"
+              ? "bg-red-50 border-red-300"
+              : "bg-slate-50 border-slate-200"
+          }`}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className={`w-3 h-3 rounded-full ${
+                  monitorStatus === "running" ? "bg-emerald-500 animate-pulse" : monitorStatus === "error" ? "bg-red-500" : "bg-slate-400"
+                }`} />
+                <span className="font-bold text-sm">
+                  {monitorStatus === "running" ? "監視中" : monitorStatus === "error" ? "エラー" : "停止中"}
+                </span>
+              </div>
+              <div className="flex gap-4 text-sm">
+                <span className="text-emerald-600">成功: <strong>{successCount}</strong></span>
+                <span className="text-red-600">リトライ: <strong>{retryCount}</strong></span>
+              </div>
+            </div>
+          </div>
+
+          {/* ログ */}
+          <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+            <div className="px-4 py-2 bg-slate-800 border-b border-slate-700 flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-400">ログ</span>
+              <button
+                onClick={() => setLogs([])}
+                className="text-xs text-slate-500 hover:text-slate-300"
+              >
+                クリア
+              </button>
+            </div>
+            <div
+              ref={logRef}
+              className="p-4 h-64 overflow-y-auto font-mono text-xs text-slate-300 space-y-0.5"
+            >
+              {logs.length === 0 && (
+                <p className="text-slate-600">ログがありません。監視スクリプトをダウンロードして実行してください。</p>
+              )}
+              {logs.map((line, i) => (
+                <div key={i} className={
+                  line.includes("エラー") ? "text-red-400" :
+                  line.includes("成功") ? "text-emerald-400" :
+                  line.includes("失敗") || line.includes("リトライ") ? "text-amber-400" :
+                  ""
+                }>
+                  {line}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* スクリプトダウンロード */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5">
+            <h3 className="text-sm font-bold text-slate-700 mb-3">監視スクリプト</h3>
+            <p className="text-xs text-slate-500 mb-3">
+              上記の設定を埋め込んだPython監視スクリプトをダウンロードし、
+              測定PCで実行してください。GUI付きで監視ON/OFFが操作できます。
+            </p>
+            <div className="space-y-2">
+              <button
+                onClick={handleDownloadScript}
+                disabled={!isConfigured}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm"
+              >
+                <Download className="w-4 h-4" />
+                xr20_monitor.py をダウンロード
+              </button>
+              {!isConfigured && (
+                <p className="text-xs text-amber-600 flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  SwitchBot設定と監視パラメータを全て入力してください
+                </p>
+              )}
+            </div>
+            <div className="mt-4 p-3 bg-slate-50 rounded-lg">
+              <p className="text-xs font-medium text-slate-600 mb-2">実行方法:</p>
+              <code className="block text-xs text-slate-700 bg-slate-100 p-2 rounded font-mono">
+                pip install pywinauto requests pillow pytesseract<br />
+                python xr20_monitor.py
+              </code>
+              <p className="text-xs text-slate-500 mt-2">
+                <code>--cli</code> オプションでGUIなしCLIモード、
+                <code>--list-devices</code> でSwitchBotデバイス一覧、
+                <code>--test-press</code> でテスト押下
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

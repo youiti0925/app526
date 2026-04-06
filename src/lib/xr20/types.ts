@@ -31,6 +31,17 @@ export interface XR20Settings {
   cartoExePath: string;          // CARTO実行ファイルパス
   cartoAutoSetup: boolean;       // CARTO自動セットアップ有効
   initialDwellSec: number;       // NCプログラム先頭のCARTO準備待ちドゥエル（秒）
+
+  // SwitchBot連携（自動リトライ用）
+  switchbotToken: string;        // SwitchBot APIトークン
+  switchbotSecret: string;       // SwitchBot APIシークレット
+  switchbotDeviceId: string;     // SwitchBotデバイスID（ボタン押下用）
+
+  // 自動監視設定
+  monitorThresholdSec: number;   // 傾き閾値（秒）— これ以上で失敗と判定
+  monitorWaitMin: number;        // 測定待ち時間（分）
+  monitorAppTitle: string;       // 監視対象の測定アプリのウィンドウタイトル
+  monitorCaptureButtonName: string; // 取り込み開始ボタンの名前/識別子
 }
 
 export const DEFAULT_SETTINGS: XR20Settings = {
@@ -55,6 +66,15 @@ export const DEFAULT_SETTINGS: XR20Settings = {
   cartoExePath: "C:\\Program Files\\Renishaw\\CARTO\\CARTO.exe",
   cartoAutoSetup: true,
   initialDwellSec: 60,
+
+  switchbotToken: "",
+  switchbotSecret: "",
+  switchbotDeviceId: "",
+
+  monitorThresholdSec: 4,
+  monitorWaitMin: 5,
+  monitorAppTitle: "",
+  monitorCaptureButtonName: "取り込み開始",
 };
 
 export interface TargetPoint {
@@ -100,6 +120,7 @@ export interface RepeatabilityResult {
 
 export type XR20Tab =
   | "auto"
+  | "monitor"
   | "settings"
   | "targets"
   | "data"

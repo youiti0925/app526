@@ -735,3 +735,524 @@ function formatAngle(angle: number): string {
   }
   return rounded.toString();
 }
+
+// ============================================================
+// 自動監視＆リトライ用Pythonスクリプト生成
+// ============================================================
+
+export function generateMonitorScript(settings: XR20Settings): string {
+  return `#!/usr/bin/env python3
+"""
+XR20 自動監視＆リトライスクリプト
+==================================
+測定アプリの「傾き」値を監視し、閾値を超えた場合に
+自動で測定をリトライします。
+
+動作フロー:
+  1. 測定アプリの画面から「傾き」の数値を読み取る
+  2. 傾き >= ${settings.monitorThresholdSec}秒 → 測定失敗と判定
+  3. 失敗時:
+     a. 測定アプリの「${settings.monitorCaptureButtonName}」ボタンをクリック
+     b. SwitchBot経由でリモコンの測定開始ボタンを押す
+  4. ${settings.monitorWaitMin}分待って再度結果を確認
+  5. 成功するまで繰り返す
+
+必要ライブラリ:
+  pip install pywinauto requests pillow pytesseract
+
+使い方:
+  python xr20_monitor.py
+"""
+
+import time
+import sys
+import os
+import hashlib
+import hmac
+import base64
+import uuid
+import json
+import re
+import threading
+from datetime import datetime
+
+# ============================================================
+# 設定
+# ============================================================
+SWITCHBOT_TOKEN = ${JSON.stringify(settings.switchbotToken)}
+SWITCHBOT_SECRET = ${JSON.stringify(settings.switchbotSecret)}
+SWITCHBOT_DEVICE_ID = ${JSON.stringify(settings.switchbotDeviceId)}
+
+MONITOR_APP_TITLE = ${JSON.stringify(settings.monitorAppTitle)}
+CAPTURE_BUTTON_NAME = ${JSON.stringify(settings.monitorCaptureButtonName)}
+THRESHOLD_SEC = ${settings.monitorThresholdSec}
+WAIT_MINUTES = ${settings.monitorWaitMin}
+
+# ============================================================
+# ログ
+# ============================================================
+class Logger:
+    def __init__(self):
+        self.entries = []
+
+    def log(self, msg):
+        ts = datetime.now().strftime('%H:%M:%S')
+        line = f"[{ts}] {msg}"
+        print(line)
+        self.entries.append(line)
+
+logger = Logger()
+log = logger.log
+
+# ============================================================
+# SwitchBot API
+# ============================================================
+class SwitchBotAPI:
+    """SwitchBot Cloud API v1.1 クライアント"""
+    BASE_URL = "https://api.switch-bot.com/v1.1"
+
+    def __init__(self, token, secret):
+        self.token = token
+        self.secret = secret
+
+    def _make_headers(self):
+        nonce = str(uuid.uuid4())
+        t = str(int(time.time() * 1000))
+        string_to_sign = f"{self.token}{t}{nonce}"
+        sign = base64.b64encode(
+            hmac.new(
+                self.secret.encode("utf-8"),
+                string_to_sign.encode("utf-8"),
+                hashlib.sha256
+            ).digest()
+        ).decode("utf-8")
+        return {
+            "Authorization": self.token,
+            "t": t,
+            "sign": sign,
+            "nonce": nonce,
+            "Content-Type": "application/json; charset=utf-8",
+        }
+
+    def press(self, device_id):
+        """SwitchBot Botのボタンを押す"""
+        import requests
+        url = f"{self.BASE_URL}/devices/{device_id}/commands"
+        payload = {
+            "command": "press",
+            "parameter": "default",
+            "commandType": "command"
+        }
+        headers = self._make_headers()
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=10)
+            data = resp.json()
+            if data.get("statusCode") == 100:
+                log("SwitchBot: ボタン押下成功")
+                return True
+            else:
+                log(f"SwitchBot: エラー - {data}")
+                return False
+        except Exception as e:
+            log(f"SwitchBot: 通信エラー - {e}")
+            return False
+
+    def list_devices(self):
+        """デバイス一覧を取得（セットアップ確認用）"""
+        import requests
+        url = f"{self.BASE_URL}/devices"
+        headers = self._make_headers()
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            data = resp.json()
+            if data.get("statusCode") == 100:
+                devices = data.get("body", {}).get("deviceList", [])
+                log(f"SwitchBot: {len(devices)}台のデバイスを検出")
+                for d in devices:
+                    log(f"  - {d.get('deviceName')} (ID: {d.get('deviceId')}, Type: {d.get('deviceType')})")
+                return devices
+            else:
+                log(f"SwitchBot: デバイス取得エラー - {data}")
+                return []
+        except Exception as e:
+            log(f"SwitchBot: 通信エラー - {e}")
+            return []
+
+
+# ============================================================
+# 測定アプリ画面監視
+# ============================================================
+class MeasurementMonitor:
+    """測定アプリの画面を監視し、傾きの値を読み取る"""
+
+    def __init__(self, app_title, threshold_sec, capture_button_name):
+        self.app_title = app_title
+        self.threshold_sec = threshold_sec
+        self.capture_button_name = capture_button_name
+        self._app = None
+        self._dlg = None
+
+    def connect(self):
+        """測定アプリに接続"""
+        try:
+            from pywinauto import Application
+            self._app = Application(backend="uia").connect(
+                title_re=f".*{self.app_title}.*", timeout=10
+            )
+            self._dlg = self._app.window(title_re=f".*{self.app_title}.*")
+            log(f"測定アプリに接続: {self.app_title}")
+            return True
+        except ImportError:
+            log("エラー: pywinauto が必要です。 pip install pywinauto")
+            return False
+        except Exception as e:
+            log(f"測定アプリ接続エラー: {e}")
+            return False
+
+    def read_tilt_value(self):
+        """
+        測定アプリから「傾き」の数値を読み取る。
+
+        方式1: pywinauto UI Automation で直接テキスト要素を取得
+        方式2: スクリーンショット + OCR (pytesseract)
+
+        ※ 測定アプリのUI構造に合わせてカスタマイズが必要です。
+        """
+        if self._dlg is None:
+            if not self.connect():
+                return None
+
+        # --- 方式1: UI Automationで直接読み取り ---
+        try:
+            # 「傾き」ラベルの近くにある数値要素を探す
+            # ※ 実際のコントロール名はアプリにより異なります
+            # self._dlg.print_control_identifiers() で確認してください
+            children = self._dlg.descendants()
+            for child in children:
+                try:
+                    text = child.window_text()
+                    if "傾き" in text:
+                        # 「傾き」の後ろにある数値を抽出
+                        match = re.search(r'[\\d]+\\.?[\\d]*', text)
+                        if match:
+                            value = float(match.group())
+                            log(f"  UI読取り: 傾き = {value}秒")
+                            return value
+                except Exception:
+                    continue
+
+            # 数値を持つ要素を探索（傾きフィールドの特定が必要）
+            for child in children:
+                try:
+                    name = child.element_info.name or ""
+                    if "傾き" in name or "tilt" in name.lower():
+                        # 隣接要素から数値を取得
+                        val_text = child.window_text()
+                        match = re.search(r'[\\d]+\\.?[\\d]*', val_text)
+                        if match:
+                            value = float(match.group())
+                            log(f"  UI読取り: 傾き = {value}秒")
+                            return value
+                except Exception:
+                    continue
+        except Exception as e:
+            log(f"  UI読取りエラー: {e}")
+
+        # --- 方式2: スクリーンショット + OCR ---
+        try:
+            return self._read_by_ocr()
+        except Exception as e:
+            log(f"  OCR読取りエラー: {e}")
+
+        return None
+
+    def _read_by_ocr(self):
+        """スクリーンショットからOCRで数値を読み取る"""
+        try:
+            from PIL import ImageGrab
+            import pytesseract
+        except ImportError:
+            log("  OCR未対応: pip install pillow pytesseract")
+            return None
+
+        try:
+            if self._dlg:
+                rect = self._dlg.rectangle()
+                img = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom))
+            else:
+                img = ImageGrab.grab()
+
+            text = pytesseract.image_to_string(img, lang="jpn+eng")
+            # 「傾き」の近くの数値を探す
+            lines = text.split("\\n")
+            for i, line in enumerate(lines):
+                if "傾き" in line:
+                    match = re.search(r'[\\d]+\\.?[\\d]*', line)
+                    if match:
+                        value = float(match.group())
+                        log(f"  OCR読取り: 傾き = {value}秒")
+                        return value
+                    # 次の行も確認
+                    if i + 1 < len(lines):
+                        match = re.search(r'[\\d]+\\.?[\\d]*', lines[i + 1])
+                        if match:
+                            value = float(match.group())
+                            log(f"  OCR読取り: 傾き = {value}秒")
+                            return value
+        except Exception as e:
+            log(f"  OCRエラー: {e}")
+
+        return None
+
+    def click_capture_button(self):
+        """測定アプリの「取り込み開始」ボタンをクリック"""
+        if self._dlg is None:
+            if not self.connect():
+                return False
+
+        try:
+            btn = self._dlg.child_window(title_re=f".*{self.capture_button_name}.*", control_type="Button")
+            btn.click_input()
+            log(f"「{self.capture_button_name}」ボタンをクリック")
+            return True
+        except Exception as e:
+            log(f"ボタンクリックエラー: {e}")
+            # フォールバック: キーボードショートカットがあれば使用
+            try:
+                from pywinauto.keyboard import send_keys
+                # ※ アプリ固有のショートカットキーがあれば設定
+                log("フォールバック: 手動でボタンを押してください")
+            except Exception:
+                pass
+            return False
+
+
+# ============================================================
+# メイン監視ループ
+# ============================================================
+class AutoRetryMonitor:
+    """自動監視＆リトライの制御クラス"""
+
+    def __init__(self):
+        self.running = False
+        self.retry_count = 0
+        self.success_count = 0
+        self.switchbot = SwitchBotAPI(SWITCHBOT_TOKEN, SWITCHBOT_SECRET) if SWITCHBOT_TOKEN else None
+        self.monitor = MeasurementMonitor(MONITOR_APP_TITLE, THRESHOLD_SEC, CAPTURE_BUTTON_NAME)
+
+    def start(self):
+        """監視開始"""
+        self.running = True
+        self.retry_count = 0
+        log("=" * 50)
+        log("自動監視を開始します")
+        log(f"  監視対象: {MONITOR_APP_TITLE}")
+        log(f"  傾き閾値: {THRESHOLD_SEC}秒以上で失敗判定")
+        log(f"  測定待ち: {WAIT_MINUTES}分")
+        log(f"  SwitchBot: {'設定済み' if self.switchbot else '未設定'}")
+        log("=" * 50)
+
+        if not self.monitor.connect():
+            log("エラー: 測定アプリに接続できません。アプリが起動しているか確認してください。")
+            self.running = False
+            return
+
+        # メインループ
+        while self.running:
+            log(f"\\n--- 測定結果待ち ({WAIT_MINUTES}分) ---")
+
+            # 測定完了を待つ
+            waited = 0
+            check_interval = 30  # 30秒ごとに確認
+            while waited < WAIT_MINUTES * 60 and self.running:
+                time.sleep(check_interval)
+                waited += check_interval
+                remaining = WAIT_MINUTES * 60 - waited
+                if remaining > 0:
+                    log(f"  待機中... 残り{remaining // 60}分{remaining % 60}秒")
+
+            if not self.running:
+                break
+
+            # 傾きの値を読み取り
+            log("測定結果を確認中...")
+            tilt_value = self.monitor.read_tilt_value()
+
+            if tilt_value is None:
+                log("警告: 傾きの値を読み取れませんでした。再試行します...")
+                time.sleep(5)
+                tilt_value = self.monitor.read_tilt_value()
+
+            if tilt_value is None:
+                log("エラー: 値の読み取りに失敗。手動確認が必要です。")
+                log("Enterキーで続行、'q'で終了:")
+                user_input = input().strip().lower()
+                if user_input == 'q':
+                    break
+                continue
+
+            log(f"傾き = {tilt_value}秒")
+
+            if tilt_value < THRESHOLD_SEC:
+                # 成功
+                self.success_count += 1
+                log(f"*** 測定成功！ (傾き {tilt_value}秒 < 閾値 {THRESHOLD_SEC}秒) ***")
+                log(f"統計: 成功 {self.success_count}回, リトライ {self.retry_count}回")
+                log("次の測定を待ちます... (Ctrl+Cで終了)")
+                continue
+            else:
+                # 失敗 → リトライ
+                self.retry_count += 1
+                log(f"!!! 測定失敗 (傾き {tilt_value}秒 >= 閾値 {THRESHOLD_SEC}秒) !!!")
+                log(f"リトライ #{self.retry_count} を実行します...")
+
+                # Step 1: 取り込み開始ボタンをクリック
+                log("Step 1: 取り込み開始ボタンをクリック...")
+                if self.monitor.click_capture_button():
+                    time.sleep(2)  # ボタン反応待ち
+                else:
+                    log("警告: ボタンクリックに失敗。手動で押してください。")
+                    time.sleep(5)
+
+                # Step 2: SwitchBotでリモコンのボタンを押す
+                log("Step 2: SwitchBotでリモコン測定開始ボタンを押す...")
+                if self.switchbot:
+                    time.sleep(1)
+                    if not self.switchbot.press(SWITCHBOT_DEVICE_ID):
+                        log("警告: SwitchBotの操作に失敗。手動で押してください。")
+                else:
+                    log("警告: SwitchBot未設定。手動でリモコンのボタンを押してください。")
+
+                log(f"リトライ完了。{WAIT_MINUTES}分後に再確認します。")
+
+        log("\\n監視を終了しました。")
+        log(f"最終統計: 成功 {self.success_count}回, リトライ {self.retry_count}回")
+
+    def stop(self):
+        """監視停止"""
+        self.running = False
+        log("監視停止を要求しました...")
+
+
+# ============================================================
+# GUI (tkinter)
+# ============================================================
+def run_gui():
+    """シンプルな監視GUIを起動"""
+    import tkinter as tk
+    from tkinter import ttk, scrolledtext
+
+    monitor_instance = AutoRetryMonitor()
+    monitor_thread = None
+
+    root = tk.Tk()
+    root.title("XR20 自動監視モニター")
+    root.geometry("700x500")
+    root.configure(bg="#1e293b")
+
+    # ヘッダー
+    header = tk.Frame(root, bg="#1e293b", pady=10)
+    header.pack(fill="x", padx=15)
+    tk.Label(header, text="XR20 自動監視モニター",
+             font=("", 16, "bold"), fg="white", bg="#1e293b").pack(side="left")
+
+    # ステータス
+    status_frame = tk.Frame(root, bg="#334155", pady=8, padx=15)
+    status_frame.pack(fill="x", padx=15, pady=(0, 10))
+
+    status_label = tk.Label(status_frame, text="停止中",
+                           font=("", 12, "bold"), fg="#94a3b8", bg="#334155")
+    status_label.pack(side="left")
+
+    retry_label = tk.Label(status_frame, text="リトライ: 0回",
+                          font=("", 10), fg="#94a3b8", bg="#334155")
+    retry_label.pack(side="right")
+
+    # ログ表示
+    log_area = scrolledtext.ScrolledText(root, height=18, bg="#0f172a", fg="#e2e8f0",
+                                         font=("Consolas", 10), insertbackground="white")
+    log_area.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+
+    # ボタン
+    btn_frame = tk.Frame(root, bg="#1e293b", pady=10)
+    btn_frame.pack(fill="x", padx=15)
+
+    def update_log():
+        if logger.entries:
+            for entry in logger.entries:
+                log_area.insert("end", entry + "\\n")
+                log_area.see("end")
+            logger.entries.clear()
+        retry_label.config(text=f"リトライ: {monitor_instance.retry_count}回 / 成功: {monitor_instance.success_count}回")
+        root.after(500, update_log)
+
+    def on_start():
+        nonlocal monitor_thread
+        if not monitor_instance.running:
+            monitor_thread = threading.Thread(target=monitor_instance.start, daemon=True)
+            monitor_thread.start()
+            status_label.config(text="監視中", fg="#4ade80")
+            start_btn.config(state="disabled")
+            stop_btn.config(state="normal")
+
+    def on_stop():
+        monitor_instance.stop()
+        status_label.config(text="停止中", fg="#94a3b8")
+        start_btn.config(state="normal")
+        stop_btn.config(state="disabled")
+
+    def on_test_switchbot():
+        log("SwitchBot接続テスト...")
+        if monitor_instance.switchbot:
+            threading.Thread(target=monitor_instance.switchbot.list_devices, daemon=True).start()
+        else:
+            log("SwitchBotが設定されていません。")
+
+    start_btn = tk.Button(btn_frame, text="監視 ON", command=on_start,
+                          bg="#22c55e", fg="white", font=("", 12, "bold"),
+                          width=12, relief="flat")
+    start_btn.pack(side="left", padx=5)
+
+    stop_btn = tk.Button(btn_frame, text="監視 OFF", command=on_stop,
+                         bg="#ef4444", fg="white", font=("", 12, "bold"),
+                         width=12, relief="flat", state="disabled")
+    stop_btn.pack(side="left", padx=5)
+
+    test_btn = tk.Button(btn_frame, text="SwitchBot テスト", command=on_test_switchbot,
+                         bg="#3b82f6", fg="white", font=("", 10),
+                         width=16, relief="flat")
+    test_btn.pack(side="right", padx=5)
+
+    update_log()
+    root.protocol("WM_DELETE_WINDOW", lambda: (on_stop(), root.destroy()))
+    root.mainloop()
+
+
+# ============================================================
+# エントリーポイント
+# ============================================================
+if __name__ == "__main__":
+    print("XR20 自動監視＆リトライスクリプト")
+    print("=" * 40)
+
+    if "--cli" in sys.argv:
+        # CLIモード
+        monitor = AutoRetryMonitor()
+        try:
+            monitor.start()
+        except KeyboardInterrupt:
+            monitor.stop()
+            print("\\nCtrl+C で終了しました。")
+    elif "--list-devices" in sys.argv:
+        # デバイス一覧
+        api = SwitchBotAPI(SWITCHBOT_TOKEN, SWITCHBOT_SECRET)
+        api.list_devices()
+    elif "--test-press" in sys.argv:
+        # テスト押下
+        api = SwitchBotAPI(SWITCHBOT_TOKEN, SWITCHBOT_SECRET)
+        api.press(SWITCHBOT_DEVICE_ID)
+    else:
+        # GUIモード（デフォルト）
+        run_gui()
+`;
+}
