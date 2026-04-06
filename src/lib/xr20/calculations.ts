@@ -1076,18 +1076,109 @@ class IK220Monitor:
         return None
 
     def click_capture_button(self):
-        """「取込開始」ボタンをクリック"""
+        """
+        「取込開始」ボタンをクリック
+
+        LabVIEWアプリはUI Automationに完全対応していない場合があるため、
+        複数の方式を順に試行する:
+          方式1: UIA child_window で title マッチ
+          方式2: 全子要素から「取込開始」テキストを持つ要素を探す
+          方式3: 画像マッチング（ボタンの位置を画像から検出）
+          方式4: 座標クリック（ウィンドウ内の相対座標）
+        """
         if not self._dlg:
             if not self.connect():
                 return False
+
+        # --- 方式1: UIA title マッチ ---
         try:
             btn = self._dlg.child_window(title_re=f".*{CAPTURE_BUTTON}.*")
-            btn.click_input()
-            log(f"「{CAPTURE_BUTTON}」ボタンをクリック")
+            if btn.exists(timeout=2):
+                btn.click_input()
+                log(f"方式1: 「{CAPTURE_BUTTON}」ボタンをクリック (UIA title)")
+                return True
+        except Exception as e:
+            log(f"  方式1失敗: {e}")
+
+        # --- 方式2: 全子要素のテキストを検索 ---
+        try:
+            for child in self._dlg.descendants():
+                try:
+                    txt = child.window_text().strip()
+                    if CAPTURE_BUTTON in txt:
+                        child.click_input()
+                        log(f"方式2: 「{txt}」要素をクリック (テキスト検索)")
+                        return True
+                except Exception:
+                    continue
+        except Exception as e:
+            log(f"  方式2失敗: {e}")
+
+        # --- 方式3: 画像マッチング ---
+        try:
+            clicked = self._click_by_image(CAPTURE_BUTTON)
+            if clicked:
+                return True
+        except Exception as e:
+            log(f"  方式3失敗: {e}")
+
+        # --- 方式4: 座標クリック（フォールバック） ---
+        # IK220画面レイアウトから「取込開始」は左下のボタン群の一番左
+        # ウィンドウ内の相対位置で推定クリック
+        try:
+            rect = self._dlg.rectangle()
+            win_w = rect.right - rect.left
+            win_h = rect.bottom - rect.top
+            # 「取込開始」ボタンの推定位置:
+            #   X: ウィンドウ左端から約 14% の位置
+            #   Y: ウィンドウ上端から約 35% の位置
+            btn_x = rect.left + int(win_w * 0.14)
+            btn_y = rect.top + int(win_h * 0.35)
+            log(f"方式4: 座標クリック ({btn_x}, {btn_y})")
+            log(f"  ※ 座標が正しくない場合は --scan でUI要素を確認してください")
+
+            import ctypes
+            ctypes.windll.user32.SetCursorPos(btn_x, btn_y)
+            time.sleep(0.1)
+            ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
+            time.sleep(0.05)
+            ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
+            log(f"方式4: 座標クリック完了")
             return True
         except Exception as e:
-            log(f"ボタンクリックエラー: {e}")
+            log(f"  方式4失敗: {e}")
+
+        log("全方式でボタンクリックに失敗しました")
+        return False
+
+    def _click_by_image(self, button_text):
+        """ボタンのテキストを画像マッチングで検出してクリック"""
+        try:
+            from PIL import ImageGrab, ImageDraw, ImageFont
+            import pytesseract
+        except ImportError:
             return False
+
+        rect = self._dlg.rectangle()
+        img = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom))
+        # OCRでボタンテキストの位置を検出
+        data = pytesseract.image_to_data(img, lang="jpn+eng", output_type=pytesseract.Output.DICT)
+        for i, text in enumerate(data["text"]):
+            if button_text in text or text in button_text:
+                x = data["left"][i] + data["width"][i] // 2
+                y = data["top"][i] + data["height"][i] // 2
+                # ウィンドウ座標に変換してクリック
+                abs_x = rect.left + x
+                abs_y = rect.top + y
+                import ctypes
+                ctypes.windll.user32.SetCursorPos(abs_x, abs_y)
+                time.sleep(0.1)
+                ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)
+                time.sleep(0.05)
+                ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)
+                log(f"方式3: 画像マッチングでクリック ({abs_x}, {abs_y})")
+                return True
+        return False
 
     def is_measurement_done(self):
         """
