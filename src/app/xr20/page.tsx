@@ -853,7 +853,7 @@ function MonitorTab({
           <span className="text-slate-400">→</span>
           <span className="bg-red-100 text-red-700 px-3 py-1.5 rounded-lg font-medium flex items-center gap-1">
             <AlertTriangle className="w-3.5 h-3.5" />
-            {settings.monitorThresholdSec}秒以上?
+            HR/HL&ge;{settings.monitorThresholdHR}秒 or WR/WL&ge;{settings.monitorThresholdWR}秒?
           </span>
           <span className="text-slate-400">→</span>
           <span className="bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-lg font-medium flex items-center gap-1">
@@ -961,13 +961,24 @@ function MonitorTab({
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">傾き閾値（秒）</label>
+                  <label className="block text-xs font-medium text-slate-500 mb-1">HR/HL 傾き閾値（秒）</label>
                   <input
                     type="number"
-                    value={settings.monitorThresholdSec}
-                    onChange={(e) => updateSetting("monitorThresholdSec", Number(e.target.value))}
+                    value={settings.monitorThresholdHR}
+                    onChange={(e) => updateSetting("monitorThresholdHR", Number(e.target.value))}
+                    min={0}
+                    step={0.5}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-500 mb-1">WR/WL 傾き閾値（秒）</label>
+                  <input
+                    type="number"
+                    value={settings.monitorThresholdWR}
+                    onChange={(e) => updateSetting("monitorThresholdWR", Number(e.target.value))}
                     min={0}
                     step={0.5}
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
@@ -983,6 +994,15 @@ function MonitorTab({
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
                 </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">監視対象行（カンマ区切り）</label>
+                <input
+                  value={settings.monitorTargetRows}
+                  onChange={(e) => updateSetting("monitorTargetRows", e.target.value)}
+                  placeholder="HR,WR,WL,HL"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
               </div>
             </div>
           </div>

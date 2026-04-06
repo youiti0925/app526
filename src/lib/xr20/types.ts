@@ -38,10 +38,12 @@ export interface XR20Settings {
   switchbotDeviceId: string;     // SwitchBotデバイスID（ボタン押下用）
 
   // 自動監視設定
-  monitorThresholdSec: number;   // 傾き閾値（秒）— これ以上で失敗と判定
+  monitorThresholdHR: number;    // HR/HL 傾き閾値（秒）— これ以上で失敗
+  monitorThresholdWR: number;    // WR/WL 傾き閾値（秒）— これ以上で失敗
   monitorWaitMin: number;        // 測定待ち時間（分）
-  monitorAppTitle: string;       // 監視対象の測定アプリのウィンドウタイトル
-  monitorCaptureButtonName: string; // 取り込み開始ボタンの名前/識別子
+  monitorAppTitle: string;       // 監視対象アプリのウィンドウタイトル
+  monitorCaptureButtonName: string; // 取込開始ボタンの名前
+  monitorTargetRows: string;     // 監視対象行（カンマ区切り: "HR,WR,WL,HL"）
 }
 
 export const DEFAULT_SETTINGS: XR20Settings = {
@@ -71,10 +73,12 @@ export const DEFAULT_SETTINGS: XR20Settings = {
   switchbotSecret: "",
   switchbotDeviceId: "",
 
-  monitorThresholdSec: 4,
+  monitorThresholdHR: 4,
+  monitorThresholdWR: 7,
   monitorWaitMin: 5,
-  monitorAppTitle: "",
-  monitorCaptureButtonName: "取り込み開始",
+  monitorAppTitle: "IK220分割測定KWIN10",
+  monitorCaptureButtonName: "取込開始",
+  monitorTargetRows: "HR,WR,WL,HL",
 };
 
 export interface TargetPoint {

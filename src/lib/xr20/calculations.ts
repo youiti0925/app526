@@ -741,27 +741,29 @@ function formatAngle(angle: number): string {
 // ============================================================
 
 export function generateMonitorScript(settings: XR20Settings): string {
+  const targetRows = settings.monitorTargetRows.split(",").map(s => s.trim()).filter(Boolean);
   return `#!/usr/bin/env python3
 """
-XR20 自動監視＆リトライスクリプト
-==================================
-測定アプリの「傾き」値を監視し、閾値を超えた場合に
-自動で測定をリトライします。
+IK220 分割測定 自動監視＆リトライスクリプト
+=============================================
+対象アプリ: ${settings.monitorAppTitle}
 
-動作フロー:
-  1. 測定アプリの画面から「傾き」の数値を読み取る
-  2. 傾き >= ${settings.monitorThresholdSec}秒 → 測定失敗と判定
-  3. 失敗時:
-     a. 測定アプリの「${settings.monitorCaptureButtonName}」ボタンをクリック
-     b. SwitchBot経由でリモコンの測定開始ボタンを押す
-  4. ${settings.monitorWaitMin}分待って再度結果を確認
-  5. 成功するまで繰り返す
+テーブルの「傾」列を行ごとに監視:
+  HR/HL: 傾 >= ${settings.monitorThresholdHR}秒 → NG
+  WR/WL: 傾 >= ${settings.monitorThresholdWR}秒 → NG
+
+NG検出時:
+  1.「${settings.monitorCaptureButtonName}」ボタンをクリック
+  2. SwitchBotでリモコンの測定開始ボタンを押す
+  3. ${settings.monitorWaitMin}分後に再確認
 
 必要ライブラリ:
-  pip install pywinauto requests pillow pytesseract
+  pip install pywinauto requests
 
 使い方:
-  python xr20_monitor.py
+  python xr20_monitor.py          # GUIモード
+  python xr20_monitor.py --cli    # CLIモード
+  python xr20_monitor.py --scan   # UI要素一覧表示（デバッグ用）
 """
 
 import time
@@ -771,7 +773,6 @@ import hashlib
 import hmac
 import base64
 import uuid
-import json
 import re
 import threading
 from datetime import datetime
@@ -783,10 +784,20 @@ SWITCHBOT_TOKEN = ${JSON.stringify(settings.switchbotToken)}
 SWITCHBOT_SECRET = ${JSON.stringify(settings.switchbotSecret)}
 SWITCHBOT_DEVICE_ID = ${JSON.stringify(settings.switchbotDeviceId)}
 
-MONITOR_APP_TITLE = ${JSON.stringify(settings.monitorAppTitle)}
-CAPTURE_BUTTON_NAME = ${JSON.stringify(settings.monitorCaptureButtonName)}
-THRESHOLD_SEC = ${settings.monitorThresholdSec}
+APP_TITLE = ${JSON.stringify(settings.monitorAppTitle)}
+CAPTURE_BUTTON = ${JSON.stringify(settings.monitorCaptureButtonName)}
 WAIT_MINUTES = ${settings.monitorWaitMin}
+
+# 行ごとの傾き閾値（秒）— abs(値) で比較
+TILT_THRESHOLDS = {
+    "HR": ${settings.monitorThresholdHR},
+    "HL": ${settings.monitorThresholdHR},
+    "WR": ${settings.monitorThresholdWR},
+    "WL": ${settings.monitorThresholdWR},
+}
+
+# 監視対象行
+TARGET_ROWS = ${JSON.stringify(targetRows)}
 
 # ============================================================
 # ログ
@@ -805,169 +816,233 @@ logger = Logger()
 log = logger.log
 
 # ============================================================
-# SwitchBot API
+# SwitchBot API v1.1
 # ============================================================
 class SwitchBotAPI:
-    """SwitchBot Cloud API v1.1 クライアント"""
     BASE_URL = "https://api.switch-bot.com/v1.1"
 
     def __init__(self, token, secret):
         self.token = token
         self.secret = secret
 
-    def _make_headers(self):
+    def _headers(self):
+        import requests  # noqa: F811
         nonce = str(uuid.uuid4())
         t = str(int(time.time() * 1000))
-        string_to_sign = f"{self.token}{t}{nonce}"
         sign = base64.b64encode(
-            hmac.new(
-                self.secret.encode("utf-8"),
-                string_to_sign.encode("utf-8"),
-                hashlib.sha256
-            ).digest()
-        ).decode("utf-8")
-        return {
-            "Authorization": self.token,
-            "t": t,
-            "sign": sign,
-            "nonce": nonce,
-            "Content-Type": "application/json; charset=utf-8",
-        }
+            hmac.new(self.secret.encode(), f"{self.token}{t}{nonce}".encode(), hashlib.sha256).digest()
+        ).decode()
+        return {"Authorization": self.token, "t": t, "sign": sign, "nonce": nonce,
+                "Content-Type": "application/json; charset=utf-8"}
 
     def press(self, device_id):
-        """SwitchBot Botのボタンを押す"""
         import requests
-        url = f"{self.BASE_URL}/devices/{device_id}/commands"
-        payload = {
-            "command": "press",
-            "parameter": "default",
-            "commandType": "command"
-        }
-        headers = self._make_headers()
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=10)
-            data = resp.json()
+            r = requests.post(f"{self.BASE_URL}/devices/{device_id}/commands",
+                              headers=self._headers(),
+                              json={"command": "press", "parameter": "default", "commandType": "command"},
+                              timeout=10)
+            data = r.json()
             if data.get("statusCode") == 100:
                 log("SwitchBot: ボタン押下成功")
                 return True
-            else:
-                log(f"SwitchBot: エラー - {data}")
-                return False
+            log(f"SwitchBot: エラー - {data}")
+            return False
         except Exception as e:
             log(f"SwitchBot: 通信エラー - {e}")
             return False
 
     def list_devices(self):
-        """デバイス一覧を取得（セットアップ確認用）"""
         import requests
-        url = f"{self.BASE_URL}/devices"
-        headers = self._make_headers()
         try:
-            resp = requests.get(url, headers=headers, timeout=10)
-            data = resp.json()
+            r = requests.get(f"{self.BASE_URL}/devices", headers=self._headers(), timeout=10)
+            data = r.json()
             if data.get("statusCode") == 100:
-                devices = data.get("body", {}).get("deviceList", [])
+                devices = data["body"].get("deviceList", [])
                 log(f"SwitchBot: {len(devices)}台のデバイスを検出")
                 for d in devices:
-                    log(f"  - {d.get('deviceName')} (ID: {d.get('deviceId')}, Type: {d.get('deviceType')})")
+                    log(f"  - {d['deviceName']} (ID: {d['deviceId']}, Type: {d['deviceType']})")
                 return devices
-            else:
-                log(f"SwitchBot: デバイス取得エラー - {data}")
-                return []
+            log(f"SwitchBot: エラー - {data}")
         except Exception as e:
             log(f"SwitchBot: 通信エラー - {e}")
-            return []
-
+        return []
 
 # ============================================================
-# 測定アプリ画面監視
+# IK220 測定アプリ操作
 # ============================================================
-class MeasurementMonitor:
-    """測定アプリの画面を監視し、傾きの値を読み取る"""
+class IK220Monitor:
+    """
+    IK220分割測定KWIN10.vi (LabVIEW) の画面を操作する。
 
-    def __init__(self, app_title, threshold_sec, capture_button_name):
-        self.app_title = app_title
-        self.threshold_sec = threshold_sec
-        self.capture_button_name = capture_button_name
+    テーブル構造（画面上部）:
+      No | (名前) | 間隔 | 1/N | 点数 | 傾 | 精度 | 精度 | UD | L/R | 傾 | 精度
+      1    HR       60000   1    60    -1   19.0   19.5
+      3    WR       3600    1    10     0    9.5    9.5
+      4    WL       3600    1    10    -1    8.0    8.0   22        8.0
+      2    HL       60000   1    60     0   19.5   19.5   22       19.5
+
+    「傾」列（6列目）の絶対値で判定:
+      HR/HL: abs(傾) >= ${settings.monitorThresholdHR} → NG
+      WR/WL: abs(傾) >= ${settings.monitorThresholdWR} → NG
+    """
+
+    # 行名からNo列の値（画面表示順）
+    ROW_NO_MAP = {"HR": "1", "WR": "3", "WL": "4", "HL": "2"}
+
+    def __init__(self):
         self._app = None
         self._dlg = None
 
     def connect(self):
-        """測定アプリに接続"""
         try:
             from pywinauto import Application
             self._app = Application(backend="uia").connect(
-                title_re=f".*{self.app_title}.*", timeout=10
+                title_re=f".*{APP_TITLE}.*", timeout=10
             )
-            self._dlg = self._app.window(title_re=f".*{self.app_title}.*")
-            log(f"測定アプリに接続: {self.app_title}")
+            self._dlg = self._app.window(title_re=f".*{APP_TITLE}.*")
+            log(f"接続成功: {self._dlg.window_text()}")
             return True
         except ImportError:
-            log("エラー: pywinauto が必要です。 pip install pywinauto")
+            log("エラー: pip install pywinauto")
             return False
         except Exception as e:
-            log(f"測定アプリ接続エラー: {e}")
+            log(f"接続エラー: {e}")
             return False
 
-    def read_tilt_value(self):
-        """
-        測定アプリから「傾き」の数値を読み取る。
+    def scan_controls(self):
+        """UI要素を一覧表示（デバッグ用）"""
+        if not self._dlg and not self.connect():
+            return
+        log("--- UI要素一覧 ---")
+        try:
+            self._dlg.print_control_identifiers(depth=3)
+        except Exception as e:
+            log(f"scan エラー: {e}")
 
-        方式1: pywinauto UI Automation で直接テキスト要素を取得
-        方式2: スクリーンショット + OCR (pytesseract)
-
-        ※ 測定アプリのUI構造に合わせてカスタマイズが必要です。
+    def read_tilt_values(self):
         """
-        if self._dlg is None:
+        各行の「傾」値を辞書で返す: {"HR": -1, "WR": 0, "WL": -1, "HL": 0}
+
+        LabVIEWアプリのUI要素から値を取得する。
+        取得方法はアプリのUI構造に依存するため、以下の複数の方式を試行する:
+          方式1: pywinauto UIA でテーブル/リスト要素から取得
+          方式2: 全子要素のテキストをパースして行を特定
+          方式3: スクリーンショット + OCR
+        """
+        if not self._dlg:
             if not self.connect():
                 return None
 
-        # --- 方式1: UI Automationで直接読み取り ---
-        try:
-            # 「傾き」ラベルの近くにある数値要素を探す
-            # ※ 実際のコントロール名はアプリにより異なります
-            # self._dlg.print_control_identifiers() で確認してください
-            children = self._dlg.descendants()
-            for child in children:
-                try:
-                    text = child.window_text()
-                    if "傾き" in text:
-                        # 「傾き」の後ろにある数値を抽出
-                        match = re.search(r'[\\d]+\\.?[\\d]*', text)
-                        if match:
-                            value = float(match.group())
-                            log(f"  UI読取り: 傾き = {value}秒")
-                            return value
-                except Exception:
-                    continue
+        # --- 方式1: UIA Table/DataGrid から取得 ---
+        result = self._read_from_table()
+        if result:
+            return result
 
-            # 数値を持つ要素を探索（傾きフィールドの特定が必要）
-            for child in children:
-                try:
-                    name = child.element_info.name or ""
-                    if "傾き" in name or "tilt" in name.lower():
-                        # 隣接要素から数値を取得
-                        val_text = child.window_text()
-                        match = re.search(r'[\\d]+\\.?[\\d]*', val_text)
-                        if match:
-                            value = float(match.group())
-                            log(f"  UI読取り: 傾き = {value}秒")
-                            return value
-                except Exception:
-                    continue
-        except Exception as e:
-            log(f"  UI読取りエラー: {e}")
+        # --- 方式2: 全テキスト要素をスキャンして行パターンを検出 ---
+        result = self._read_from_text_scan()
+        if result:
+            return result
 
-        # --- 方式2: スクリーンショット + OCR ---
-        try:
-            return self._read_by_ocr()
-        except Exception as e:
-            log(f"  OCR読取りエラー: {e}")
+        # --- 方式3: スクリーンショット + OCR ---
+        result = self._read_from_ocr()
+        if result:
+            return result
 
+        log("警告: どの方式でも傾き値を取得できませんでした")
         return None
 
-    def _read_by_ocr(self):
-        """スクリーンショットからOCRで数値を読み取る"""
+    def _read_from_table(self):
+        """UIA Table/DataGrid/List コントロールから読み取り"""
+        try:
+            # LabVIEWのテーブルはListView/Table/DataGridのいずれか
+            for ctrl_type in ["Table", "DataGrid", "List"]:
+                try:
+                    table = self._dlg.child_window(control_type=ctrl_type)
+                    if not table.exists(timeout=2):
+                        continue
+                    items = table.descendants()
+                    texts = [c.window_text() for c in items if c.window_text().strip()]
+                    log(f"  Table({ctrl_type}) 要素数: {len(texts)}")
+                    return self._parse_table_texts(texts)
+                except Exception:
+                    continue
+        except Exception as e:
+            log(f"  Table読取りエラー: {e}")
+        return None
+
+    def _read_from_text_scan(self):
+        """全子要素のテキストを収集してパターンマッチ"""
+        try:
+            children = self._dlg.descendants()
+            all_texts = []
+            for child in children:
+                try:
+                    t = child.window_text().strip()
+                    if t:
+                        all_texts.append(t)
+                except Exception:
+                    continue
+
+            if not all_texts:
+                return None
+
+            return self._parse_table_texts(all_texts)
+        except Exception as e:
+            log(f"  テキストスキャンエラー: {e}")
+        return None
+
+    def _parse_table_texts(self, texts):
+        """
+        テキストリストからHR/WR/WL/HL行を探し、傾の値を抽出する。
+
+        テーブルの各行は以下のパターン:
+          No(数字), 名前(HR/WR/WL/HL), 間隔(数字), 1/N(数字), 点数(数字), 傾(数字)...
+        """
+        result = {}
+        # テキストの中から "HR", "WR", "WL", "HL" を探す
+        for row_name in TARGET_ROWS:
+            try:
+                idx = None
+                for i, t in enumerate(texts):
+                    if t.strip() == row_name:
+                        idx = i
+                        break
+                if idx is None:
+                    continue
+
+                # 行名の後ろにある数値を順に取得
+                # 間隔, 1/N, 点数, 傾 の順（行名から4番目の数値が「傾」）
+                nums_found = []
+                for j in range(idx + 1, min(idx + 20, len(texts))):
+                    t = texts[j].strip()
+                    # 次の行名に到達したら終了
+                    if t in ("HR", "WR", "WL", "HL") and t != row_name:
+                        break
+                    try:
+                        val = float(t)
+                        nums_found.append(val)
+                    except ValueError:
+                        continue
+                    # 間隔, 1/N, 点数, 傾 の4つ目
+                    if len(nums_found) >= 4:
+                        break
+
+                if len(nums_found) >= 4:
+                    tilt_val = nums_found[3]  # 4番目 = 傾
+                    result[row_name] = tilt_val
+                    log(f"  {row_name}: 傾 = {tilt_val}")
+                elif len(nums_found) >= 1:
+                    # フォールバック: 見つかった数値をログ出力して手がかりにする
+                    log(f"  {row_name}: 数値{len(nums_found)}個検出 = {nums_found} (傾の位置が不明)")
+
+            except Exception as e:
+                log(f"  {row_name} パースエラー: {e}")
+
+        return result if result else None
+
+    def _read_from_ocr(self):
+        """スクリーンショット + OCR"""
         try:
             from PIL import ImageGrab
             import pytesseract
@@ -976,254 +1051,275 @@ class MeasurementMonitor:
             return None
 
         try:
-            if self._dlg:
-                rect = self._dlg.rectangle()
-                img = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom))
-            else:
-                img = ImageGrab.grab()
+            rect = self._dlg.rectangle()
+            # テーブル部分のみキャプチャ（上部 ~30% 程度）
+            table_height = int((rect.bottom - rect.top) * 0.30)
+            img = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.top + table_height))
 
-            text = pytesseract.image_to_string(img, lang="jpn+eng")
-            # 「傾き」の近くの数値を探す
-            lines = text.split("\\n")
-            for i, line in enumerate(lines):
-                if "傾き" in line:
-                    match = re.search(r'[\\d]+\\.?[\\d]*', line)
-                    if match:
-                        value = float(match.group())
-                        log(f"  OCR読取り: 傾き = {value}秒")
-                        return value
-                    # 次の行も確認
-                    if i + 1 < len(lines):
-                        match = re.search(r'[\\d]+\\.?[\\d]*', lines[i + 1])
-                        if match:
-                            value = float(match.group())
-                            log(f"  OCR読取り: 傾き = {value}秒")
-                            return value
+            text = pytesseract.image_to_string(img, lang="eng+jpn",
+                config="--psm 6")  # テーブルとして認識
+            log(f"  OCR結果:\\n{text}")
+
+            result = {}
+            for line in text.split("\\n"):
+                for row_name in TARGET_ROWS:
+                    if row_name in line:
+                        nums = re.findall(r'-?\\d+\\.?\\d*', line)
+                        # 間隔, 1/N, 点数, 傾 → 4番目以降
+                        if len(nums) >= 5:  # No + 間隔 + 1/N + 点数 + 傾
+                            tilt_val = float(nums[4])
+                            result[row_name] = tilt_val
+                            log(f"  OCR {row_name}: 傾 = {tilt_val}")
+            return result if result else None
         except Exception as e:
             log(f"  OCRエラー: {e}")
-
         return None
 
     def click_capture_button(self):
-        """測定アプリの「取り込み開始」ボタンをクリック"""
-        if self._dlg is None:
+        """「取込開始」ボタンをクリック"""
+        if not self._dlg:
             if not self.connect():
                 return False
-
         try:
-            btn = self._dlg.child_window(title_re=f".*{self.capture_button_name}.*", control_type="Button")
+            btn = self._dlg.child_window(title_re=f".*{CAPTURE_BUTTON}.*")
             btn.click_input()
-            log(f"「{self.capture_button_name}」ボタンをクリック")
+            log(f"「{CAPTURE_BUTTON}」ボタンをクリック")
             return True
         except Exception as e:
             log(f"ボタンクリックエラー: {e}")
-            # フォールバック: キーボードショートカットがあれば使用
-            try:
-                from pywinauto.keyboard import send_keys
-                # ※ アプリ固有のショートカットキーがあれば設定
-                log("フォールバック: 手動でボタンを押してください")
-            except Exception:
-                pass
             return False
+
+    def is_measurement_done(self):
+        """
+        測定完了を判定する。
+        「終了」ボタンが赤く表示される、またはステータス表示で判定。
+        ここではテーブルの値が更新されたかどうかで判定。
+        """
+        # 簡易: 傾き値が読み取れれば測定は完了している
+        vals = self.read_tilt_values()
+        return vals is not None and len(vals) > 0
+
+
+# ============================================================
+# 判定ロジック
+# ============================================================
+def check_tilt_results(tilt_values):
+    """
+    各行の傾き値を閾値と比較し、NG行のリストを返す。
+    全行OKなら空リスト。
+    """
+    ng_rows = []
+    for row_name, value in tilt_values.items():
+        threshold = TILT_THRESHOLDS.get(row_name)
+        if threshold is None:
+            continue
+        if abs(value) >= threshold:
+            ng_rows.append((row_name, value, threshold))
+            log(f"  NG: {row_name} 傾={value} (閾値: {threshold})")
+        else:
+            log(f"  OK: {row_name} 傾={value} (閾値: {threshold})")
+    return ng_rows
 
 
 # ============================================================
 # メイン監視ループ
 # ============================================================
 class AutoRetryMonitor:
-    """自動監視＆リトライの制御クラス"""
-
     def __init__(self):
         self.running = False
         self.retry_count = 0
         self.success_count = 0
         self.switchbot = SwitchBotAPI(SWITCHBOT_TOKEN, SWITCHBOT_SECRET) if SWITCHBOT_TOKEN else None
-        self.monitor = MeasurementMonitor(MONITOR_APP_TITLE, THRESHOLD_SEC, CAPTURE_BUTTON_NAME)
+        self.ik220 = IK220Monitor()
 
     def start(self):
-        """監視開始"""
         self.running = True
         self.retry_count = 0
-        log("=" * 50)
-        log("自動監視を開始します")
-        log(f"  監視対象: {MONITOR_APP_TITLE}")
-        log(f"  傾き閾値: {THRESHOLD_SEC}秒以上で失敗判定")
+        log("=" * 60)
+        log("IK220 自動監視を開始します")
+        log(f"  対象アプリ: {APP_TITLE}")
+        log(f"  監視行: {', '.join(TARGET_ROWS)}")
+        for name in TARGET_ROWS:
+            th = TILT_THRESHOLDS.get(name, "?")
+            log(f"    {name}: 傾 >= {th}秒 でNG")
         log(f"  測定待ち: {WAIT_MINUTES}分")
         log(f"  SwitchBot: {'設定済み' if self.switchbot else '未設定'}")
-        log("=" * 50)
+        log("=" * 60)
 
-        if not self.monitor.connect():
-            log("エラー: 測定アプリに接続できません。アプリが起動しているか確認してください。")
+        if not self.ik220.connect():
+            log("エラー: IK220アプリに接続できません。起動しているか確認してください。")
             self.running = False
             return
 
-        # メインループ
         while self.running:
             log(f"\\n--- 測定結果待ち ({WAIT_MINUTES}分) ---")
 
             # 測定完了を待つ
             waited = 0
-            check_interval = 30  # 30秒ごとに確認
-            while waited < WAIT_MINUTES * 60 and self.running:
-                time.sleep(check_interval)
-                waited += check_interval
-                remaining = WAIT_MINUTES * 60 - waited
-                if remaining > 0:
-                    log(f"  待機中... 残り{remaining // 60}分{remaining % 60}秒")
+            interval = 30
+            total_wait = WAIT_MINUTES * 60
+            while waited < total_wait and self.running:
+                time.sleep(interval)
+                waited += interval
+                remaining = total_wait - waited
+                if remaining > 0 and remaining % 60 == 0:
+                    log(f"  待機中... 残り{remaining // 60}分")
 
             if not self.running:
                 break
 
-            # 傾きの値を読み取り
-            log("測定結果を確認中...")
-            tilt_value = self.monitor.read_tilt_value()
+            # 傾き値を読み取り
+            log("\\n測定結果を確認中...")
+            tilt_values = self.ik220.read_tilt_values()
 
-            if tilt_value is None:
-                log("警告: 傾きの値を読み取れませんでした。再試行します...")
+            if not tilt_values:
+                log("警告: 傾き値を読み取れませんでした。5秒後に再試行...")
                 time.sleep(5)
-                tilt_value = self.monitor.read_tilt_value()
+                tilt_values = self.ik220.read_tilt_values()
 
-            if tilt_value is None:
-                log("エラー: 値の読み取りに失敗。手動確認が必要です。")
-                log("Enterキーで続行、'q'で終了:")
-                user_input = input().strip().lower()
-                if user_input == 'q':
-                    break
+            if not tilt_values:
+                log("エラー: 読み取り失敗。手動確認が必要です。")
+                log("  ヒント: --scan オプションでUI要素を確認してください")
                 continue
 
-            log(f"傾き = {tilt_value}秒")
+            # 判定
+            ng_rows = check_tilt_results(tilt_values)
 
-            if tilt_value < THRESHOLD_SEC:
-                # 成功
+            if not ng_rows:
                 self.success_count += 1
-                log(f"*** 測定成功！ (傾き {tilt_value}秒 < 閾値 {THRESHOLD_SEC}秒) ***")
+                log(f"\\n*** 全行OK！ 測定成功 ***")
                 log(f"統計: 成功 {self.success_count}回, リトライ {self.retry_count}回")
-                log("次の測定を待ちます... (Ctrl+Cで終了)")
-                continue
+                log("次の測定を待ちます...")
             else:
-                # 失敗 → リトライ
                 self.retry_count += 1
-                log(f"!!! 測定失敗 (傾き {tilt_value}秒 >= 閾値 {THRESHOLD_SEC}秒) !!!")
-                log(f"リトライ #{self.retry_count} を実行します...")
+                log(f"\\n!!! {len(ng_rows)}行でNG検出 !!!")
+                for name, val, th in ng_rows:
+                    log(f"  {name}: 傾={val} >= 閾値{th}")
+                log(f"リトライ #{self.retry_count} を実行...")
 
-                # Step 1: 取り込み開始ボタンをクリック
-                log("Step 1: 取り込み開始ボタンをクリック...")
-                if self.monitor.click_capture_button():
-                    time.sleep(2)  # ボタン反応待ち
+                # Step 1: 取込開始をクリック
+                log("Step 1: 「取込開始」ボタンをクリック...")
+                if self.ik220.click_capture_button():
+                    time.sleep(3)
                 else:
-                    log("警告: ボタンクリックに失敗。手動で押してください。")
+                    log("警告: ボタンクリック失敗。手動で押してください。")
                     time.sleep(5)
 
-                # Step 2: SwitchBotでリモコンのボタンを押す
-                log("Step 2: SwitchBotでリモコン測定開始ボタンを押す...")
+                # Step 2: SwitchBotでリモコン押下
+                log("Step 2: SwitchBotでリモコン測定開始...")
                 if self.switchbot:
                     time.sleep(1)
                     if not self.switchbot.press(SWITCHBOT_DEVICE_ID):
-                        log("警告: SwitchBotの操作に失敗。手動で押してください。")
+                        log("警告: SwitchBot操作失敗。手動で押してください。")
                 else:
-                    log("警告: SwitchBot未設定。手動でリモコンのボタンを押してください。")
+                    log("警告: SwitchBot未設定。手動でリモコンを押してください。")
 
-                log(f"リトライ完了。{WAIT_MINUTES}分後に再確認します。")
+                log(f"リトライ完了。{WAIT_MINUTES}分後に再確認。")
 
-        log("\\n監視を終了しました。")
-        log(f"最終統計: 成功 {self.success_count}回, リトライ {self.retry_count}回")
+        log(f"\\n監視終了: 成功 {self.success_count}回, リトライ {self.retry_count}回")
 
     def stop(self):
-        """監視停止"""
         self.running = False
-        log("監視停止を要求しました...")
+        log("監視停止中...")
 
 
 # ============================================================
-# GUI (tkinter)
+# GUI
 # ============================================================
 def run_gui():
-    """シンプルな監視GUIを起動"""
     import tkinter as tk
-    from tkinter import ttk, scrolledtext
+    from tkinter import scrolledtext
 
-    monitor_instance = AutoRetryMonitor()
-    monitor_thread = None
+    monitor = AutoRetryMonitor()
+    thread = None
 
     root = tk.Tk()
-    root.title("XR20 自動監視モニター")
-    root.geometry("700x500")
+    root.title("IK220 自動監視モニター")
+    root.geometry("750x550")
     root.configure(bg="#1e293b")
 
     # ヘッダー
-    header = tk.Frame(root, bg="#1e293b", pady=10)
-    header.pack(fill="x", padx=15)
-    tk.Label(header, text="XR20 自動監視モニター",
+    hdr = tk.Frame(root, bg="#1e293b", pady=10)
+    hdr.pack(fill="x", padx=15)
+    tk.Label(hdr, text="IK220 自動監視モニター",
              font=("", 16, "bold"), fg="white", bg="#1e293b").pack(side="left")
 
+    # 閾値表示
+    th_frame = tk.Frame(root, bg="#334155", pady=6, padx=15)
+    th_frame.pack(fill="x", padx=15, pady=(0, 5))
+    for name in TARGET_ROWS:
+        th = TILT_THRESHOLDS.get(name, "?")
+        color = "#f87171" if th <= 4 else "#fbbf24"
+        tk.Label(th_frame, text=f"{name}: <{th}秒",
+                 font=("", 10, "bold"), fg=color, bg="#334155").pack(side="left", padx=10)
+
     # ステータス
-    status_frame = tk.Frame(root, bg="#334155", pady=8, padx=15)
-    status_frame.pack(fill="x", padx=15, pady=(0, 10))
+    st_frame = tk.Frame(root, bg="#334155", pady=8, padx=15)
+    st_frame.pack(fill="x", padx=15, pady=(0, 5))
+    status_lbl = tk.Label(st_frame, text="停止中", font=("", 12, "bold"), fg="#94a3b8", bg="#334155")
+    status_lbl.pack(side="left")
+    retry_lbl = tk.Label(st_frame, text="リトライ: 0 / 成功: 0",
+                         font=("", 10), fg="#94a3b8", bg="#334155")
+    retry_lbl.pack(side="right")
 
-    status_label = tk.Label(status_frame, text="停止中",
-                           font=("", 12, "bold"), fg="#94a3b8", bg="#334155")
-    status_label.pack(side="left")
-
-    retry_label = tk.Label(status_frame, text="リトライ: 0回",
-                          font=("", 10), fg="#94a3b8", bg="#334155")
-    retry_label.pack(side="right")
-
-    # ログ表示
+    # ログ
     log_area = scrolledtext.ScrolledText(root, height=18, bg="#0f172a", fg="#e2e8f0",
                                          font=("Consolas", 10), insertbackground="white")
     log_area.pack(fill="both", expand=True, padx=15, pady=(0, 10))
 
     # ボタン
-    btn_frame = tk.Frame(root, bg="#1e293b", pady=10)
-    btn_frame.pack(fill="x", padx=15)
+    btn_f = tk.Frame(root, bg="#1e293b", pady=10)
+    btn_f.pack(fill="x", padx=15)
 
-    def update_log():
+    def tick():
         if logger.entries:
-            for entry in logger.entries:
-                log_area.insert("end", entry + "\\n")
+            for e in logger.entries:
+                log_area.insert("end", e + "\\n")
                 log_area.see("end")
             logger.entries.clear()
-        retry_label.config(text=f"リトライ: {monitor_instance.retry_count}回 / 成功: {monitor_instance.success_count}回")
-        root.after(500, update_log)
+        retry_lbl.config(text=f"リトライ: {monitor.retry_count} / 成功: {monitor.success_count}")
+        root.after(500, tick)
 
     def on_start():
-        nonlocal monitor_thread
-        if not monitor_instance.running:
-            monitor_thread = threading.Thread(target=monitor_instance.start, daemon=True)
-            monitor_thread.start()
-            status_label.config(text="監視中", fg="#4ade80")
+        nonlocal thread
+        if not monitor.running:
+            monitor.running = False  # reset
+            thread = threading.Thread(target=monitor.start, daemon=True)
+            thread.start()
+            status_lbl.config(text="監視中", fg="#4ade80")
             start_btn.config(state="disabled")
             stop_btn.config(state="normal")
 
     def on_stop():
-        monitor_instance.stop()
-        status_label.config(text="停止中", fg="#94a3b8")
+        monitor.stop()
+        status_lbl.config(text="停止中", fg="#94a3b8")
         start_btn.config(state="normal")
         stop_btn.config(state="disabled")
 
-    def on_test_switchbot():
-        log("SwitchBot接続テスト...")
-        if monitor_instance.switchbot:
-            threading.Thread(target=monitor_instance.switchbot.list_devices, daemon=True).start()
+    def on_scan():
+        log("UI要素をスキャン中...")
+        threading.Thread(target=monitor.ik220.scan_controls, daemon=True).start()
+
+    def on_test():
+        log("SwitchBotテスト...")
+        if monitor.switchbot:
+            threading.Thread(target=monitor.switchbot.list_devices, daemon=True).start()
         else:
-            log("SwitchBotが設定されていません。")
+            log("SwitchBot未設定")
 
-    start_btn = tk.Button(btn_frame, text="監視 ON", command=on_start,
-                          bg="#22c55e", fg="white", font=("", 12, "bold"),
-                          width=12, relief="flat")
+    start_btn = tk.Button(btn_f, text="監視 ON", command=on_start,
+                          bg="#22c55e", fg="white", font=("", 12, "bold"), width=12, relief="flat")
     start_btn.pack(side="left", padx=5)
-
-    stop_btn = tk.Button(btn_frame, text="監視 OFF", command=on_stop,
-                         bg="#ef4444", fg="white", font=("", 12, "bold"),
-                         width=12, relief="flat", state="disabled")
+    stop_btn = tk.Button(btn_f, text="監視 OFF", command=on_stop,
+                         bg="#ef4444", fg="white", font=("", 12, "bold"), width=12,
+                         relief="flat", state="disabled")
     stop_btn.pack(side="left", padx=5)
+    tk.Button(btn_f, text="UI要素スキャン", command=on_scan,
+              bg="#8b5cf6", fg="white", font=("", 10), width=14, relief="flat").pack(side="right", padx=5)
+    tk.Button(btn_f, text="SwitchBot テスト", command=on_test,
+              bg="#3b82f6", fg="white", font=("", 10), width=14, relief="flat").pack(side="right", padx=5)
 
-    test_btn = tk.Button(btn_frame, text="SwitchBot テスト", command=on_test_switchbot,
-                         bg="#3b82f6", fg="white", font=("", 10),
-                         width=16, relief="flat")
-    test_btn.pack(side="right", padx=5)
-
-    update_log()
+    tick()
     root.protocol("WM_DELETE_WINDOW", lambda: (on_stop(), root.destroy()))
     root.mainloop()
 
@@ -1232,27 +1328,24 @@ def run_gui():
 # エントリーポイント
 # ============================================================
 if __name__ == "__main__":
-    print("XR20 自動監視＆リトライスクリプト")
+    print("IK220 自動監視＆リトライスクリプト")
     print("=" * 40)
 
-    if "--cli" in sys.argv:
-        # CLIモード
-        monitor = AutoRetryMonitor()
+    if "--scan" in sys.argv:
+        m = IK220Monitor()
+        if m.connect():
+            m.scan_controls()
+    elif "--cli" in sys.argv:
+        mon = AutoRetryMonitor()
         try:
-            monitor.start()
+            mon.start()
         except KeyboardInterrupt:
-            monitor.stop()
-            print("\\nCtrl+C で終了しました。")
+            mon.stop()
     elif "--list-devices" in sys.argv:
-        # デバイス一覧
-        api = SwitchBotAPI(SWITCHBOT_TOKEN, SWITCHBOT_SECRET)
-        api.list_devices()
+        SwitchBotAPI(SWITCHBOT_TOKEN, SWITCHBOT_SECRET).list_devices()
     elif "--test-press" in sys.argv:
-        # テスト押下
-        api = SwitchBotAPI(SWITCHBOT_TOKEN, SWITCHBOT_SECRET)
-        api.press(SWITCHBOT_DEVICE_ID)
+        SwitchBotAPI(SWITCHBOT_TOKEN, SWITCHBOT_SECRET).press(SWITCHBOT_DEVICE_ID)
     else:
-        # GUIモード（デフォルト）
         run_gui()
 `;
 }
