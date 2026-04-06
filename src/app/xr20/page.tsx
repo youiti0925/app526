@@ -1009,7 +1009,7 @@ function MonitorTab({
                 <div>
                   <span className="text-sm font-medium text-slate-700">リハーサルモード</span>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    画面は実際に監視し、NG時のボタン操作・SwitchBot操作のみスキップ
+                    画面監視＋取込開始ボタンは実行、SwitchBot操作のみスキップ
                   </p>
                 </div>
                 <button

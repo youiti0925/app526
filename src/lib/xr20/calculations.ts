@@ -1092,9 +1092,6 @@ class IK220Monitor:
           方式3: 画像マッチング（ボタンの位置を画像から検出）
           方式4: 座標クリック（ウィンドウ内の相対座標）
         """
-        if DRY_RUN:
-            log(f"[リハーサル] 「{CAPTURE_BUTTON}」ボタンクリックをスキップ")
-            return True
         if not self._dlg:
             if not self.connect():
                 return False
@@ -1239,7 +1236,7 @@ class AutoRetryMonitor:
         log("=" * 60)
         if DRY_RUN:
             log("*** リハーサルモード ***")
-            log("  画面読み取りは実行、NG時のボタン操作のみスキップ")
+            log("  画面監視＋取込開始ボタンは実行、SwitchBot操作のみスキップ")
         log("IK220 自動監視を開始します")
         log(f"  対象アプリ: {APP_TITLE}")
         log(f"  監視行: {', '.join(TARGET_ROWS)}")
@@ -1361,7 +1358,7 @@ def run_gui():
     if DRY_RUN:
         dry_frame = tk.Frame(root, bg="#f59e0b", pady=4, padx=15)
         dry_frame.pack(fill="x", padx=15, pady=(0, 5))
-        tk.Label(dry_frame, text="リハーサルモード: 画面は実際に監視します / NG検出時のボタン操作・SwitchBot操作のみスキップ",
+        tk.Label(dry_frame, text="リハーサルモード: 画面監視＋取込開始ボタンは実行 / SwitchBot操作のみスキップ",
                  font=("", 9), fg="#1e293b", bg="#f59e0b").pack()
 
     # 閾値表示

@@ -341,10 +341,7 @@ class IK220Monitor:
         return result if result else None
 
     def click_capture_button(self):
-        """「取込開始」ボタンをクリック（4方式フォールバック）"""
-        if DRY_RUN:
-            log(f"[リハーサル] 「{CAPTURE_BUTTON}」ボタンクリックをスキップ")
-            return True
+        """「取込開始」ボタンをクリック（4方式フォールバック）— リハーサルでも実行"""
         if not self._dlg:
             if not self.connect():
                 return False
@@ -471,7 +468,7 @@ class AutoRetryMonitor:
         log("=" * 60)
         if DRY_RUN:
             log("*** リハーサルモード ***")
-            log("  画面読み取りは実行、NG時のボタン操作のみスキップ")
+            log("  画面監視＋取込開始ボタンは実行、SwitchBot操作のみスキップ")
         log("IK220 自動監視を開始します")
         log(f"  対象アプリ: {APP_TITLE}")
         log(f"  監視行: {', '.join(TARGET_ROWS)}")
@@ -583,7 +580,7 @@ def run_gui():
         dry_frame.pack(fill="x", padx=15, pady=(0, 5))
         tk.Label(
             dry_frame,
-            text="リハーサル: 画面は実際に監視 / NG時のボタン操作・SwitchBot操作のみスキップ",
+            text="リハーサル: 画面監視＋取込開始ボタンは実行 / SwitchBot操作のみスキップ",
             font=("", 9),
             fg="#1e293b",
             bg="#f59e0b",
