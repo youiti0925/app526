@@ -41,7 +41,6 @@ import {
   generateNCProgram,
   generatePhaseNCProgram,
   generateCartoAutomationScript,
-  generateMonitorScript,
   calculateStats,
   parseCSVData,
   calcRepeatability,
@@ -803,17 +802,28 @@ function MonitorTab({
     }
   }, [settings.switchbotToken, settings.switchbotSecret, settings.switchbotDeviceId, addLog]);
 
-  // 監視スクリプトダウンロード
-  const handleDownloadScript = useCallback(() => {
-    const script = generateMonitorScript(settings);
-    const blob = new Blob([script], { type: "text/x-python" });
+  // 設定JSONダウンロード
+  const handleDownloadConfig = useCallback(() => {
+    const config = {
+      switchbot_token: settings.switchbotToken,
+      switchbot_secret: settings.switchbotSecret,
+      switchbot_device_id: settings.switchbotDeviceId,
+      app_title: settings.monitorAppTitle,
+      capture_button: settings.monitorCaptureButtonName,
+      threshold_hr: settings.monitorThresholdHR,
+      threshold_wr: settings.monitorThresholdWR,
+      target_rows: settings.monitorTargetRows.split(",").map(s => s.trim()).filter(Boolean),
+      dry_run: settings.monitorDryRun,
+      poll_interval_sec: 10,
+    };
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "xr20_monitor.py";
+    a.download = "monitor_config.json";
     a.click();
     URL.revokeObjectURL(url);
-    addLog("監視スクリプトをダウンロードしました");
+    addLog("monitor_config.json をダウンロードしました");
   }, [settings, addLog]);
 
   // ログ更新時に自動スクロール
@@ -1070,40 +1080,49 @@ function MonitorTab({
             </div>
           </div>
 
-          {/* スクリプトダウンロード */}
+          {/* セットアップ＆ダウンロード */}
           <div className="bg-white rounded-xl border border-slate-200 p-5">
-            <h3 className="text-sm font-bold text-slate-700 mb-3">監視スクリプト</h3>
-            <p className="text-xs text-slate-500 mb-3">
-              上記の設定を埋め込んだPython監視スクリプトをダウンロードし、
-              測定PCで実行してください。GUI付きで監視ON/OFFが操作できます。
-            </p>
-            <div className="space-y-2">
+            <h3 className="text-sm font-bold text-slate-700 mb-3">セットアップ</h3>
+
+            {/* Step 1: 設定ダウンロード */}
+            <div className="space-y-3">
               <button
-                onClick={handleDownloadScript}
-                disabled={!isConfigured}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm"
+                onClick={handleDownloadConfig}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium text-sm"
               >
                 <Download className="w-4 h-4" />
-                xr20_monitor.py をダウンロード
+                monitor_config.json をダウンロード
               </button>
-              {!isConfigured && (
-                <p className="text-xs text-amber-600 flex items-center gap-1">
-                  <AlertTriangle className="w-3.5 h-3.5" />
-                  SwitchBot設定と監視パラメータを全て入力してください
-                </p>
-              )}
             </div>
-            <div className="mt-4 p-3 bg-slate-50 rounded-lg">
-              <p className="text-xs font-medium text-slate-600 mb-2">実行方法:</p>
-              <code className="block text-xs text-slate-700 bg-slate-100 p-2 rounded font-mono">
-                pip install pywinauto requests pillow pytesseract<br />
-                python xr20_monitor.py
-              </code>
-              <p className="text-xs text-slate-500 mt-2">
-                <code>--cli</code> オプションでGUIなしCLIモード、
-                <code>--list-devices</code> でSwitchBotデバイス一覧、
-                <code>--test-press</code> でテスト押下
-              </p>
+
+            {/* 手順 */}
+            <div className="mt-4 space-y-3">
+              <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
+                <p className="text-xs font-bold text-blue-700 mb-2">初回セットアップ（Pythonが入ったPCで1回だけ）</p>
+                <ol className="text-xs text-blue-800 space-y-1 list-decimal list-inside">
+                  <li>リポジトリの <code className="bg-blue-100 px-1 rounded">xr20_tool/</code> フォルダを開く</li>
+                  <li><code className="bg-blue-100 px-1 rounded">build_monitor.bat</code> をダブルクリック</li>
+                  <li><code className="bg-blue-100 px-1 rounded">dist/</code> フォルダに exe が生成される</li>
+                </ol>
+              </div>
+
+              <div className="p-3 bg-emerald-50 rounded-lg border border-emerald-200">
+                <p className="text-xs font-bold text-emerald-700 mb-2">測定PCでの使い方（Python不要）</p>
+                <ol className="text-xs text-emerald-800 space-y-1 list-decimal list-inside">
+                  <li><code className="bg-emerald-100 px-1 rounded">IK220_Monitor.exe</code> と <code className="bg-emerald-100 px-1 rounded">monitor_config.json</code> を同じフォルダに置く</li>
+                  <li>上のボタンで設定JSONをダウンロードして差し替え</li>
+                  <li><code className="bg-emerald-100 px-1 rounded">IK220_Monitor.exe</code> をダブルクリック</li>
+                  <li>「監視 ON」ボタンで開始</li>
+                </ol>
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-lg">
+                <p className="text-xs text-slate-500">
+                  <strong>配布ファイル（2つだけ）:</strong><br />
+                  <code>IK220_Monitor.exe</code> — 実行ファイル（Python不要）<br />
+                  <code>monitor_config.json</code> — 設定ファイル（閾値・SwitchBot情報）
+                </p>
+              </div>
             </div>
           </div>
         </div>
