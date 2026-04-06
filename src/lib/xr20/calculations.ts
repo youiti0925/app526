@@ -1235,82 +1235,34 @@ class AutoRetryMonitor:
     def start(self):
         self.running = True
         self.retry_count = 0
-        # リハーサルモードでは待ち時間を10秒に短縮
-        wait_min = WAIT_MINUTES
-        if DRY_RUN:
-            wait_min = 0.17  # 約10秒
 
         log("=" * 60)
         if DRY_RUN:
             log("*** リハーサルモード ***")
-            log("  ボタンクリック・SwitchBot操作は実行されません")
-            log("  待ち時間は10秒に短縮されます")
+            log("  画面読み取りは実行、NG時のボタン操作のみスキップ")
         log("IK220 自動監視を開始します")
         log(f"  対象アプリ: {APP_TITLE}")
         log(f"  監視行: {', '.join(TARGET_ROWS)}")
         for name in TARGET_ROWS:
             th = TILT_THRESHOLDS.get(name, "?")
             log(f"    {name}: 傾 >= {th}秒 でNG")
-        log(f"  測定待ち: {WAIT_MINUTES}分" + (" (リハーサル: 10秒)" if DRY_RUN else ""))
-        log(f"  SwitchBot: {'設定済み' if self.switchbot else '未設定'}")
+        log(f"  SwitchBot: {'設定済み' if self.switchbot else '未設定'}" + (" (リハーサル: 操作スキップ)" if DRY_RUN else ""))
         log("=" * 60)
 
-        if not DRY_RUN and not self.ik220.connect():
+        if not self.ik220.connect():
             log("エラー: IK220アプリに接続できません。起動しているか確認してください。")
             self.running = False
             return
 
-        if DRY_RUN:
-            log("リハーサル: IK220アプリ接続をスキップ（ダミーデータで動作確認）")
-
         while self.running:
-            wait_sec = int(wait_min * 60)
-            log(f"\\n--- 測定結果待ち ({wait_sec}秒) ---")
+            log(f"\\n--- 傾き値が全行揃うまで監視中... ---")
 
-            # 測定完了を待つ
-            waited = 0
-            interval = 5 if DRY_RUN else 30
-            total_wait = int(wait_min * 60)
-            while waited < total_wait and self.running:
-                time.sleep(interval)
-                waited += interval
-                remaining = total_wait - waited
-                if remaining > 0:
-                    if DRY_RUN:
-                        log(f"  待機中... 残り{remaining}秒")
-                    elif remaining % 60 == 0:
-                        log(f"  待機中... 残り{remaining // 60}分")
+            # 全行の傾き値が揃うまでポーリング
+            tilt_values = self._wait_for_all_tilt_values()
 
-            if not self.running:
+            if tilt_values is None:
+                # stop() が呼ばれた場合
                 break
-
-            # 傾き値を読み取り
-            log("\\n測定結果を確認中...")
-
-            if DRY_RUN:
-                # リハーサル: ダミーデータで動作確認（ランダムにNG発生）
-                import random
-                tilt_values = {}
-                for row in TARGET_ROWS:
-                    th = TILT_THRESHOLDS.get(row, 4)
-                    # 70%の確率でOK、30%の確率でNGになるダミー値
-                    if random.random() < 0.3:
-                        tilt_values[row] = th + random.randint(0, 3)  # NG値
-                    else:
-                        tilt_values[row] = random.randint(0, th - 1)  # OK値
-                log(f"[リハーサル] ダミーデータ: {tilt_values}")
-            else:
-                tilt_values = self.ik220.read_tilt_values()
-
-                if not tilt_values:
-                    log("警告: 傾き値を読み取れませんでした。5秒後に再試行...")
-                    time.sleep(5)
-                    tilt_values = self.ik220.read_tilt_values()
-
-                if not tilt_values:
-                    log("エラー: 読み取り失敗。手動確認が必要です。")
-                    log("  ヒント: --scan オプションでUI要素を確認してください")
-                    continue
 
             # 判定
             ng_rows = check_tilt_results(tilt_values)
@@ -1319,7 +1271,7 @@ class AutoRetryMonitor:
                 self.success_count += 1
                 log(f"\\n*** 全行OK！ 測定成功 ***")
                 log(f"統計: 成功 {self.success_count}回, リトライ {self.retry_count}回")
-                log("次の測定を待ちます...")
+                log("次の測定を待ちます... (監視OFFで停止)")
             else:
                 self.retry_count += 1
                 log(f"\\n!!! {len(ng_rows)}行でNG検出 !!!")
@@ -1344,9 +1296,37 @@ class AutoRetryMonitor:
                 else:
                     log("警告: SwitchBot未設定。手動でリモコンを押してください。")
 
-                log(f"リトライ完了。{wait_sec}秒後に再確認。")
+                log(f"リトライ完了。再度傾き値を監視します。")
 
         log(f"\\n監視終了: 成功 {self.success_count}回, リトライ {self.retry_count}回")
+
+    def _wait_for_all_tilt_values(self):
+        """
+        全監視行(HR,WR,WL,HL)の傾き値が揃うまでポーリング。
+        測定中は値が変動・未表示の場合があるため、
+        全行の値が安定して読み取れるまで繰り返す。
+        """
+        poll_interval = 10  # 10秒ごとに確認
+        log(f"  監視対象: {', '.join(TARGET_ROWS)}")
+
+        while self.running:
+            tilt_values = self.ik220.read_tilt_values()
+
+            if tilt_values:
+                # 全監視行が揃っているか確認
+                missing = [r for r in TARGET_ROWS if r not in tilt_values]
+                if not missing:
+                    log(f"  全行取得完了: {tilt_values}")
+                    return tilt_values
+                else:
+                    found = {k: v for k, v in tilt_values.items() if k in TARGET_ROWS}
+                    log(f"  取得中... {found} / 未取得: {missing}")
+            else:
+                log(f"  読み取り待ち...")
+
+            time.sleep(poll_interval)
+
+        return None
 
     def stop(self):
         self.running = False
@@ -1381,7 +1361,7 @@ def run_gui():
     if DRY_RUN:
         dry_frame = tk.Frame(root, bg="#f59e0b", pady=4, padx=15)
         dry_frame.pack(fill="x", padx=15, pady=(0, 5))
-        tk.Label(dry_frame, text="リハーサルモード: ボタンクリック・SwitchBot操作は実行されません / 待ち時間10秒 / ダミーデータ使用",
+        tk.Label(dry_frame, text="リハーサルモード: 画面は実際に監視します / NG検出時のボタン操作・SwitchBot操作のみスキップ",
                  font=("", 9), fg="#1e293b", bg="#f59e0b").pack()
 
     # 閾値表示

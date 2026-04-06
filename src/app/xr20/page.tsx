@@ -834,8 +834,8 @@ function MonitorTab({
           自動監視＆リトライ
         </h2>
         <p className="text-emerald-100 text-sm">
-          測定アプリの「傾き」値を監視し、失敗時に自動でSwitchBot経由でリトライします。
-          PC上で監視スクリプトを実行してください。
+          IK220アプリの「傾」値をリアルタイム監視し、全行の値が揃った時点で判定。
+          1つでもNGなら自動で取込開始＋SwitchBotでリモコン押下してリトライします。
         </p>
       </div>
 
@@ -847,7 +847,7 @@ function MonitorTab({
           <span className="text-slate-400">→</span>
           <span className="bg-amber-100 text-amber-700 px-3 py-1.5 rounded-lg font-medium">2. 監視ON</span>
           <span className="text-slate-400">→</span>
-          <span className="bg-slate-200 text-slate-600 px-3 py-1.5 rounded-lg font-medium">3. {settings.monitorWaitMin}分待機</span>
+          <span className="bg-slate-200 text-slate-600 px-3 py-1.5 rounded-lg font-medium">3. 傾き値が全行揃うまで監視</span>
           <span className="text-slate-400">→</span>
           <span className="bg-purple-100 text-purple-700 px-3 py-1.5 rounded-lg font-medium">4. 傾き確認</span>
           <span className="text-slate-400">→</span>
@@ -961,7 +961,7 @@ function MonitorTab({
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-500 mb-1">HR/HL 傾き閾値（秒）</label>
                   <input
@@ -984,16 +984,6 @@ function MonitorTab({
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">測定待ち時間（分）</label>
-                  <input
-                    type="number"
-                    value={settings.monitorWaitMin}
-                    onChange={(e) => updateSetting("monitorWaitMin", Number(e.target.value))}
-                    min={1}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  />
-                </div>
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">監視対象行（カンマ区切り）</label>
@@ -1009,7 +999,7 @@ function MonitorTab({
                 <div>
                   <span className="text-sm font-medium text-slate-700">リハーサルモード</span>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    ボタンクリック・SwitchBot操作をスキップ、ダミーデータで動作確認
+                    画面は実際に監視し、NG時のボタン操作・SwitchBot操作のみスキップ
                   </p>
                 </div>
                 <button
