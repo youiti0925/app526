@@ -1085,25 +1085,17 @@ function MonitorTab({
             <h3 className="text-sm font-bold text-slate-700 mb-4">ファイルのダウンロード</h3>
 
             <div className="space-y-3">
-              {/* Step 1 */}
-              <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-                <p className="text-xs font-bold text-blue-700 mb-3">Step 1: この3つをダウンロード</p>
+              {/* 測定PCにPythonを入れるパターン（推奨） */}
+              <div className="p-4 bg-emerald-50 rounded-lg border border-emerald-200">
+                <p className="text-xs font-bold text-emerald-700 mb-3">測定PCにPythonを入れる場合（簡単・推奨）</p>
                 <div className="space-y-2">
                   <a
                     href="/downloads/xr20_monitor.py"
                     download="xr20_monitor.py"
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium text-sm"
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium text-sm"
                   >
                     <Download className="w-4 h-4" />
                     xr20_monitor.py（監視ツール本体）
-                  </a>
-                  <a
-                    href="/downloads/build_monitor.bat"
-                    download="build_monitor.bat"
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium text-sm"
-                  >
-                    <Download className="w-4 h-4" />
-                    build_monitor.bat（exe作成用）
                   </a>
                   <button
                     onClick={handleDownloadConfig}
@@ -1112,31 +1104,40 @@ function MonitorTab({
                     <Download className="w-4 h-4" />
                     monitor_config.json（設定ファイル）
                   </button>
+                  <a
+                    href="/downloads/start.bat"
+                    download="start.bat"
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium text-sm"
+                  >
+                    <Download className="w-4 h-4" />
+                    start.bat（起動用）
+                  </a>
+                </div>
+                <div className="mt-3 p-3 bg-white rounded-lg">
+                  <p className="text-xs text-slate-600">
+                    <strong>手順:</strong> 3つを同じフォルダに入れて <code className="bg-slate-100 px-1 rounded">start.bat</code> をダブルクリック
+                  </p>
                 </div>
               </div>
 
-              {/* Step 2 */}
-              <div className="p-4 bg-amber-50 rounded-lg border border-amber-200">
-                <p className="text-xs font-bold text-amber-700 mb-2">Step 2: exe を作る（Python入りPCで1回だけ）</p>
-                <ol className="text-xs text-amber-800 space-y-1 list-decimal list-inside">
-                  <li>3つのファイルを同じフォルダに入れる</li>
-                  <li><code className="bg-amber-100 px-1 rounded">build_monitor.bat</code> をダブルクリック</li>
-                  <li><code className="bg-amber-100 px-1 rounded">dist/</code> フォルダに <code className="bg-amber-100 px-1 rounded">IK220_Monitor.exe</code> ができる</li>
-                </ol>
-              </div>
-
-              {/* Step 3 */}
-              <div className="p-4 bg-emerald-50 rounded-lg border border-emerald-200">
-                <p className="text-xs font-bold text-emerald-700 mb-2">Step 3: 測定PCで使う（Python不要）</p>
-                <ol className="text-xs text-emerald-800 space-y-1 list-decimal list-inside">
-                  <li><code className="bg-emerald-100 px-1 rounded">IK220_Monitor.exe</code> と <code className="bg-emerald-100 px-1 rounded">monitor_config.json</code> を測定PCにコピー</li>
-                  <li><code className="bg-emerald-100 px-1 rounded">IK220_Monitor.exe</code> をダブルクリックで起動</li>
-                  <li>「監視 ON」で開始</li>
-                </ol>
-                <p className="text-xs text-emerald-600 mt-2">
-                  設定を変えたい時は、上のボタンで monitor_config.json を再ダウンロードして差し替え
-                </p>
-              </div>
+              {/* exe版（Python入れられない場合） */}
+              <details className="p-4 bg-slate-50 rounded-lg border border-slate-200">
+                <summary className="text-xs font-bold text-slate-600 cursor-pointer">exe版（測定PCにPythonを入れられない場合）</summary>
+                <div className="mt-3 space-y-2">
+                  <a
+                    href="/downloads/build_monitor.bat"
+                    download="build_monitor.bat"
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-600 text-white rounded-lg hover:bg-slate-700 font-medium text-sm"
+                  >
+                    <Download className="w-4 h-4" />
+                    build_monitor.bat（exe作成用）
+                  </a>
+                  <p className="text-xs text-slate-500 mt-2">
+                    Python入りPCで xr20_monitor.py, monitor_config.json, build_monitor.bat を同じフォルダに入れて
+                    build_monitor.bat を実行 → dist/IK220_Monitor.exe ができる
+                  </p>
+                </div>
+              </details>
             </div>
           </div>
         </div>
