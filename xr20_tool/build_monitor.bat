@@ -13,10 +13,10 @@ if errorlevel 1 (
 )
 
 echo [1/3] Installing libraries...
-pip install pyinstaller pywinauto requests
+python -m pip install pyinstaller pywinauto requests
 
 echo [2/3] Building exe...
-pyinstaller --onefile --windowed --name "IK220_Monitor" --icon=NONE --hidden-import=pywinauto --hidden-import=pywinauto.controls --hidden-import=pywinauto.controls.uiawrapper --hidden-import=requests xr20_monitor.py
+python -m PyInstaller --onefile --windowed --name "IK220_Monitor" --icon=NONE --hidden-import=pywinauto --hidden-import=pywinauto.controls --hidden-import=pywinauto.controls.uiawrapper --hidden-import=requests xr20_monitor.py
 
 if errorlevel 1 (
     echo.
