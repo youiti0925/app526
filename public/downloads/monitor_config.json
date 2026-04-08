@@ -1,0 +1,12 @@
+{
+  "switchbot_token": "",
+  "switchbot_secret": "",
+  "switchbot_device_id": "",
+  "app_title": "IK220分割測定KWIN10",
+  "capture_button": "取込開始",
+  "threshold_hr": 4,
+  "threshold_wr": 7,
+  "target_rows": ["HR", "WR", "WL", "HL"],
+  "dry_run": true,
+  "poll_interval_sec": 10
+}

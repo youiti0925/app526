@@ -1090,7 +1090,7 @@ function MonitorTab({
                 <p className="text-xs font-bold text-blue-700 mb-3">Step 1: この3つをダウンロード</p>
                 <div className="space-y-2">
                   <a
-                    href="/api/xr20-monitor?file=xr20_monitor.py"
+                    href="/downloads/xr20_monitor.py"
                     download="xr20_monitor.py"
                     className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium text-sm"
                   >
@@ -1098,7 +1098,7 @@ function MonitorTab({
                     xr20_monitor.py（監視ツール本体）
                   </a>
                   <a
-                    href="/api/xr20-monitor?file=build_monitor.bat"
+                    href="/downloads/build_monitor.bat"
                     download="build_monitor.bat"
                     className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium text-sm"
                   >
