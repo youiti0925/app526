@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>SwitchBot 購入提案書</title>
+<style>
+  @page { size: A4; margin: 10mm 12mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "Yu Gothic", "Meiryo", sans-serif; color: #1a1a2e; line-height: 1.5; font-size: 11px; }
+  .page { max-width: 210mm; margin: 0 auto; background: #fff; }
+
+  /* ヘッダー */
+  .header { background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0ea5e9 100%); color: #fff; padding: 20px 24px 16px; }
+  .header h1 { font-size: 20px; font-weight: 900; }
+  .header-sub { font-size: 11px; color: #bae6fd; margin-top: 2px; }
+  .header-meta { font-size: 10px; color: #93c5fd; margin-top: 6px; }
+
+  .content { padding: 14px 24px 10px; }
+
+  /* セクション */
+  .section { margin-bottom: 12px; }
+  .section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .section-num { background: linear-gradient(135deg, #0ea5e9, #6366f1); color: #fff; width: 20px; height: 20px; border-radius: 50%; text-align: center; line-height: 20px; font-size: 10px; font-weight: 700; flex-shrink: 0; }
+  .section-title { font-size: 13px; font-weight: 800; color: #0f172a; }
+  .section-line { height: 2px; background: linear-gradient(90deg, #0ea5e9, #6366f1, transparent); margin-bottom: 6px; }
+
+  /* 課題 */
+  .problem-row { display: flex; gap: 8px; margin-top: 6px; }
+  .problem-card { flex: 1; background: #fef2f2; border-left: 3px solid #ef4444; padding: 6px 8px; border-radius: 0 4px 4px 0; font-size: 10px; }
+  .problem-card b { color: #dc2626; font-size: 10px; }
+
+  /* 判定基準 */
+  .criteria { display: flex; gap: 8px; margin: 6px 0; }
+  .criteria-item { flex: 1; background: #fff5f5; border: 1px solid #fca5a5; border-radius: 6px; padding: 5px; text-align: center; }
+  .criteria-label { font-size: 13px; font-weight: 800; color: #dc2626; }
+  .criteria-val { font-size: 9px; color: #64748b; }
+
+  /* フロー */
+  .flow { display: flex; align-items: center; gap: 0; margin: 8px 0; }
+  .flow-step { flex: 1; text-align: center; padding: 7px 4px; border-radius: 8px; font-size: 10px; }
+  .flow-step.manual { background: #dbeafe; border: 1px solid #93c5fd; }
+  .flow-step.auto { background: #d1fae5; border: 1px solid #6ee7b7; }
+  .flow-step.alert { background: #fde68a; border: 1px solid #f59e0b; }
+  .flow-step b { font-size: 10px; display: block; }
+  .flow-arrow { color: #94a3b8; padding: 0 3px; font-size: 14px; }
+
+  /* 購入品 */
+  .price-table { width: 100%; border-collapse: collapse; margin: 6px 0; }
+  .price-table th { background: #0f172a; color: #fff; padding: 5px 8px; font-size: 10px; text-align: left; }
+  .price-table td { padding: 5px 8px; font-size: 11px; border-bottom: 1px solid #e2e8f0; }
+  .price-table .total { background: #0ea5e9; color: #fff; font-weight: 800; font-size: 13px; }
+  .ble-badge { display: inline-flex; align-items: center; gap: 4px; background: #dbeafe; color: #1d4ed8; padding: 3px 10px; border-radius: 10px; font-size: 10px; font-weight: 700; margin-bottom: 4px; }
+
+  /* 効果 */
+  .effect-grid { display: flex; gap: 10px; margin: 8px 0; }
+  .effect-card { flex: 1; text-align: center; padding: 10px 6px; border-radius: 10px; }
+  .effect-card.cost { background: #ecfdf5; border: 1px solid #6ee7b7; }
+  .effect-card.time { background: #eff6ff; border: 1px solid #93c5fd; }
+  .effect-card.roi { background: #fef3c7; border: 1px solid #f59e0b; }
+  .effect-num { font-size: 22px; font-weight: 900; }
+  .effect-card.cost .effect-num { color: #059669; }
+  .effect-card.time .effect-num { color: #2563eb; }
+  .effect-card.roi .effect-num { color: #d97706; }
+  .effect-unit { font-size: 10px; color: #64748b; }
+  .effect-label { font-size: 9px; color: #94a3b8; }
+
+  /* 比較 */
+  .compare { display: flex; gap: 10px; align-items: center; margin: 6px 0; }
+  .compare-box { flex: 1; padding: 8px 10px; border-radius: 8px; font-size: 10px; }
+  .compare-before { background: #fef2f2; border: 1px solid #fca5a5; }
+  .compare-after { background: #ecfdf5; border: 1px solid #6ee7b7; }
+  .compare-box b { font-size: 11px; }
+  .compare-before b { color: #dc2626; }
+  .compare-after b { color: #059669; }
+  .compare-arrow { font-size: 20px; color: #0ea5e9; }
+
+  /* 手順 横並び */
+  .steps-row { display: flex; gap: 6px; margin: 6px 0; }
+  .step-item { flex: 1; text-align: center; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 4px; }
+  .step-circle { width: 22px; height: 22px; background: linear-gradient(135deg, #0ea5e9, #6366f1); color: #fff; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; margin-bottom: 4px; }
+  .step-item strong { font-size: 9px; display: block; color: #0f172a; }
+  .step-item span { font-size: 8px; color: #64748b; }
+
+  /* まとめ */
+  .summary-box { background: linear-gradient(135deg, #0f172a, #1e3a5f); color: #fff; border-radius: 10px; padding: 14px 18px; margin-top: 8px; }
+  .summary-box p { font-size: 11px; color: #cbd5e1; line-height: 1.6; }
+  .summary-box strong { color: #fff; }
+  .hl { display: inline-block; background: #0ea5e9; color: #fff; padding: 1px 6px; border-radius: 3px; font-weight: 700; }
+
+  @media print {
+    body { background: #fff; }
+    .header, .effect-card, .summary-box, .problem-card, .flow-step, .criteria-item, .compare-box { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="header">
+    <h1>SwitchBot 購入提案書</h1>
+    <div class="header-sub">IK220分割測定 自動リトライシステム導入のご提案</div>
+    <div class="header-meta">提案日: 2026年4月9日</div>
+  </div>
+
+  <div class="content">
+
+    <!-- 課題 -->
+    <div class="section">
+      <div class="section-head"><span class="section-num">1</span><span class="section-title">現状の課題</span></div>
+      <div class="section-line"></div>
+      <div style="font-size:11px; color:#475569;">IK220分割測定は1回約5分。失敗率が高く、やり直しのたびに作業者が張り付く必要がある。</div>
+      <div class="criteria">
+        <div class="criteria-item"><div class="criteria-label">HR / HL</div><div class="criteria-val">傾き 4秒以上 → NG</div></div>
+        <div class="criteria-item"><div class="criteria-label">WR / WL</div><div class="criteria-val">傾き 7秒以上 → NG</div></div>
+      </div>
+      <div class="problem-row">
+        <div class="problem-card"><b>高い失敗率</b><br>やり直しが頻繁に発生</div>
+        <div class="problem-card"><b>待ち時間</b><br>5分間何もできない</div>
+        <div class="problem-card"><b>手動の負担</b><br>毎回確認＋操作が必要</div>
+        <div class="problem-card"><b>時間ロス</b><br>30分〜1時間以上拘束も</div>
+      </div>
+    </div>
+
+    <!-- 提案 -->
+    <div class="section">
+      <div class="section-head"><span class="section-num">2</span><span class="section-title">提案内容 — 自動リトライ</span></div>
+      <div class="section-line"></div>
+      <div style="font-size:11px; color:#475569; margin-bottom:4px;">最初の1回だけ手動で測定開始。あとは<b>監視ソフト＋SwitchBot</b>が自動で失敗検出→リトライ。</div>
+      <div class="flow">
+        <div class="flow-step manual"><b>作業者が測定開始</b>最初の1回だけ</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step auto"><b>自動で結果監視</b>ソフトが常時確認</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step alert"><b>失敗を検出</b>傾き基準超過</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step auto"><b>自動リトライ</b>PC操作+ボタン押下</div>
+      </div>
+      <div style="font-size:10px; color:#64748b;">
+        <b>SwitchBot</b> = ボタンを物理的に押す小型デバイス。両面テープで貼るだけ。電池約600日。Bluetooth接続でインターネット不要。
+      </div>
+    </div>
+
+    <!-- 購入品 + 効果 横並び -->
+    <div style="display:flex; gap:16px;">
+      <!-- 購入品 -->
+      <div class="section" style="flex:1;">
+        <div class="section-head"><span class="section-num">3</span><span class="section-title">購入品</span></div>
+        <div class="section-line"></div>
+        <div class="ble-badge">Bluetooth 直接接続 — Wi-Fi不要</div>
+        <table class="price-table">
+          <tr><th>品名</th><th>数量</th><th style="text-align:right">金額</th></tr>
+          <tr><td><b>SwitchBot Bot</b></td><td>1台</td><td style="text-align:right">4,480円</td></tr>
+          <tr class="total"><td colspan="2">合計（税込）</td><td style="text-align:right">4,480円</td></tr>
+        </table>
+        <div style="font-size:9px; color:#94a3b8;">※ 監視ソフトは開発済み（追加費用なし）</div>
+      </div>
+
+      <!-- 効果 -->
+      <div class="section" style="flex:1.2;">
+        <div class="section-head"><span class="section-num">4</span><span class="section-title">導入効果</span></div>
+        <div class="section-line"></div>
+        <div class="effect-grid">
+          <div class="effect-card cost"><div class="effect-num">14万</div><div class="effect-unit">円/年</div><div class="effect-label">削減効果</div></div>
+          <div class="effect-card time"><div class="effect-num">10-20</div><div class="effect-unit">分/日</div><div class="effect-label">削減時間</div></div>
+          <div class="effect-card roi"><div class="effect-num">8日</div><div class="effect-unit"></div><div class="effect-label">投資回収</div></div>
+        </div>
+        <div class="compare">
+          <div class="compare-box compare-before"><b>現状</b><br>失敗のたびに手動。30分〜1時間拘束。</div>
+          <div class="compare-arrow">→</div>
+          <div class="compare-box compare-after"><b>導入後</b><br>最初の1回だけ。あとは自動。離席可。</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 手順 -->
+    <div class="section">
+      <div class="section-head"><span class="section-num">5</span><span class="section-title">導入手順</span></div>
+      <div class="section-line"></div>
+      <div class="steps-row">
+        <div class="step-item"><div class="step-circle">1</div><strong>購入</strong><span>Amazon等で注文</span></div>
+        <div class="step-item"><div class="step-circle">2</div><strong>初期設定</strong><span>スマホアプリで5分</span></div>
+        <div class="step-item"><div class="step-circle">3</div><strong>貼り付け</strong><span>リモコンに貼るだけ</span></div>
+        <div class="step-item"><div class="step-circle">4</div><strong>ソフト設定</strong><span>設定ファイルに入力</span></div>
+        <div class="step-item"><div class="step-circle">5</div><strong>運用開始</strong><span>リハーサル確認済み</span></div>
+      </div>
+    </div>
+
+    <!-- まとめ -->
+    <div class="summary-box">
+      <p>
+        <span class="hl">4,480円</span> の投資で、年間 <span class="hl">約14万円</span> の工数削減。投資回収は <strong>約8日</strong>。<br>
+        Bluetooth接続のためWi-Fi不要。監視ソフトは開発済みで、<strong>購入後すぐに運用開始可能</strong>。
+      </p>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>
