@@ -1,0 +1,41 @@
+{
+  "switchbot_token": "",
+  "switchbot_secret": "",
+  "switchbot_device_id": "",
+  "app_title": "IK220分割測定",
+  "capture_button_text": "取込開始",
+  "threshold_hr": 4.0,
+  "threshold_wr": 7.0,
+  "target_rows": ["HR", "WR", "WL", "HL"],
+  "poll_interval_sec": 2.0,
+  "idle_poll_interval_sec": 5.0,
+  "judge_delay_sec": 1.5,
+  "max_retries": 3,
+  "dry_run": true,
+  "auto_retry": true,
+  "button_capture_rect": [0.104, 0.400, 0.069, 0.037],
+  "no_column_rects": {
+    "HR": [0.360, 0.160, 0.015, 0.028],
+    "WR": [0.360, 0.204, 0.015, 0.028],
+    "WL": [0.360, 0.249, 0.015, 0.028],
+    "HL": [0.360, 0.293, 0.015, 0.028]
+  },
+  "lamp_rects": {
+    "HR": [0.392, 0.170, 0.012, 0.020],
+    "WR": [0.392, 0.214, 0.012, 0.020],
+    "WL": [0.392, 0.259, 0.012, 0.020],
+    "HL": [0.392, 0.303, 0.012, 0.020]
+  },
+  "tilt_rects": {
+    "HR": [0.608, 0.160, 0.048, 0.031],
+    "WR": [0.608, 0.204, 0.048, 0.031],
+    "WL": [0.608, 0.249, 0.048, 0.031],
+    "HL": [0.608, 0.293, 0.048, 0.031]
+  },
+  "lamp_on_color": [80, 210, 90],
+  "lamp_off_color": [45, 110, 55],
+  "button_idle_color": [215, 200, 175],
+  "button_active_color": [115, 125, 105],
+  "color_tolerance": 55,
+  "csv_log_path": "xr20_monitor_history.csv"
+}
