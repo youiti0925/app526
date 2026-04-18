@@ -11,10 +11,19 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [INFO] Installing dependencies (pywinauto / pytesseract / mss / pillow)...
+echo [INFO] Installing Python dependencies...
 python -m pip install --quiet --disable-pip-version-check pywinauto pytesseract mss pillow
 
-echo [INFO] Launching XR20 Monitor...
+where tesseract >nul 2>nul
+if errorlevel 1 (
+    echo [WARN] Tesseract OCR is not in PATH.
+    echo        Install from: https://github.com/UB-Mannheim/tesseract/wiki
+    echo        Then add install dir (e.g. C:\Program Files\Tesseract-OCR) to PATH.
+    echo        The tool will run, but tilt-value OCR will fail until Tesseract is available.
+    echo.
+)
+
+echo [INFO] Launching IK220 Monitor (GUI mode)...
 python "%~dp0xr20_monitor.py" %*
 set RC=%ERRORLEVEL%
 
