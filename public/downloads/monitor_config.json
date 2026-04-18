@@ -32,10 +32,10 @@
     "WL": [0.608, 0.249, 0.048, 0.031],
     "HL": [0.608, 0.293, 0.048, 0.031]
   },
-  "lamp_on_color": [60, 200, 80],
-  "lamp_off_color": [40, 90, 40],
-  "button_idle_color": [210, 210, 210],
-  "button_active_color": [240, 240, 120],
-  "color_tolerance": 60,
+  "lamp_on_color": [80, 210, 90],
+  "lamp_off_color": [45, 110, 55],
+  "button_idle_color": [215, 200, 175],
+  "button_active_color": [115, 125, 105],
+  "color_tolerance": 55,
   "csv_log_path": "xr20_monitor_history.csv"
 }

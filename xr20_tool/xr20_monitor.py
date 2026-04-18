@@ -98,11 +98,14 @@ class MonitorConfig:
     tilt_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_TILT_RECTS.items()})
 
     # 色基準（RGB）／許容誤差
-    lamp_on_color: list[int] = field(default_factory=lambda: [60, 200, 80])
-    lamp_off_color: list[int] = field(default_factory=lambda: [40, 90, 40])
-    button_idle_color: list[int] = field(default_factory=lambda: [210, 210, 210])
-    button_active_color: list[int] = field(default_factory=lambda: [240, 240, 120])
-    color_tolerance: int = 60
+    # 画像からの実測値:
+    #   lamp_on  : 明るい緑 / lamp_off: 暗い深緑（未点灯）
+    #   button_idle: 明るいベージュ / button_active: 暗い灰緑（押下中）
+    lamp_on_color: list[int] = field(default_factory=lambda: [80, 210, 90])
+    lamp_off_color: list[int] = field(default_factory=lambda: [45, 110, 55])
+    button_idle_color: list[int] = field(default_factory=lambda: [215, 200, 175])
+    button_active_color: list[int] = field(default_factory=lambda: [115, 125, 105])
+    color_tolerance: int = 55
 
     # 出力
     csv_log_path: str = "xr20_monitor_history.csv"
