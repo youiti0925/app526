@@ -173,8 +173,17 @@ class WindowLocator:
         self.title_substr = title_substr
         self._rect: tuple[int, int, int, int] | None = None  # (left, top, right, bottom)
         self._pwa_window: Any = None
+        self._fake_rect: tuple[int, int, int, int] | None = None
+
+    def set_fake_rect(self, rect: tuple[int, int, int, int]) -> None:
+        """テスト用: pywinauto を使わずに矩形を直接指定する。"""
+        self._fake_rect = rect
+        self._rect = rect
 
     def refresh(self) -> bool:
+        if self._fake_rect is not None:
+            self._rect = self._fake_rect
+            return True
         """ウィンドウを再検出。成功で True。"""
         try:
             from pywinauto import Desktop
@@ -233,20 +242,29 @@ class ScreenSampler:
     def __init__(self) -> None:
         self._mss = None
         self._init_error: str | None = None
+        self._fake_image: Any = None  # PIL.Image をセットすると全 grab がここから返る
         try:
             import mss
             self._mss = mss.mss()
         except Exception as exc:
             self._init_error = f"mss 未導入: {exc}"
 
+    def set_fake_image(self, image: Any) -> None:
+        """テスト用: この PIL.Image を「画面全体」として扱う。"""
+        self._fake_image = image
+
     def available(self) -> bool:
-        return self._mss is not None
+        return self._mss is not None or self._fake_image is not None
 
     def init_error(self) -> str | None:
         return self._init_error
 
     def grab(self, abs_rect: tuple[int, int, int, int]) -> Any:
         """絶対 (left, top, width, height) をキャプチャして PIL.Image を返す。失敗時 None。"""
+        if self._fake_image is not None:
+            from PIL import Image as _Image  # noqa: F401
+            left, top, w, h = abs_rect
+            return self._fake_image.crop((left, top, left + w, top + h))
         if not self._mss:
             return None
         left, top, w, h = abs_rect
