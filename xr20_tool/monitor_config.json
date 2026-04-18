@@ -1,0 +1,16 @@
+{
+  "switchbot_token": "",
+  "switchbot_secret": "",
+  "switchbot_device_id": "",
+  "app_title": "IK220",
+  "capture_button": "取込開始",
+  "threshold_hr": 4.0,
+  "threshold_wr": 7.0,
+  "target_rows": ["HR", "WR", "WL", "HL"],
+  "dry_run": true,
+  "poll_interval_sec": 10.0,
+  "read_mode": "auto",
+  "ocr_region": [],
+  "pixel_probes": {},
+  "csv_log_path": "xr20_monitor_history.csv"
+}
