@@ -36,6 +36,13 @@ SCENARIO_CAPTURING = {
     "WL": (3, "OFF", ""),
     "HL": (4, "OFF", ""),
 }
+# 完了 + 精度不良コメント
+SCENARIO_PRECISION_NG = {
+    "HR": (1, "ON", "0"),
+    "WR": (2, "ON", "-2"),
+    "WL": (3, "ON", "0"),
+    "HL": (4, "ON", "0"),
+}
 
 
 def _fill_rel(draw: ImageDraw.ImageDraw, rel: list[float], color: tuple[int, int, int]) -> None:
@@ -61,27 +68,36 @@ def _text_rel(draw: ImageDraw.ImageDraw, rel: list[float], text: str, font: Imag
     draw.text((x + (w - tw) // 2, y + (h - th) // 2 - 2), text, fill=(0, 0, 0), font=font)
 
 
-def _find_font(size: int) -> ImageFont.ImageFont:
-    for path in [
+def _find_font(size: int, *, jp: bool = False) -> ImageFont.ImageFont:
+    jp_paths = [
+        "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf",
+        "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    ]
+    en_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
-    ]:
+    ]
+    for path in (jp_paths if jp else en_paths):
         if Path(path).exists():
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
 
 
-def build_image(cfg: xm.MonitorConfig, rows_data: dict, button_pressed: bool) -> Image.Image:
+def build_image(cfg: xm.MonitorConfig, rows_data: dict, button_pressed: bool,
+                comment_text: str = "") -> Image.Image:
     img = Image.new("RGB", (WIDTH, HEIGHT), (240, 240, 240))
     draw = ImageDraw.Draw(img)
 
     # ボタン
     btn_color = tuple(cfg.button_active_color) if button_pressed else tuple(cfg.button_idle_color)
     _fill_rel(draw, cfg.button_capture_rect, btn_color)
+    _fill_rel(draw, cfg.button_autocorrect_rect, tuple(cfg.button_idle_color))
 
     no_font = _find_font(22)
     tilt_font = _find_font(20)
+    comment_font = _find_font(22, jp=True)
 
     for row, (no_val, lamp_state, tilt_val) in rows_data.items():
         # No 列
@@ -91,7 +107,7 @@ def build_image(cfg: xm.MonitorConfig, rows_data: dict, button_pressed: bool) ->
         else:
             _fill_rel(draw, rel_no, (255, 255, 255))
 
-        # ランプ（矩形塗り＋内側の円）
+        # ランプ（矩形塗り）
         rel_lamp = cfg.lamp_rects[row]
         lamp_color = tuple(cfg.lamp_on_color) if lamp_state == "ON" else tuple(cfg.lamp_off_color)
         _fill_rel(draw, rel_lamp, lamp_color)
@@ -100,12 +116,16 @@ def build_image(cfg: xm.MonitorConfig, rows_data: dict, button_pressed: bool) ->
         rel_tilt = cfg.tilt_rects[row]
         _text_rel(draw, rel_tilt, tilt_val, tilt_font)
 
+    # コメント欄
+    _text_rel(draw, cfg.comment_rect, comment_text, comment_font)
+
     return img
 
 
-def run_scenario(name: str, rows_data: dict, button_pressed: bool) -> tuple[int, int]:
+def run_scenario(name: str, rows_data: dict, button_pressed: bool,
+                 comment_text: str = "", expect_precision_ng: bool = False) -> tuple[int, int]:
     cfg = xm.MonitorConfig()
-    img = build_image(cfg, rows_data, button_pressed)
+    img = build_image(cfg, rows_data, button_pressed, comment_text)
     out_path = Path(__file__).parent / f"_test_{name}.png"
     img.save(out_path)
 
@@ -160,17 +180,25 @@ def run_scenario(name: str, rows_data: dict, button_pressed: bool) -> tuple[int,
                   f"tilt[{r}] ≈ {expected}",
                   f"got={got}")
 
+    if comment_text:
+        check(snap.precision_ng == expect_precision_ng,
+              f"precision_ng = {expect_precision_ng}",
+              f"got={snap.precision_ng}, comment='{snap.comment_text}'")
+
     return passed, failed
 
 
 def main() -> int:
     total_pass = 0
     total_fail = 0
-    for name, data, pressed in [
-        ("idle_complete", SCENARIO_IDLE, False),
-        ("capturing_partial", SCENARIO_CAPTURING, True),
+    for args in [
+        ("idle_complete", SCENARIO_IDLE, False, "", False),
+        ("capturing_partial", SCENARIO_CAPTURING, True, "", False),
+        ("precision_ng", SCENARIO_PRECISION_NG, False, "精度不良", True),
+        ("precision_ok", SCENARIO_PRECISION_NG, False, "補正完了", False),
     ]:
-        p, f = run_scenario(name, data, pressed)
+        name, data, pressed, cmt, exp = args
+        p, f = run_scenario(name, data, pressed, cmt, exp)
         total_pass += p
         total_fail += f
         print()

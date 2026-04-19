@@ -35,6 +35,8 @@ from typing import Any, Callable
 # 想定ウィンドウ: 1919x958（最大化）
 # ----------------------------------------------------------------------
 DEFAULT_BUTTON_CAPTURE = [0.104, 0.400, 0.069, 0.037]
+DEFAULT_BUTTON_AUTOCORRECT = [0.183, 0.400, 0.069, 0.037]
+DEFAULT_COMMENT_RECT = [0.183, 0.520, 0.450, 0.030]
 
 DEFAULT_NO_RECTS = {
     "HR": [0.360, 0.160, 0.015, 0.028],
@@ -61,7 +63,10 @@ class State(Enum):
     CAPTURING = "CAPTURING"
     DONE = "DONE"
     JUDGING = "JUDGING"
-    NG_RETRY = "NG_RETRY"
+    TILT_NG_RETRY = "TILT_NG_RETRY"
+    AUTO_CORRECTING = "AUTO_CORRECTING"
+    PRECISION_JUDGING = "PRECISION_JUDGING"
+    PRECISION_NG_RETRY = "PRECISION_NG_RETRY"
     ERROR = "ERROR"
 
 
@@ -85,14 +90,23 @@ class MonitorConfig:
     poll_interval_sec: float = 2.0
     idle_poll_interval_sec: float = 5.0
     judge_delay_sec: float = 1.5
-    max_retries: int = 3
+    auto_correct_wait_sec: float = 3.0  # 自動補正ボタン押下後、コメント確認までの待機
+    max_tilt_retries: int = 2
+    max_precision_retries: int = 1
 
     # 動作フラグ
     dry_run: bool = True
     auto_retry: bool = True
+    auto_correction_enabled: bool = False  # 傾OK後、自動補正→精度チェックを実施するか
+
+    # 自動補正／精度不良監視
+    auto_correct_button_text: str = "自動補正"
+    precision_ng_keyword: str = "精度不良"
 
     # ウィンドウ相対矩形
     button_capture_rect: list[float] = field(default_factory=lambda: list(DEFAULT_BUTTON_CAPTURE))
+    button_autocorrect_rect: list[float] = field(default_factory=lambda: list(DEFAULT_BUTTON_AUTOCORRECT))
+    comment_rect: list[float] = field(default_factory=lambda: list(DEFAULT_COMMENT_RECT))
     no_column_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_NO_RECTS.items()})
     lamp_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_LAMP_RECTS.items()})
     tilt_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_TILT_RECTS.items()})
@@ -302,6 +316,21 @@ class ScreenSampler:
         except Exception:
             return ""
 
+    def ocr_text_jpn(self, abs_rect: tuple[int, int, int, int]) -> str:
+        """日本語 OCR。tesseract-ocr-jpn が必要。未インストール時は eng にフォールバック。"""
+        img = self.grab(abs_rect)
+        if img is None:
+            return ""
+        try:
+            import pytesseract
+            gray = img.convert("L").resize((img.width * 2, img.height * 2))
+            try:
+                return pytesseract.image_to_string(gray, lang="jpn", config="--psm 7").strip()
+            except pytesseract.TesseractError:
+                return pytesseract.image_to_string(gray, config="--psm 7").strip()
+        except Exception:
+            return ""
+
     def close(self) -> None:
         if self._mss:
             try:
@@ -323,6 +352,8 @@ class Snapshot:
     tilt_values: dict[str, float | None] = field(default_factory=dict)
     raw_no: dict[str, str] = field(default_factory=dict)
     raw_tilt: dict[str, str] = field(default_factory=dict)
+    comment_text: str = ""
+    precision_ng: bool = False
 
 
 # ======================================================================
@@ -336,7 +367,8 @@ class XR20Monitor:
         self._sampler = ScreenSampler()
 
         self._state: State = State.IDLE
-        self._retry_count: int = 0
+        self._tilt_retry: int = 0
+        self._precision_retry: int = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_snapshot: Snapshot | None = None
@@ -409,6 +441,13 @@ class XR20Monitor:
             snap.raw_tilt[row] = text
             snap.tilt_values[row] = _safe_float(text)
 
+        # 5) コメント欄 OCR（精度NG検出用。日本語 OCR）
+        comment_rel = self.cfg.comment_rect
+        comment_abs = self._locator.rel_to_abs(comment_rel) if comment_rel else None
+        if comment_abs:
+            snap.comment_text = self._sampler.ocr_text_jpn(comment_abs)
+            snap.precision_ng = self.cfg.precision_ng_keyword in snap.comment_text
+
         return snap
 
     # ------------------------------------------------------------------
@@ -445,7 +484,8 @@ class XR20Monitor:
             return
         self._stop.clear()
         self._state = State.IDLE
-        self._retry_count = 0
+        self._tilt_retry = 0
+        self._precision_retry = 0
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
         self.log("監視開始")
@@ -495,23 +535,56 @@ class XR20Monitor:
                 snap = self.take_snapshot()
                 self._emit(snap)
                 ng_rows = [r for r in snap.active_rows if self.is_ng(r, snap.tilt_values.get(r))]
-                self._append_csv(snap, ng_rows)
+                self._append_csv(snap, ng_rows, phase="tilt")
                 if ng_rows:
-                    self.log(f"NG 行: {ng_rows} / 値={snap.tilt_values}")
-                    self._state = State.NG_RETRY
+                    self.log(f"傾NG: {ng_rows} / 値={snap.tilt_values}")
+                    self._state = State.TILT_NG_RETRY
+                elif self.cfg.auto_correction_enabled:
+                    self.log(f"傾OK / 値={snap.tilt_values} → 自動補正へ")
+                    self._state = State.AUTO_CORRECTING
                 else:
-                    self.log(f"OK / 値={snap.tilt_values}")
-                    self._retry_count = 0
+                    self.log(f"OK / 値={snap.tilt_values}（自動補正モードOFF）")
+                    self._tilt_retry = 0
+                    self._precision_retry = 0
                     self._state = State.IDLE
 
-            elif self._state == State.NG_RETRY:
-                if not self.cfg.auto_retry or self._retry_count >= self.cfg.max_retries:
-                    self.log(f"リトライ上限({self._retry_count})到達 → 停止")
+            elif self._state == State.TILT_NG_RETRY:
+                if not self.cfg.auto_retry or self._tilt_retry >= self.cfg.max_tilt_retries:
+                    self.log(f"傾リトライ上限({self._tilt_retry}/{self.cfg.max_tilt_retries})到達")
                     self._state = State.ERROR
                 else:
-                    self._retry_count += 1
-                    self.log(f"リトライ {self._retry_count}/{self.cfg.max_retries}")
-                    self._do_retry()
+                    self._tilt_retry += 1
+                    self.log(f"傾リトライ {self._tilt_retry}/{self.cfg.max_tilt_retries}")
+                    self._trigger_recapture()
+                    self._state = State.IDLE
+
+            elif self._state == State.AUTO_CORRECTING:
+                clicked = self._locator.click_button(self.cfg.auto_correct_button_text)
+                self.log(f"自動補正クリック: {'成功' if clicked else '失敗'}")
+                self._wait(self.cfg.auto_correct_wait_sec)
+                self._state = State.PRECISION_JUDGING
+
+            elif self._state == State.PRECISION_JUDGING:
+                snap = self.take_snapshot()
+                self._emit(snap)
+                self._append_csv(snap, [], phase="precision")
+                if snap.precision_ng:
+                    self.log(f"精度不良検出: '{snap.comment_text}'")
+                    self._state = State.PRECISION_NG_RETRY
+                else:
+                    self.log(f"精度OK / コメント='{snap.comment_text}' → 完了")
+                    self._tilt_retry = 0
+                    self._precision_retry = 0
+                    self._state = State.IDLE
+
+            elif self._state == State.PRECISION_NG_RETRY:
+                if not self.cfg.auto_retry or self._precision_retry >= self.cfg.max_precision_retries:
+                    self.log(f"精度リトライ上限({self._precision_retry}/{self.cfg.max_precision_retries})到達")
+                    self._state = State.ERROR
+                else:
+                    self._precision_retry += 1
+                    self.log(f"精度リトライ {self._precision_retry}/{self.cfg.max_precision_retries}")
+                    self._trigger_recapture()
                     self._state = State.IDLE
 
             prev_pressed = snap.button_pressed
@@ -523,7 +596,7 @@ class XR20Monitor:
     def _wait(self, seconds: float) -> None:
         self._stop.wait(max(0.1, seconds))
 
-    def _do_retry(self) -> None:
+    def _trigger_recapture(self) -> None:
         """SwitchBot でリモコン押下し、取込開始ボタンを再押下。"""
         if self.cfg.dry_run:
             self.log("[リハーサル] SwitchBot送信スキップ / 取込開始クリック実行")
@@ -580,10 +653,10 @@ class XR20Monitor:
             p = base / p
         return p
 
-    def _append_csv(self, snap: Snapshot, ng_rows: list[str]) -> None:
+    def _append_csv(self, snap: Snapshot, ng_rows: list[str], phase: str = "tilt") -> None:
         path = self._csv_path()
         rows = list(self.cfg.target_rows)
-        header = ["timestamp", "active_rows", "ng_rows",
+        header = ["timestamp", "phase", "active_rows", "ng_rows", "comment", "precision_ng",
                   *[f"{r}_tilt" for r in rows], *[f"{r}_lamp" for r in rows]]
         write_header = not path.exists()
         try:
@@ -593,13 +666,178 @@ class XR20Monitor:
                     w.writerow(header)
                 w.writerow([
                     datetime.now().isoformat(timespec="seconds"),
+                    phase,
                     "|".join(snap.active_rows),
                     "|".join(ng_rows),
+                    snap.comment_text,
+                    int(snap.precision_ng),
                     *[snap.tilt_values.get(r, "") for r in rows],
                     *[snap.lamp_states.get(r, "") for r in rows],
                 ])
         except OSError as exc:
             self.log(f"CSV 書込失敗: {exc}")
+
+
+# ======================================================================
+# クリックピッカー（矩形ドラッグ設定）
+# ======================================================================
+class RectPicker:
+    """画面キャプチャを表示し、ユーザーにドラッグで矩形を順次指定させるダイアログ。
+
+    指定完了でコールバックに (name -> [x_frac, y_frac, w_frac, h_frac]) dict を返す。
+    保存するのは比率のみ。キャプチャ画像はピッカー終了時に破棄。
+    """
+
+    def __init__(self, parent, monitor: "XR20Monitor",
+                 on_done: Callable[[dict[str, list[float]]], None]) -> None:
+        import tkinter as tk
+        from PIL import ImageTk
+        self._tk = tk
+        self._ImageTk = ImageTk
+        self.monitor = monitor
+        self.on_done = on_done
+
+        # 対象の順序（key, 説明ラベル）
+        self.targets: list[tuple[str, str]] = []
+        self.targets.append(("button_capture", "取込開始 ボタン"))
+        self.targets.append(("button_autocorrect", "自動補正 ボタン"))
+        self.targets.append(("comment", "コメント欄（精度不良が出る場所）"))
+        for row in monitor.cfg.target_rows:
+            self.targets.append((f"no:{row}", f"No 列 [{row}]（番号が表示されるセル）"))
+            self.targets.append((f"lamp:{row}", f"緑ランプ [{row}]"))
+            self.targets.append((f"tilt:{row}", f"傾 列 [{row}]（数値セル）"))
+
+        self.results: dict[str, list[float]] = {}
+        self.index = 0
+
+        # ウィンドウ位置取得
+        if not monitor._locator.refresh():
+            self.monitor.log("[ピッカー] ウィンドウ未検出 → 中止")
+            return
+        self.window_rect = monitor._locator.rect()
+        if not self.window_rect:
+            return
+        # ウィンドウ全体をキャプチャ
+        left, top, right, bottom = self.window_rect
+        ww = right - left
+        wh = bottom - top
+        self.full_image = monitor._sampler.grab((left, top, ww, wh))
+        if self.full_image is None:
+            self.monitor.log("[ピッカー] 画面キャプチャ失敗")
+            return
+
+        self.top = tk.Toplevel(parent)
+        self.top.title("矩形設定（ドラッグで指定）")
+        # 画面に収まるよう最大 1280x720 にリサイズ
+        self.scale = min(1280 / ww, 720 / wh, 1.0)
+        disp_w = int(ww * self.scale)
+        disp_h = int(wh * self.scale)
+        disp_img = self.full_image.resize((disp_w, disp_h))
+        self.tk_image = ImageTk.PhotoImage(disp_img)
+
+        self.status = tk.StringVar()
+        tk.Label(self.top, textvariable=self.status, fg="#202080",
+                 font=("Arial", 12, "bold")).pack(fill="x", padx=4, pady=4)
+        self.canvas = tk.Canvas(self.top, width=disp_w, height=disp_h,
+                                cursor="cross", highlightthickness=0)
+        self.canvas.pack()
+        self.canvas.create_image(0, 0, anchor="nw", image=self.tk_image)
+
+        btns = tk.Frame(self.top)
+        btns.pack(fill="x", pady=4)
+        tk.Button(btns, text="スキップ（この要素を変更しない）",
+                  command=self._skip).pack(side="left", padx=4)
+        tk.Button(btns, text="中止", command=self._cancel).pack(side="right", padx=4)
+
+        self.canvas.bind("<ButtonPress-1>", self._press)
+        self.canvas.bind("<B1-Motion>", self._drag)
+        self.canvas.bind("<ButtonRelease-1>", self._release)
+        self._drag_start: tuple[int, int] | None = None
+        self._rect_id: int | None = None
+        self._update_status()
+
+    def _update_status(self) -> None:
+        if self.index >= len(self.targets):
+            self._finish()
+            return
+        key, label = self.targets[self.index]
+        self.status.set(
+            f"[{self.index + 1}/{len(self.targets)}] {label} をドラッグで囲んでください"
+        )
+
+    def _press(self, event) -> None:
+        self._drag_start = (event.x, event.y)
+        if self._rect_id:
+            self.canvas.delete(self._rect_id)
+        self._rect_id = self.canvas.create_rectangle(
+            event.x, event.y, event.x, event.y, outline="red", width=2
+        )
+
+    def _drag(self, event) -> None:
+        if not self._drag_start or not self._rect_id:
+            return
+        x0, y0 = self._drag_start
+        self.canvas.coords(self._rect_id, x0, y0, event.x, event.y)
+
+    def _release(self, event) -> None:
+        if not self._drag_start:
+            return
+        x0, y0 = self._drag_start
+        x1, y1 = event.x, event.y
+        self._drag_start = None
+        if abs(x1 - x0) < 3 or abs(y1 - y0) < 3:
+            self.status.set("矩形が小さすぎます。もう一度ドラッグしてください。")
+            return
+        # ウィンドウ幅/高さに対する比率に変換
+        left, top, right, bottom = self.window_rect
+        ww = right - left
+        wh = bottom - top
+        x = min(x0, x1) / self.scale
+        y = min(y0, y1) / self.scale
+        w = abs(x1 - x0) / self.scale
+        h = abs(y1 - y0) / self.scale
+        rel = [round(x / ww, 4), round(y / wh, 4),
+               round(w / ww, 4), round(h / wh, 4)]
+        key, _label = self.targets[self.index]
+        self.results[key] = rel
+        self.index += 1
+        if self._rect_id:
+            self.canvas.delete(self._rect_id)
+            self._rect_id = None
+        self._update_status()
+
+    def _skip(self) -> None:
+        self.index += 1
+        self._update_status()
+
+    def _cancel(self) -> None:
+        self.top.destroy()
+
+    def _finish(self) -> None:
+        self.on_done(self.results)
+        self.top.destroy()
+
+
+def apply_picker_results(cfg: MonitorConfig, results: dict[str, list[float]]) -> int:
+    """ピッカーの結果を cfg に反映。書き換えた項目数を返す。"""
+    count = 0
+    for key, rel in results.items():
+        if key == "button_capture":
+            cfg.button_capture_rect = rel
+        elif key == "button_autocorrect":
+            cfg.button_autocorrect_rect = rel
+        elif key == "comment":
+            cfg.comment_rect = rel
+        elif key.startswith("no:"):
+            cfg.no_column_rects[key[3:]] = rel
+        elif key.startswith("lamp:"):
+            cfg.lamp_rects[key[5:]] = rel
+        elif key.startswith("tilt:"):
+            cfg.tilt_rects[key[5:]] = rel
+        else:
+            continue
+        count += 1
+    return count
 
 
 # ======================================================================
@@ -623,9 +861,11 @@ class MonitorGUI:
         self.wr_var = tk.DoubleVar(value=c.threshold_wr)
         self.poll_var = tk.DoubleVar(value=c.poll_interval_sec)
         self.idle_poll_var = tk.DoubleVar(value=c.idle_poll_interval_sec)
-        self.retries_var = tk.IntVar(value=c.max_retries)
+        self.tilt_retries_var = tk.IntVar(value=c.max_tilt_retries)
+        self.precision_retries_var = tk.IntVar(value=c.max_precision_retries)
         self.dry_var = tk.BooleanVar(value=c.dry_run)
         self.auto_retry_var = tk.BooleanVar(value=c.auto_retry)
+        self.auto_correct_var = tk.BooleanVar(value=c.auto_correction_enabled)
         self.state_var = tk.StringVar(value="IDLE")
         self.values_var = tk.StringVar(value="(未取得)")
         self.lamps_var = tk.StringVar(value="(未取得)")
@@ -646,38 +886,43 @@ class MonitorGUI:
         self._slider(frm, 1, "WR/WL 閾値 (秒)", self.wr_var, 0.5, 30)
         self._slider(frm, 2, "監視中ポーリング(秒)", self.poll_var, 0.5, 30)
         self._slider(frm, 3, "待機中ポーリング(秒)", self.idle_poll_var, 1, 60)
-        self._slider(frm, 4, "最大リトライ回数", self.retries_var, 0, 10, is_int=True)
+        self._slider(frm, 4, "傾NG 最大リトライ回数", self.tilt_retries_var, 0, 10, is_int=True)
+        self._slider(frm, 5, "精度NG 最大リトライ回数", self.precision_retries_var, 0, 10, is_int=True)
 
         flags = ttk.Frame(frm)
-        flags.grid(row=5, column=0, columnspan=3, sticky="w", pady=4)
+        flags.grid(row=6, column=0, columnspan=3, sticky="w", pady=4)
         ttk.Checkbutton(flags, text="リハーサル (SwitchBot送信なし)", variable=self.dry_var,
                         command=self._apply).pack(side="left", padx=4)
         ttk.Checkbutton(flags, text="NG自動リトライ", variable=self.auto_retry_var,
                         command=self._apply).pack(side="left", padx=4)
+        ttk.Checkbutton(flags, text="傾OK後に自動補正→精度チェック", variable=self.auto_correct_var,
+                        command=self._apply).pack(side="left", padx=4)
 
         # 状態表示
         status = ttk.LabelFrame(frm, text="現在状態", padding=6)
-        status.grid(row=6, column=0, columnspan=3, sticky="ew", pady=6)
+        status.grid(row=7, column=0, columnspan=3, sticky="ew", pady=6)
+        self.comment_var = tk.StringVar(value="(未取得)")
         for i, (lbl, var) in enumerate([
             ("状態", self.state_var), ("ボタン", self.button_var),
             ("有効行", self.active_var), ("ランプ", self.lamps_var),
-            ("傾値", self.values_var),
+            ("傾値", self.values_var), ("コメント", self.comment_var),
         ]):
             ttk.Label(status, text=lbl + ":").grid(row=i, column=0, sticky="w", padx=2)
             ttk.Label(status, textvariable=var, foreground="#0060a0").grid(row=i, column=1, sticky="w", padx=4)
 
         btns = ttk.Frame(frm)
-        btns.grid(row=7, column=0, columnspan=3, sticky="ew", pady=4)
+        btns.grid(row=8, column=0, columnspan=3, sticky="ew", pady=4)
         ttk.Button(btns, text="監視ON", command=self._start).pack(side="left", padx=2)
         ttk.Button(btns, text="監視OFF", command=self.monitor.stop).pack(side="left", padx=2)
-        ttk.Button(btns, text="キャリブレーション表示", command=self._show_calibration).pack(side="left", padx=2)
+        ttk.Button(btns, text="矩形設定(ドラッグ)", command=self._open_picker).pack(side="left", padx=2)
+        ttk.Button(btns, text="キャリブ表示", command=self._show_calibration).pack(side="left", padx=2)
         ttk.Button(btns, text="設定保存", command=self._save).pack(side="left", padx=2)
         ttk.Button(btns, text="1回だけ読み取り", command=self._read_once).pack(side="left", padx=2)
 
         self.log_box = tk.Text(frm, height=15, wrap="none")
-        self.log_box.grid(row=8, column=0, columnspan=3, sticky="nsew", pady=4)
+        self.log_box.grid(row=9, column=0, columnspan=3, sticky="nsew", pady=4)
         frm.columnconfigure(1, weight=1)
-        frm.rowconfigure(8, weight=1)
+        frm.rowconfigure(9, weight=1)
 
     def _slider(self, parent, row, label, var, lo, hi, is_int=False):
         ttk, tk = self._ttk, self._tk
@@ -699,9 +944,11 @@ class MonitorGUI:
         c.threshold_wr = round(float(self.wr_var.get()), 2)
         c.poll_interval_sec = round(float(self.poll_var.get()), 1)
         c.idle_poll_interval_sec = round(float(self.idle_poll_var.get()), 1)
-        c.max_retries = int(self.retries_var.get())
+        c.max_tilt_retries = int(self.tilt_retries_var.get())
+        c.max_precision_retries = int(self.precision_retries_var.get())
         c.dry_run = bool(self.dry_var.get())
         c.auto_retry = bool(self.auto_retry_var.get())
+        c.auto_correction_enabled = bool(self.auto_correct_var.get())
 
     def _start(self) -> None:
         self._apply()
@@ -728,7 +975,17 @@ class MonitorGUI:
             self.values_var.set(
                 ", ".join(f"{k}={v}" for k, v in snap.tilt_values.items()) or "(未取得)"
             )
+            mark = " ⚠精度不良" if snap.precision_ng else ""
+            self.comment_var.set(f"{snap.comment_text}{mark}" if snap.comment_text else "(なし)")
         self.root.after(0, update)
+
+    def _open_picker(self) -> None:
+        def on_done(results: dict[str, list[float]]) -> None:
+            n = apply_picker_results(self.monitor.cfg, results)
+            self.monitor.log(f"ピッカー: {n} 要素を更新")
+            save_config(self.config_path, self.monitor.cfg)
+            self.monitor.log(f"設定保存: {self.config_path}")
+        RectPicker(self.root, self.monitor, on_done)
 
     def _show_calibration(self) -> None:
         """半透明オーバーレイで OCR/色判定矩形を表示する。"""
@@ -758,11 +1015,13 @@ class MonitorGUI:
 
         c = self.monitor.cfg
         draw(c.button_capture_rect, "#ff4040", "取込開始")
+        draw(c.button_autocorrect_rect, "#ff80ff", "自動補正")
+        draw(c.comment_rect, "#ffa040", "コメント")
         for row in c.target_rows:
             draw(c.no_column_rects.get(row, []), "#40c0ff", f"No[{row}]")
             draw(c.lamp_rects.get(row, []), "#40ff40", f"Lamp[{row}]")
             draw(c.tilt_rects.get(row, []), "#ffff40", f"傾[{row}]")
-        overlay.after(3500, overlay.destroy)
+        overlay.after(4000, overlay.destroy)
 
     def _append_log(self, msg: str) -> None:
         self.root.after(0, lambda: self._do_append(msg))
