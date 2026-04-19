@@ -608,39 +608,68 @@ class XR20Monitor:
         self.log(f"取込開始クリック: {'成功' if clicked else '失敗'}")
 
     def _send_switchbot(self) -> bool:
+        ok, msg = self.send_switchbot_press()
+        if not ok:
+            self.log(f"SwitchBot エラー: {msg}")
+        return ok
+
+    def send_switchbot_press(self) -> tuple[bool, str]:
+        """SwitchBot v1.1 API で press コマンドを送信。(成功フラグ, メッセージ)"""
         if not (self.cfg.switchbot_token and self.cfg.switchbot_secret and self.cfg.switchbot_device_id):
-            self.log("SwitchBot 認証情報が未設定です")
-            return False
+            return False, "Token / Secret / DeviceID が未設定"
         try:
-            import base64
-            import hashlib
-            import hmac
-            import time as _t
-            import urllib.request
-            import uuid
+            import base64, hashlib, hmac, time as _t, urllib.request, uuid
             token = self.cfg.switchbot_token
             secret = self.cfg.switchbot_secret
             device_id = self.cfg.switchbot_device_id
             nonce = str(uuid.uuid4())
             t = str(int(round(_t.time() * 1000)))
-            string_to_sign = f"{token}{t}{nonce}".encode()
             sign = base64.b64encode(
-                hmac.new(secret.encode(), string_to_sign, hashlib.sha256).digest()
+                hmac.new(secret.encode(), f"{token}{t}{nonce}".encode(), hashlib.sha256).digest()
             ).decode()
             url = f"https://api.switch-bot.com/v1.1/devices/{device_id}/commands"
             body = json.dumps({"command": "press", "parameter": "default", "commandType": "command"}).encode()
             req = urllib.request.Request(
                 url, data=body, method="POST",
-                headers={
-                    "Authorization": token, "sign": sign, "t": t, "nonce": nonce,
-                    "Content-Type": "application/json",
-                },
+                headers={"Authorization": token, "sign": sign, "t": t, "nonce": nonce,
+                         "Content-Type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status == 200
+                data = json.loads(resp.read().decode() or "{}")
+            code = data.get("statusCode", -1)
+            if code == 100:
+                return True, data.get("message", "OK")
+            return False, f"statusCode={code} message={data.get('message')}"
         except Exception as exc:
-            self.log(f"SwitchBot 例外: {exc}")
-            return False
+            return False, f"例外: {exc}"
+
+    def fetch_switchbot_devices(self) -> tuple[bool, list[dict], str]:
+        """GET /v1.1/devices で登録デバイス一覧を取得。(成功フラグ, devices, メッセージ)"""
+        if not (self.cfg.switchbot_token and self.cfg.switchbot_secret):
+            return False, [], "Token / Secret が未設定"
+        try:
+            import base64, hashlib, hmac, time as _t, urllib.request, uuid
+            token = self.cfg.switchbot_token
+            nonce = str(uuid.uuid4())
+            t = str(int(round(_t.time() * 1000)))
+            sign = base64.b64encode(
+                hmac.new(self.cfg.switchbot_secret.encode(),
+                         f"{token}{t}{nonce}".encode(), hashlib.sha256).digest()
+            ).decode()
+            req = urllib.request.Request(
+                "https://api.switch-bot.com/v1.1/devices", method="GET",
+                headers={"Authorization": token, "sign": sign, "t": t, "nonce": nonce,
+                         "Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode() or "{}")
+            if data.get("statusCode") != 100:
+                return False, [], f"statusCode={data.get('statusCode')} message={data.get('message')}"
+            body = data.get("body", {}) or {}
+            devs = list(body.get("deviceList", [])) + list(body.get("infraredRemoteList", []))
+            return True, devs, f"{len(devs)} 件"
+        except Exception as exc:
+            return False, [], f"例外: {exc}"
 
     # ------------------------------------------------------------------
     # CSV 履歴
@@ -916,6 +945,7 @@ class MonitorGUI:
         ttk.Button(btns, text="監視OFF", command=self.monitor.stop).pack(side="left", padx=2)
         ttk.Button(btns, text="矩形設定(ドラッグ)", command=self._open_picker).pack(side="left", padx=2)
         ttk.Button(btns, text="キャリブ表示", command=self._show_calibration).pack(side="left", padx=2)
+        ttk.Button(btns, text="SwitchBot設定", command=self._open_switchbot_dialog).pack(side="left", padx=2)
         ttk.Button(btns, text="設定保存", command=self._save).pack(side="left", padx=2)
         ttk.Button(btns, text="1回だけ読み取り", command=self._read_once).pack(side="left", padx=2)
 
@@ -986,6 +1016,93 @@ class MonitorGUI:
             save_config(self.config_path, self.monitor.cfg)
             self.monitor.log(f"設定保存: {self.config_path}")
         RectPicker(self.root, self.monitor, on_done)
+
+    def _open_switchbot_dialog(self) -> None:
+        tk, ttk = self._tk, self._ttk
+        c = self.monitor.cfg
+        top = tk.Toplevel(self.root)
+        top.title("SwitchBot 設定")
+        top.geometry("620x440")
+        top.transient(self.root)
+
+        token_var = tk.StringVar(value=c.switchbot_token)
+        secret_var = tk.StringVar(value=c.switchbot_secret)
+        device_var = tk.StringVar(value=c.switchbot_device_id)
+        status_var = tk.StringVar(value="")
+
+        frm = ttk.Frame(top, padding=8)
+        frm.pack(fill="both", expand=True)
+        for i, (lbl, var, show) in enumerate([
+            ("Token", token_var, ""), ("Secret", secret_var, "*"),
+            ("Device ID", device_var, ""),
+        ]):
+            ttk.Label(frm, text=lbl + ":").grid(row=i, column=0, sticky="w", padx=2, pady=2)
+            e = ttk.Entry(frm, textvariable=var, width=60)
+            if show:
+                e.config(show=show)
+            e.grid(row=i, column=1, columnspan=2, sticky="ew", padx=4, pady=2)
+        frm.columnconfigure(1, weight=1)
+
+        ttk.Label(frm, text="登録デバイス (ダブルクリックで Device ID 反映):")\
+            .grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 2))
+        listbox = tk.Listbox(frm, height=10)
+        listbox.grid(row=4, column=0, columnspan=3, sticky="nsew", padx=2)
+        frm.rowconfigure(4, weight=1)
+
+        devices: list[dict] = []
+
+        def pull():
+            c.switchbot_token = token_var.get().strip()
+            c.switchbot_secret = secret_var.get().strip()
+            c.switchbot_device_id = device_var.get().strip()
+
+        def do_list():
+            pull()
+            status_var.set("デバイス取得中…")
+            top.update_idletasks()
+            ok, devs, msg = self.monitor.fetch_switchbot_devices()
+            listbox.delete(0, "end")
+            devices.clear()
+            devices.extend(devs)
+            for d in devs:
+                did = d.get("deviceId") or d.get("deviceID") or ""
+                typ = d.get("deviceType") or d.get("remoteType") or "?"
+                name = d.get("deviceName") or "(名称なし)"
+                listbox.insert("end", f"{typ:>18}  {did}  {name}")
+            status_var.set(("[成功] " if ok else "[失敗] ") + msg)
+
+        def on_pick(_evt=None):
+            sel = listbox.curselection()
+            if not sel:
+                return
+            d = devices[sel[0]]
+            device_var.set(d.get("deviceId") or d.get("deviceID") or "")
+
+        listbox.bind("<Double-Button-1>", on_pick)
+
+        def do_test():
+            pull()
+            status_var.set("テスト送信中…")
+            top.update_idletasks()
+            ok, msg = self.monitor.send_switchbot_press()
+            status_var.set(("[送信成功] " if ok else "[送信失敗] ") + msg)
+            self.monitor.log(f"SwitchBot テスト: {'OK' if ok else 'NG'} {msg}")
+
+        def do_save():
+            pull()
+            save_config(self.config_path, self.monitor.cfg)
+            status_var.set(f"保存: {self.config_path}")
+            self.monitor.log(f"SwitchBot 設定保存: device={c.switchbot_device_id or '(未設定)'}")
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=5, column=0, columnspan=3, sticky="ew", pady=6)
+        ttk.Button(btns, text="デバイス一覧取得", command=do_list).pack(side="left", padx=2)
+        ttk.Button(btns, text="テスト送信 (press)", command=do_test).pack(side="left", padx=2)
+        ttk.Button(btns, text="保存", command=do_save).pack(side="left", padx=2)
+        ttk.Button(btns, text="閉じる", command=top.destroy).pack(side="right", padx=2)
+
+        ttk.Label(frm, textvariable=status_var, foreground="#0060a0")\
+            .grid(row=6, column=0, columnspan=3, sticky="w", padx=2, pady=(4, 0))
 
     def _show_calibration(self) -> None:
         """半透明オーバーレイで OCR/色判定矩形を表示する。"""
