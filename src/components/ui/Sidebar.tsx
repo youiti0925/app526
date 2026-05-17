@@ -12,6 +12,7 @@ import {
   Video,
   ClipboardCheck,
   BarChart3,
+  Crosshair,
 } from "lucide-react";
 
 const navItems = [
@@ -21,6 +22,7 @@ const navItems = [
 ];
 
 const secondaryItems = [
+  { href: "/xr20", label: "XR20 評価ツール", icon: Crosshair },
   { href: "/settings", label: "設定", icon: Settings },
   { href: "/help", label: "ヘルプ", icon: HelpCircle },
 ];
