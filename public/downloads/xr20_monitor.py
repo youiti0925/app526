@@ -207,6 +207,7 @@ class WindowLocator:
         self._pwa_window: Any = None
         self._fake_rect: tuple[int, int, int, int] | None = None
         self._anchor_corr: tuple[float, float, float, float] | None = None  # (sx, sy, ox, oy)
+        self._lock = threading.Lock()  # pywinauto を複数スレッドから同時に叩かない
 
     def set_anchor_correction(self, corr: tuple[float, float, float, float] | None) -> None:
         """テンプレート位置補正（分数空間の sx,sy,ox,oy）。None で補正なし。"""
@@ -218,24 +219,31 @@ class WindowLocator:
         self._rect = rect
 
     def refresh(self) -> bool:
+        """ウィンドウを再検出。成功で True。"""
         if self._fake_rect is not None:
             self._rect = self._fake_rect
             return True
-        """ウィンドウを再検出。成功で True。"""
+        if not self._lock.acquire(blocking=False):
+            # 別スレッドが探索中。前回の結果を流用（同時pywinauto呼び出し回避）
+            return self._rect is not None
         try:
             from pywinauto import Desktop
         except Exception:
+            self._lock.release()
             return False
-        for backend in ("uia", "win32"):
-            try:
-                win = Desktop(backend=backend).window(title_re=f".*{self.title_substr}.*")
-                if win.exists(timeout=0.5):
-                    rect = win.rectangle()
-                    self._rect = (rect.left, rect.top, rect.right, rect.bottom)
-                    self._pwa_window = win
-                    return True
-            except Exception:
-                continue
+        try:
+            for backend in ("uia", "win32"):
+                try:
+                    win = Desktop(backend=backend).window(title_re=f".*{self.title_substr}.*")
+                    if win.exists(timeout=0.5):
+                        rect = win.rectangle()
+                        self._rect = (rect.left, rect.top, rect.right, rect.bottom)
+                        self._pwa_window = win
+                        return True
+                except Exception:
+                    continue
+        finally:
+            self._lock.release()
         return False
 
     def rect(self) -> tuple[int, int, int, int] | None:
@@ -354,8 +362,8 @@ class ScreenSampler:
     def ocr_text(self, abs_rect: tuple[int, int, int, int], whitelist: str | None = None) -> str:
         """矩形を OCR。whitelist を指定すると数字記号のみに絞る。
 
-        小さい数値セル＋マイナス符号の読取精度を上げるため、拡大→コントラスト
-        最大化→2値化→白余白付与の前処理を行い、空振り時はPSMを変えて再試行。
+        グレースケール→3倍拡大→コントラスト最大化→2値化の軽い前処理で
+        1回だけ実行（速度優先）。2値化でマイナス符号も拾いやすい。
         """
         img = self.grab(abs_rect)
         if img is None:
@@ -363,27 +371,16 @@ class ScreenSampler:
         try:
             import pytesseract
             from PIL import ImageOps
-            gray = img.convert("L").resize((img.width * 4, img.height * 4))
+            gray = img.convert("L").resize((img.width * 3, img.height * 3))
             gray = ImageOps.autocontrast(gray)
             bw = gray.point(lambda p: 0 if p < 128 else 255)
-            # 文字が白地に黒であることを多数決で確認（反転していれば戻す）
             if bw.histogram()[0] > bw.histogram()[255]:
                 bw = ImageOps.invert(bw)
-            bw = ImageOps.expand(bw, border=12, fill=255)
-
-            def run(psm: int, wl: str | None) -> str:
-                cfg = f"--psm {psm}"
-                if wl:
-                    cfg += f" -c tessedit_char_whitelist={wl}"
-                return pytesseract.image_to_string(bw, config=cfg).strip()
-
-            txt = run(7, whitelist)
-            if not txt:
-                txt = run(8, whitelist)  # 単語扱いで再試行
-            if not txt and whitelist:
-                raw = run(7, None)  # whitelist無しで拾い、許可文字だけ残す
-                txt = "".join(ch for ch in raw if ch in whitelist)
-            return txt
+            bw = ImageOps.expand(bw, border=10, fill=255)
+            cfg = "--psm 7"
+            if whitelist:
+                cfg += f" -c tessedit_char_whitelist={whitelist}"
+            return pytesseract.image_to_string(bw, config=cfg).strip()
         except Exception:
             return ""
 
@@ -1581,7 +1578,20 @@ class MonitorGUI:
             save_config(self.config_path, self.monitor.cfg)
             self.monitor.log(f"設定保存: {self.config_path}")
 
-        self.monitor.log("画面キャプチャ中…")
+        # 既に検出済みのウィンドウ矩形があれば pywinauto を再実行しない
+        # （監視スレッドとの同時 pywinauto 呼び出しでハングするのを防ぐ）。
+        cached = self.monitor._locator.rect()
+        if cached:
+            left, top, right, bottom = cached
+            img = self.monitor._sampler.grab((left, top, right - left, bottom - top))
+            if img is not None:
+                RectPicker(self.root, self.monitor, on_done, prefetched=(cached, img))
+                return
+            self.monitor.log("[ピッカー] 画面キャプチャ失敗")
+            return
+
+        # 未検出時のみウィンドウ探索（重いので別スレッド）
+        self.monitor.log("ウィンドウ検出中…")
 
         def fetch():
             if not self.monitor._locator.refresh():
@@ -1738,6 +1748,10 @@ class MonitorGUI:
 
     def _show_calibration(self) -> None:
         """半透明オーバーレイで OCR/色判定矩形を表示する。"""
+        cached = self.monitor._locator.rect()
+        if cached:
+            self._build_calibration_overlay(cached)
+            return
         self.monitor.log("ウィンドウ検出中…")
 
         def detect():
