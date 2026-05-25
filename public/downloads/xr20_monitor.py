@@ -677,13 +677,62 @@ class XR20Monitor:
             return False, f"bleak 未導入: {exc}（start.bat 再実行で導入）"
         payload = self._ble_press_payload()
 
-        async def _run() -> None:
+        async def _run() -> str:
             async with BleakClient(mac, timeout=15.0) as client:
-                await client.write_gatt_char(SWITCHBOT_BLE_WRITE_CHAR, payload, response=True)
+                char = self._find_write_char(client)
+                if char is None:
+                    avail = [c.uuid for s in client.services for c in s.characteristics]
+                    raise RuntimeError(
+                        "書込可能なSwitchBot特性が見つかりません。"
+                        "選んだ機器がBotでない可能性。検出特性=" + ", ".join(avail)
+                    )
+                await client.write_gatt_char(char, payload, response=True)
+                return char.uuid
 
         try:
-            self._run_async(_run())
-            return True, f"BLE press 送信OK ({mac})"
+            used = self._run_async(_run())
+            return True, f"BLE press 送信OK ({mac} / {used})"
+        except Exception as exc:
+            return False, f"BLE例外: {exc}"
+
+    @staticmethod
+    def _find_write_char(client: Any) -> Any:
+        """接続済みクライアントから書込先特性を探す。既知UUID優先、無ければ
+        SwitchBotベンダ(cba2...)の書込可能特性をフォールバックで選ぶ。"""
+        for s in client.services:
+            for c in s.characteristics:
+                if c.uuid.lower() == SWITCHBOT_BLE_WRITE_CHAR:
+                    return c
+        for s in client.services:
+            for c in s.characteristics:
+                props = [p.lower() for p in c.properties]
+                writable = any("write" in p for p in props)
+                if writable and c.uuid.lower().startswith("cba2"):
+                    return c
+        return None
+
+    def inspect_switchbot_ble(self) -> tuple[bool, str]:
+        """指定MACに接続し、GATTサービス/特性の一覧を文字列で返す（診断用）。"""
+        mac = self.cfg.switchbot_ble_mac.strip()
+        if not mac:
+            return False, "BLE MACアドレスが未設定"
+        try:
+            from bleak import BleakClient
+        except Exception as exc:
+            return False, f"bleak 未導入: {exc}"
+
+        async def _run() -> str:
+            lines: list[str] = []
+            async with BleakClient(mac, timeout=15.0) as client:
+                for s in client.services:
+                    lines.append(f"Service {s.uuid}")
+                    for c in s.characteristics:
+                        props = ",".join(c.properties)
+                        lines.append(f"  Char {c.uuid} [{props}]")
+            return "\n".join(lines) or "(特性なし)"
+
+        try:
+            return True, self._run_async(_run())
         except Exception as exc:
             return False, f"BLE例外: {exc}"
 
@@ -1235,6 +1284,14 @@ class MonitorGUI:
             status_var.set(("[送信成功] " if ok else "[送信失敗] ") + msg)
             self.monitor.log(f"SwitchBot テスト({mode}): {'OK' if ok else 'NG'} {msg}")
 
+        def do_inspect():
+            pull()
+            status_var.set("BLE機器に接続して特性を取得中…")
+            top.update_idletasks()
+            ok, text = self.monitor.inspect_switchbot_ble()
+            status_var.set("[BLE詳細] " + ("取得OK（ログ参照）" if ok else text))
+            self.monitor.log("[BLE詳細]\n" + text)
+
         def do_save():
             pull()
             save_config(self.config_path, self.monitor.cfg)
@@ -1247,6 +1304,7 @@ class MonitorGUI:
         ttk.Button(btns, text="クラウド一覧取得", command=do_list).pack(side="left", padx=2)
         ttk.Button(btns, text="Bluetoothスキャン", command=do_scan).pack(side="left", padx=2)
         ttk.Button(btns, text="テスト送信 (press)", command=do_test).pack(side="left", padx=2)
+        ttk.Button(btns, text="BLE詳細", command=do_inspect).pack(side="left", padx=2)
         ttk.Button(btns, text="保存", command=do_save).pack(side="left", padx=2)
         ttk.Button(btns, text="閉じる", command=top.destroy).pack(side="right", padx=2)
 
