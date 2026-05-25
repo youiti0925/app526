@@ -34,6 +34,10 @@ from typing import Any, Callable
 #   [x_frac, y_frac, w_frac, h_frac]
 # 想定ウィンドウ: 1919x958（最大化）
 # ----------------------------------------------------------------------
+# SwitchBot Bot の BLE GATT 定義（ハブ無し直結用）
+SWITCHBOT_BLE_WRITE_CHAR = "cba20002-224d-11e6-9fb9-0002a5d5c51b"
+SWITCHBOT_BLE_SERVICE = "0000fd3d-0000-1000-8000-00805f9b34fb"
+
 DEFAULT_BUTTON_CAPTURE = [0.104, 0.400, 0.069, 0.037]
 DEFAULT_BUTTON_AUTOCORRECT = [0.183, 0.400, 0.069, 0.037]
 DEFAULT_COMMENT_RECT = [0.183, 0.520, 0.450, 0.030]
@@ -76,6 +80,9 @@ class MonitorConfig:
     switchbot_token: str = ""
     switchbot_secret: str = ""
     switchbot_device_id: str = ""
+    switchbot_use_ble: bool = False        # True: PCのBluetoothから直接Botを操作（ハブ不要）
+    switchbot_ble_mac: str = ""            # Bot の Bluetooth MACアドレス
+    switchbot_ble_password: str = ""       # Bot にパスワード設定時のみ（通常は空欄）
 
     # ウィンドウ特定（部分一致）
     app_title: str = "IK220分割測定"
@@ -617,6 +624,86 @@ class XR20Monitor:
         return ok
 
     def send_switchbot_press(self) -> tuple[bool, str]:
+        """設定に応じて BLE直結 または クラウドAPI で press を送る。(成功, メッセージ)"""
+        if self.cfg.switchbot_use_ble:
+            return self.send_switchbot_ble_press()
+        return self._send_switchbot_cloud()
+
+    # ---- BLE 直結（ハブ不要） -------------------------------------------
+    @staticmethod
+    def _run_async(coro: Any) -> Any:
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def _ble_press_payload(self) -> bytes:
+        pw = self.cfg.switchbot_ble_password.strip()
+        if not pw:
+            return bytes([0x57, 0x01, 0x00])  # press（パスワード無し）
+        import binascii
+        crc = binascii.crc32(pw.encode()) & 0xFFFFFFFF
+        return bytes([0x57, 0x11]) + crc.to_bytes(4, "big") + bytes([0x00])
+
+    def send_switchbot_ble_press(self) -> tuple[bool, str]:
+        """PC の Bluetooth から Bot に直接 press を送る。(成功, メッセージ)"""
+        mac = self.cfg.switchbot_ble_mac.strip()
+        if not mac:
+            return False, "BLE MACアドレスが未設定"
+        try:
+            from bleak import BleakClient
+        except Exception as exc:
+            return False, f"bleak 未導入: {exc}（start.bat 再実行で導入）"
+        payload = self._ble_press_payload()
+
+        async def _run() -> None:
+            async with BleakClient(mac, timeout=15.0) as client:
+                await client.write_gatt_char(SWITCHBOT_BLE_WRITE_CHAR, payload, response=True)
+
+        try:
+            self._run_async(_run())
+            return True, f"BLE press 送信OK ({mac})"
+        except Exception as exc:
+            return False, f"BLE例外: {exc}"
+
+    def scan_switchbot_ble(self, timeout: float = 6.0) -> tuple[bool, list[dict], str]:
+        """近くの BLE 機器をスキャン。SwitchBot を優先表示。(成功, list, メッセージ)"""
+        try:
+            from bleak import BleakScanner
+        except Exception as exc:
+            return False, [], f"bleak 未導入: {exc}（start.bat 再実行で導入）"
+
+        async def _run() -> list[dict]:
+            out: list[dict] = []
+            results = await BleakScanner.discover(timeout=timeout, return_adv=True)
+            for dev, adv in results.values():
+                sd = adv.service_data or {}
+                is_sb = any(str(k).lower().startswith("0000fd3d") for k in sd)
+                model = ""
+                for k, v in sd.items():
+                    if str(k).lower().startswith("0000fd3d") and v:
+                        model = chr(v[0] & 0x7F)
+                out.append({
+                    "mac": dev.address,
+                    "name": adv.local_name or (dev.name or ""),
+                    "rssi": adv.rssi if adv.rssi is not None else -999,
+                    "switchbot": is_sb,
+                    "model": model,
+                })
+            return out
+
+        try:
+            devs = self._run_async(_run())
+            devs.sort(key=lambda d: (not d["switchbot"], -d["rssi"]))
+            sb = sum(1 for d in devs if d["switchbot"])
+            return True, devs, f"{len(devs)} 件検出 (SwitchBot {sb} 件)"
+        except Exception as exc:
+            return False, [], f"BLE例外: {exc}"
+
+    # ---- クラウド API ---------------------------------------------------
+    def _send_switchbot_cloud(self) -> tuple[bool, str]:
         """SwitchBot v1.1 API で press コマンドを送信。(成功フラグ, メッセージ)"""
         if not (self.cfg.switchbot_token and self.cfg.switchbot_secret and self.cfg.switchbot_device_id):
             return False, "Token / Secret / DeviceID が未設定"
@@ -1025,87 +1112,127 @@ class MonitorGUI:
         c = self.monitor.cfg
         top = tk.Toplevel(self.root)
         top.title("SwitchBot 設定")
-        top.geometry("620x440")
+        top.geometry("660x560")
         top.transient(self.root)
 
+        use_ble_var = tk.BooleanVar(value=c.switchbot_use_ble)
         token_var = tk.StringVar(value=c.switchbot_token)
         secret_var = tk.StringVar(value=c.switchbot_secret)
         device_var = tk.StringVar(value=c.switchbot_device_id)
+        mac_var = tk.StringVar(value=c.switchbot_ble_mac)
+        blepw_var = tk.StringVar(value=c.switchbot_ble_password)
         status_var = tk.StringVar(value="")
+        scan_mode = ["cloud"]  # 直近のスキャン種別（cloud / ble）
 
         frm = ttk.Frame(top, padding=8)
         frm.pack(fill="both", expand=True)
-        for i, (lbl, var, show) in enumerate([
-            ("Token", token_var, ""), ("Secret", secret_var, "*"),
-            ("Device ID", device_var, ""),
-        ]):
+        frm.columnconfigure(1, weight=1)
+
+        ttk.Checkbutton(
+            frm, text="Bluetooth直結モード（ハブ不要・PCのBluetoothで直接操作）",
+            variable=use_ble_var,
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+
+        rows = [
+            ("Token (クラウド用)", token_var, ""),
+            ("Secret (クラウド用)", secret_var, "*"),
+            ("Device ID (クラウド用)", device_var, ""),
+            ("BLE MACアドレス (直結用)", mac_var, ""),
+            ("BLEパスワード (通常空欄)", blepw_var, "*"),
+        ]
+        for i, (lbl, var, show) in enumerate(rows, start=1):
             ttk.Label(frm, text=lbl + ":").grid(row=i, column=0, sticky="w", padx=2, pady=2)
-            e = ttk.Entry(frm, textvariable=var, width=60)
+            e = ttk.Entry(frm, textvariable=var, width=52)
             if show:
                 e.config(show=show)
             e.grid(row=i, column=1, columnspan=2, sticky="ew", padx=4, pady=2)
-        frm.columnconfigure(1, weight=1)
 
-        ttk.Label(frm, text="登録デバイス (ダブルクリックで Device ID 反映):")\
-            .grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 2))
-        listbox = tk.Listbox(frm, height=10)
-        listbox.grid(row=4, column=0, columnspan=3, sticky="nsew", padx=2)
-        frm.rowconfigure(4, weight=1)
+        ttk.Label(frm, text="検出デバイス (ダブルクリックで反映):")\
+            .grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 2))
+        listbox = tk.Listbox(frm, height=9)
+        listbox.grid(row=7, column=0, columnspan=3, sticky="nsew", padx=2)
+        frm.rowconfigure(7, weight=1)
 
-        devices: list[dict] = []
+        items: list[dict] = []
 
         def pull():
+            c.switchbot_use_ble = bool(use_ble_var.get())
             c.switchbot_token = token_var.get().strip()
             c.switchbot_secret = secret_var.get().strip()
             c.switchbot_device_id = device_var.get().strip()
+            c.switchbot_ble_mac = mac_var.get().strip()
+            c.switchbot_ble_password = blepw_var.get().strip()
 
         def do_list():
             pull()
-            status_var.set("デバイス取得中…")
+            status_var.set("クラウドからデバイス取得中…")
             top.update_idletasks()
             ok, devs, msg = self.monitor.fetch_switchbot_devices()
+            scan_mode[0] = "cloud"
             listbox.delete(0, "end")
-            devices.clear()
-            devices.extend(devs)
+            items.clear()
+            items.extend(devs)
             for d in devs:
                 did = d.get("deviceId") or d.get("deviceID") or ""
                 typ = d.get("deviceType") or d.get("remoteType") or "?"
                 name = d.get("deviceName") or "(名称なし)"
-                listbox.insert("end", f"{typ:>18}  {did}  {name}")
+                listbox.insert("end", f"{typ:>16}  {did}  {name}")
+            status_var.set(("[成功] " if ok else "[失敗] ") + msg)
+
+        def do_scan():
+            pull()
+            status_var.set("Bluetoothスキャン中…（数秒）")
+            top.update_idletasks()
+            ok, devs, msg = self.monitor.scan_switchbot_ble()
+            scan_mode[0] = "ble"
+            listbox.delete(0, "end")
+            items.clear()
+            items.extend(devs)
+            for d in devs:
+                tag = "★SwitchBot" if d["switchbot"] else "          "
+                model = f"({d['model']})" if d["model"] else ""
+                listbox.insert("end", f"{tag}{model:>5} {d['mac']}  RSSI={d['rssi']}  {d['name']}")
             status_var.set(("[成功] " if ok else "[失敗] ") + msg)
 
         def on_pick(_evt=None):
             sel = listbox.curselection()
             if not sel:
                 return
-            d = devices[sel[0]]
-            device_var.set(d.get("deviceId") or d.get("deviceID") or "")
+            d = items[sel[0]]
+            if scan_mode[0] == "ble":
+                mac_var.set(d.get("mac", ""))
+                use_ble_var.set(True)
+            else:
+                device_var.set(d.get("deviceId") or d.get("deviceID") or "")
 
         listbox.bind("<Double-Button-1>", on_pick)
 
         def do_test():
             pull()
-            status_var.set("テスト送信中…")
+            mode = "BLE直結" if c.switchbot_use_ble else "クラウド"
+            status_var.set(f"テスト送信中…（{mode}）")
             top.update_idletasks()
             ok, msg = self.monitor.send_switchbot_press()
             status_var.set(("[送信成功] " if ok else "[送信失敗] ") + msg)
-            self.monitor.log(f"SwitchBot テスト: {'OK' if ok else 'NG'} {msg}")
+            self.monitor.log(f"SwitchBot テスト({mode}): {'OK' if ok else 'NG'} {msg}")
 
         def do_save():
             pull()
             save_config(self.config_path, self.monitor.cfg)
             status_var.set(f"保存: {self.config_path}")
-            self.monitor.log(f"SwitchBot 設定保存: device={c.switchbot_device_id or '(未設定)'}")
+            tgt = c.switchbot_ble_mac if c.switchbot_use_ble else c.switchbot_device_id
+            self.monitor.log(f"SwitchBot 設定保存: mode={'BLE' if c.switchbot_use_ble else 'Cloud'} target={tgt or '(未設定)'}")
 
         btns = ttk.Frame(frm)
-        btns.grid(row=5, column=0, columnspan=3, sticky="ew", pady=6)
-        ttk.Button(btns, text="デバイス一覧取得", command=do_list).pack(side="left", padx=2)
+        btns.grid(row=8, column=0, columnspan=3, sticky="ew", pady=6)
+        ttk.Button(btns, text="クラウド一覧取得", command=do_list).pack(side="left", padx=2)
+        ttk.Button(btns, text="Bluetoothスキャン", command=do_scan).pack(side="left", padx=2)
         ttk.Button(btns, text="テスト送信 (press)", command=do_test).pack(side="left", padx=2)
         ttk.Button(btns, text="保存", command=do_save).pack(side="left", padx=2)
         ttk.Button(btns, text="閉じる", command=top.destroy).pack(side="right", padx=2)
 
-        ttk.Label(frm, textvariable=status_var, foreground="#0060a0")\
-            .grid(row=6, column=0, columnspan=3, sticky="w", padx=2, pady=(4, 0))
+        ttk.Label(frm, textvariable=status_var, foreground="#0060a0", wraplength=620)\
+            .grid(row=9, column=0, columnspan=3, sticky="w", padx=2, pady=(4, 0))
 
     def _show_calibration(self) -> None:
         """半透明オーバーレイで OCR/色判定矩形を表示する。"""
