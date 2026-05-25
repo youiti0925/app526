@@ -632,12 +632,31 @@ class XR20Monitor:
     # ---- BLE 直結（ハブ不要） -------------------------------------------
     @staticmethod
     def _run_async(coro: Any) -> Any:
+        """専用スレッドで asyncio コルーチンを実行して結果を返す。
+
+        Windows では GUI(Tk) スレッド上で bleak を動かすと WinRT の
+        コールバックが届かない（STAアパートメント問題）。別スレッドで
+        独自イベントループを回すことで回避する。
+        """
         import asyncio
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+        import threading
+        box: dict[str, Any] = {}
+
+        def worker() -> None:
+            loop = asyncio.new_event_loop()
+            try:
+                box["value"] = loop.run_until_complete(coro)
+            except BaseException as exc:  # noqa: BLE001
+                box["error"] = exc
+            finally:
+                loop.close()
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        t.join()
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
 
     def _ble_press_payload(self) -> bytes:
         pw = self.cfg.switchbot_ble_password.strip()
