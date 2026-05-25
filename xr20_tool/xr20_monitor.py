@@ -979,7 +979,8 @@ class RectPicker:
     """
 
     def __init__(self, parent, monitor: "XR20Monitor",
-                 on_done: Callable[[dict[str, list[float]]], None]) -> None:
+                 on_done: Callable[[dict[str, list[float]]], None],
+                 prefetched: tuple | None = None) -> None:
         import tkinter as tk
         from PIL import ImageTk
         self._tk = tk
@@ -1002,20 +1003,20 @@ class RectPicker:
         self.results: dict[str, list[float]] = {}
         self.index = 0
 
-        # ウィンドウ位置取得
-        if not monitor._locator.refresh():
-            self.monitor.log("[ピッカー] ウィンドウ未検出 → 中止")
-            return
-        self.window_rect = monitor._locator.rect()
-        if not self.window_rect:
-            return
-        # ウィンドウ全体をキャプチャ
-        left, top, right, bottom = self.window_rect
-        ww = right - left
-        wh = bottom - top
-        self.full_image = monitor._sampler.grab((left, top, ww, wh))
-        if self.full_image is None:
-            self.monitor.log("[ピッカー] 画面キャプチャ失敗")
+        # ウィンドウ位置と全体画像（事前取得済みなら再取得しない＝GUI固まり防止）
+        if prefetched is not None:
+            self.window_rect, self.full_image = prefetched
+        else:
+            if not monitor._locator.refresh():
+                self.monitor.log("[ピッカー] ウィンドウ未検出 → 中止")
+                return
+            self.window_rect = monitor._locator.rect()
+            if not self.window_rect:
+                return
+            left, top, right, bottom = self.window_rect
+            self.full_image = monitor._sampler.grab((left, top, right - left, bottom - top))
+        if not self.window_rect or self.full_image is None:
+            self.monitor.log("[ピッカー] ウィンドウ未検出または画面キャプチャ失敗 → 中止")
             return
 
         self.top = tk.Toplevel(parent)
@@ -1281,7 +1282,7 @@ class MonitorGUI:
         mini.configure(bg="#1e1e1e")
         sw = mini.winfo_screenwidth()
         sh = mini.winfo_screenheight()
-        w, h = 320, 250
+        w, h = 340, 310
         mini.geometry(f"{w}x{h}+{sw - w - 20}+{sh - h - 60}")
         self._mini = mini
 
@@ -1292,25 +1293,28 @@ class MonitorGUI:
         self._mini_retry = tk.StringVar()
         self._mini_total = tk.StringVar()
 
+        # ボタンを先に下端固定で配置（はみ出して隠れないように）
+        btnbar = tk.Frame(mini, bg="#1e1e1e")
+        btnbar.pack(side="bottom", fill="x", padx=10, pady=8)
+        tk.Button(btnbar, text="監視開始", command=self._start,
+                  bg="#2d7d33", fg="white", relief="flat",
+                  font=("Meiryo", 11, "bold"), height=1).pack(side="left", fill="x", expand=True, padx=3)
+        tk.Button(btnbar, text="停止", command=self.monitor.stop,
+                  bg="#9c3030", fg="white", relief="flat",
+                  font=("Meiryo", 11, "bold"), height=1).pack(side="left", fill="x", expand=True, padx=3)
+
         def row(var, size, color):
             lab = tk.Label(mini, textvariable=var, bg="#1e1e1e", fg=color,
                            font=("Meiryo", size, "bold"), anchor="w", justify="left")
             lab.pack(fill="x", padx=12, pady=1)
             return lab
 
-        self._mini_run_lbl = row(self._mini_run, 15, "#33dd55")
-        row(self._mini_state, 12, "#dddddd")
-        row(self._mini_model, 12, "#9cdcfe")
-        row(self._mini_machine, 12, "#9cdcfe")
-        row(self._mini_retry, 12, "#ffcc66")
-        row(self._mini_total, 12, "#dddddd")
-
-        btnbar = tk.Frame(mini, bg="#1e1e1e")
-        btnbar.pack(fill="x", padx=10, pady=(6, 8))
-        tk.Button(btnbar, text="監視開始", command=self._start,
-                  bg="#2d7d33", fg="white", relief="flat", width=10).pack(side="left", padx=4)
-        tk.Button(btnbar, text="停止", command=self.monitor.stop,
-                  bg="#9c3030", fg="white", relief="flat", width=8).pack(side="left", padx=4)
+        self._mini_run_lbl = row(self._mini_run, 14, "#33dd55")
+        row(self._mini_state, 11, "#dddddd")
+        row(self._mini_model, 11, "#9cdcfe")
+        row(self._mini_machine, 11, "#9cdcfe")
+        row(self._mini_retry, 11, "#ffcc66")
+        row(self._mini_total, 11, "#dddddd")
 
         mini.protocol("WM_DELETE_WINDOW", self._close_mini)
         self._refresh_mini()
@@ -1347,10 +1351,33 @@ class MonitorGUI:
         save_config(self.config_path, self.monitor.cfg)
         self.monitor.log(f"設定保存: {self.config_path}")
 
+    def _run_bg(self, fn, on_done=None) -> None:
+        """重い処理(pywinauto/OCR)を別スレッドで実行しGUIの固まりを防ぐ。"""
+        import threading
+
+        def worker():
+            try:
+                result = fn()
+                err = None
+            except Exception as exc:  # noqa: BLE001
+                result, err = None, exc
+            def finish():
+                if err is not None:
+                    self.monitor.log(f"[エラー] {err}")
+                elif on_done is not None:
+                    on_done(result)
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _read_once(self) -> None:
-        snap = self.monitor.take_snapshot()
-        self._on_state(self.monitor._state, snap)
-        self.monitor.log(f"手動読取: tilt={snap.tilt_values} lamps={snap.lamp_states} active={snap.active_rows}")
+        self.monitor.log("手動読取中…")
+
+        def done(snap):
+            self._on_state(self.monitor._state, snap)
+            self.monitor.log(f"手動読取: 型式={snap.model_name or '(未取得)'} 機番={snap.machine_no or '(未取得)'} "
+                             f"tilt={snap.tilt_values} lamps={snap.lamp_states} active={snap.active_rows}")
+        self._run_bg(self.monitor.take_snapshot, done)
 
     def _on_state(self, state: State, snap: Snapshot) -> None:
         def update():
@@ -1376,7 +1403,25 @@ class MonitorGUI:
             self.monitor.log(f"ピッカー: {n} 要素を更新")
             save_config(self.config_path, self.monitor.cfg)
             self.monitor.log(f"設定保存: {self.config_path}")
-        RectPicker(self.root, self.monitor, on_done)
+
+        self.monitor.log("画面キャプチャ中…")
+
+        def fetch():
+            if not self.monitor._locator.refresh():
+                return None
+            rect = self.monitor._locator.rect()
+            if not rect:
+                return None
+            left, top, right, bottom = rect
+            img = self.monitor._sampler.grab((left, top, right - left, bottom - top))
+            return (rect, img) if img is not None else None
+
+        def build(prefetched):
+            if prefetched is None:
+                self.monitor.log("[ピッカー] ウィンドウ未検出（対象アプリは起動してる？）")
+                return
+            RectPicker(self.root, self.monitor, on_done, prefetched=prefetched)
+        self._run_bg(fetch, build)
 
     def _open_switchbot_dialog(self) -> None:
         tk, ttk = self._tk, self._ttk
@@ -1516,11 +1561,17 @@ class MonitorGUI:
 
     def _show_calibration(self) -> None:
         """半透明オーバーレイで OCR/色判定矩形を表示する。"""
+        self.monitor.log("ウィンドウ検出中…")
+
+        def detect():
+            self.monitor._locator.refresh()
+            return self.monitor._locator.rect()
+        self._run_bg(detect, self._build_calibration_overlay)
+
+    def _build_calibration_overlay(self, rect) -> None:
         tk = self._tk
-        self.monitor._locator.refresh()
-        rect = self.monitor._locator.rect()
         if not rect:
-            self.monitor.log("[キャリブレーション] ウィンドウ未検出")
+            self.monitor.log("[キャリブレーション] ウィンドウ未検出（対象アプリは起動してる？）")
             return
         left, top, right, bottom = rect
         overlay = tk.Toplevel(self.root)
