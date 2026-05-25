@@ -122,6 +122,12 @@ class MonitorConfig:
     lamp_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_LAMP_RECTS.items()})
     tilt_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_TILT_RECTS.items()})
 
+    # 位置自動補正（テンプレートマッチング）— 任意機能。OFF時は固定座標のまま
+    use_template_anchor: bool = False
+    anchor_a_rect: list[float] = field(default_factory=list)  # 目印A（例:「型式」ラベル）
+    anchor_b_rect: list[float] = field(default_factory=list)  # 目印B（例: 表ヘッダー行）
+    anchor_match_threshold: float = 0.6  # マッチ信頼度の下限
+
     # 色基準（RGB）／許容誤差
     # 画像からの実測値:
     #   lamp_on  : 明るい緑 / lamp_off: 暗い深緑（未点灯）
@@ -200,6 +206,11 @@ class WindowLocator:
         self._rect: tuple[int, int, int, int] | None = None  # (left, top, right, bottom)
         self._pwa_window: Any = None
         self._fake_rect: tuple[int, int, int, int] | None = None
+        self._anchor_corr: tuple[float, float, float, float] | None = None  # (sx, sy, ox, oy)
+
+    def set_anchor_correction(self, corr: tuple[float, float, float, float] | None) -> None:
+        """テンプレート位置補正（分数空間の sx,sy,ox,oy）。None で補正なし。"""
+        self._anchor_corr = corr
 
     def set_fake_rect(self, rect: tuple[int, int, int, int]) -> None:
         """テスト用: pywinauto を使わずに矩形を直接指定する。"""
@@ -231,17 +242,27 @@ class WindowLocator:
         return self._rect
 
     def rel_to_abs(self, rel: list[float]) -> tuple[int, int, int, int] | None:
-        """相対矩形 [xf, yf, wf, hf] を絶対 (left, top, width, height) に変換。"""
+        """相対矩形 [xf, yf, wf, hf] を絶対 (left, top, width, height) に変換。
+
+        テンプレート位置補正が設定されていれば、分数を補正してから変換する。
+        """
         if not self._rect or len(rel) != 4:
             return None
+        xf, yf, wf, hf = rel
+        if self._anchor_corr is not None:
+            sx, sy, ox, oy = self._anchor_corr
+            xf = sx * xf + ox
+            yf = sy * yf + oy
+            wf = wf * sx
+            hf = hf * sy
         left, top, right, bottom = self._rect
         w = right - left
         h = bottom - top
         return (
-            left + int(rel[0] * w),
-            top + int(rel[1] * h),
-            max(1, int(rel[2] * w)),
-            max(1, int(rel[3] * h)),
+            left + int(xf * w),
+            top + int(yf * h),
+            max(1, int(wf * w)),
+            max(1, int(hf * h)),
         )
 
     def click_button(self, button_text: str) -> bool:
@@ -461,6 +482,9 @@ class XR20Monitor:
             return snap
         snap.window_ok = True
 
+        # 0) 位置自動補正（テンプレートマッチング、任意機能）
+        self._update_anchor_correction()
+
         # 1) 取込開始ボタンの色
         btn_abs = self._locator.rel_to_abs(self.cfg.button_capture_rect)
         if btn_abs:
@@ -524,6 +548,80 @@ class XR20Monitor:
                 self._current_machine = snap.machine_no
 
         return snap
+
+    # ------------------------------------------------------------------
+    # 位置自動補正（テンプレートマッチング）
+    # ------------------------------------------------------------------
+    def _template_path(self, name: str) -> Path:
+        return self._resolve_path(name, name)
+
+    def _match_template(self, win_img: Any, fname: str) -> tuple[float, float] | None:
+        """ウィンドウ画像から目印テンプレを探し、中心の分数座標を返す。失敗時 None。"""
+        path = self._template_path(fname)
+        if not path.exists():
+            return None
+        try:
+            import cv2
+            import numpy as np
+        except Exception:
+            self.log("[アンカー] opencv 未導入（start.bat 再実行で導入）")
+            return None
+        try:
+            templ = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+            if templ is None:
+                return None
+            hay = cv2.cvtColor(np.array(win_img), cv2.COLOR_RGB2GRAY)
+            if hay.shape[0] < templ.shape[0] or hay.shape[1] < templ.shape[1]:
+                return None
+            res = cv2.matchTemplate(hay, templ, cv2.TM_CCOEFF_NORMED)
+            _minv, maxv, _minl, maxl = cv2.minMaxLoc(res)
+            if maxv < self.cfg.anchor_match_threshold:
+                return None
+            th, tw = templ.shape[:2]
+            cx = maxl[0] + tw / 2.0
+            cy = maxl[1] + th / 2.0
+            return (cx / win_img.width, cy / win_img.height)
+        except Exception as exc:
+            self.log(f"[アンカー] 照合例外: {exc}")
+            return None
+
+    def _update_anchor_correction(self) -> None:
+        if not self.cfg.use_template_anchor:
+            self._locator.set_anchor_correction(None)
+            return
+        if len(self.cfg.anchor_a_rect) != 4 or len(self.cfg.anchor_b_rect) != 4:
+            self._locator.set_anchor_correction(None)
+            return
+        rect = self._locator.rect()
+        if not rect:
+            return
+        left, top, right, bottom = rect
+        win_img = self._sampler.grab((left, top, right - left, bottom - top))
+        if win_img is None:
+            self._locator.set_anchor_correction(None)
+            return
+        a_cur = self._match_template(win_img, "anchor_a.png")
+        b_cur = self._match_template(win_img, "anchor_b.png")
+        if a_cur is None or b_cur is None:
+            self._locator.set_anchor_correction(None)
+            self.log("[アンカー] 目印が見つからず固定座標で継続")
+            return
+        # 参照位置（登録時の目印中心、分数）
+        ar = self.cfg.anchor_a_rect
+        br = self.cfg.anchor_b_rect
+        arx, ary = ar[0] + ar[2] / 2.0, ar[1] + ar[3] / 2.0
+        brx, bry = br[0] + br[2] / 2.0, br[1] + br[3] / 2.0
+        dx_ref, dy_ref = brx - arx, bry - ary
+        sx = (b_cur[0] - a_cur[0]) / dx_ref if abs(dx_ref) > 0.02 else 1.0
+        sy = (b_cur[1] - a_cur[1]) / dy_ref if abs(dy_ref) > 0.02 else sx
+        # 倍率が異常なら補正を捨てる（誤マッチ保険）
+        if not (0.5 <= sx <= 2.0 and 0.5 <= sy <= 2.0):
+            self._locator.set_anchor_correction(None)
+            self.log(f"[アンカー] 倍率異常(sx={sx:.2f}, sy={sy:.2f})→固定座標で継続")
+            return
+        ox = a_cur[0] - sx * arx
+        oy = a_cur[1] - sy * ary
+        self._locator.set_anchor_correction((sx, sy, ox, oy))
 
     # ------------------------------------------------------------------
     # 判定ヘルパー
@@ -1027,6 +1125,9 @@ class RectPicker:
 
         # 対象の順序（key, 説明ラベル）
         self.targets: list[tuple[str, str]] = []
+        if monitor.cfg.use_template_anchor:
+            self.targets.append(("anchor_a", "【位置補正 目印A】「型式」ラベル付近（動かない部分）"))
+            self.targets.append(("anchor_b", "【位置補正 目印B】表ヘッダー行（間隔 1/N 点数 傾…）"))
         self.targets.append(("model", "型式（品番）の表示セル"))
         self.targets.append(("machine", "機番（機械番号）の表示セル"))
         self.targets.append(("button_capture", "取込開始 ボタン"))
@@ -1147,7 +1248,7 @@ class RectPicker:
         self.top.destroy()
 
     def _finish(self) -> None:
-        self.on_done(self.results)
+        self.on_done(self.results, self.full_image)
         self.top.destroy()
 
 
@@ -1165,6 +1266,10 @@ def apply_picker_results(cfg: MonitorConfig, results: dict[str, list[float]]) ->
             cfg.model_rect = rel
         elif key == "machine":
             cfg.machine_rect = rel
+        elif key == "anchor_a":
+            cfg.anchor_a_rect = rel
+        elif key == "anchor_b":
+            cfg.anchor_b_rect = rel
         elif key.startswith("no:"):
             cfg.no_column_rects[key[3:]] = rel
         elif key.startswith("lamp:"):
@@ -1175,6 +1280,28 @@ def apply_picker_results(cfg: MonitorConfig, results: dict[str, list[float]]) ->
             continue
         count += 1
     return count
+
+
+def save_anchor_templates(results: dict[str, list[float]], full_image: Any, base_dir: Path) -> int:
+    """目印A/Bの矩形からテンプレ画像を切り出して保存。保存数を返す。"""
+    saved = 0
+    if full_image is None:
+        return 0
+    W, H = full_image.size
+    for key, fname in [("anchor_a", "anchor_a.png"), ("anchor_b", "anchor_b.png")]:
+        rel = results.get(key)
+        if not rel or len(rel) != 4:
+            continue
+        x0 = int(rel[0] * W)
+        y0 = int(rel[1] * H)
+        x1 = int((rel[0] + rel[2]) * W)
+        y1 = int((rel[1] + rel[3]) * H)
+        try:
+            full_image.crop((x0, y0, x1, y1)).save(base_dir / fname)
+            saved += 1
+        except Exception:
+            pass
+    return saved
 
 
 # ======================================================================
@@ -1203,6 +1330,7 @@ class MonitorGUI:
         self.dry_var = tk.BooleanVar(value=c.dry_run)
         self.auto_retry_var = tk.BooleanVar(value=c.auto_retry)
         self.auto_correct_var = tk.BooleanVar(value=c.auto_correction_enabled)
+        self.anchor_var = tk.BooleanVar(value=c.use_template_anchor)
         self.state_var = tk.StringVar(value="IDLE")
         self.values_var = tk.StringVar(value="(未取得)")
         self.lamps_var = tk.StringVar(value="(未取得)")
@@ -1235,9 +1363,14 @@ class MonitorGUI:
         ttk.Checkbutton(flags, text="傾OK後に自動補正→精度チェック", variable=self.auto_correct_var,
                         command=self._apply).pack(side="left", padx=4)
 
+        flags2 = ttk.Frame(frm)
+        flags2.grid(row=7, column=0, columnspan=3, sticky="w")
+        ttk.Checkbutton(flags2, text="位置自動補正（テンプレート・保険機能 / 要 目印登録）",
+                        variable=self.anchor_var, command=self._apply).pack(side="left", padx=4)
+
         # 状態表示
         status = ttk.LabelFrame(frm, text="現在状態", padding=6)
-        status.grid(row=7, column=0, columnspan=3, sticky="ew", pady=6)
+        status.grid(row=8, column=0, columnspan=3, sticky="ew", pady=6)
         self.comment_var = tk.StringVar(value="(未取得)")
         self.model_var = tk.StringVar(value="(未取得)")
         self.machine_var = tk.StringVar(value="(未取得)")
@@ -1251,16 +1384,16 @@ class MonitorGUI:
             ttk.Label(status, textvariable=var, foreground="#0060a0").grid(row=i, column=1, sticky="w", padx=4)
 
         btns = ttk.Frame(frm)
-        btns.grid(row=8, column=0, columnspan=3, sticky="ew", pady=4)
+        btns.grid(row=9, column=0, columnspan=3, sticky="ew", pady=4)
         ttk.Button(btns, text="監視ON", command=self._start).pack(side="left", padx=2)
         ttk.Button(btns, text="監視OFF", command=self.monitor.stop).pack(side="left", padx=2)
         ttk.Button(btns, text="ミニ表示", command=self._open_mini).pack(side="left", padx=2)
         ttk.Button(btns, text="詳細設定…", command=self._open_settings).pack(side="left", padx=2)
 
         self.log_box = tk.Text(frm, height=15, wrap="none")
-        self.log_box.grid(row=9, column=0, columnspan=3, sticky="nsew", pady=4)
+        self.log_box.grid(row=10, column=0, columnspan=3, sticky="nsew", pady=4)
         frm.columnconfigure(1, weight=1)
-        frm.rowconfigure(9, weight=1)
+        frm.rowconfigure(10, weight=1)
 
     def _slider(self, parent, row, label, var, lo, hi, is_int=False):
         ttk, tk = self._ttk, self._tk
@@ -1287,6 +1420,7 @@ class MonitorGUI:
         c.dry_run = bool(self.dry_var.get())
         c.auto_retry = bool(self.auto_retry_var.get())
         c.auto_correction_enabled = bool(self.auto_correct_var.get())
+        c.use_template_anchor = bool(self.anchor_var.get())
 
     def _open_settings(self) -> None:
         tk, ttk = self._tk, self._ttk
@@ -1438,9 +1572,12 @@ class MonitorGUI:
         self.root.after(0, update)
 
     def _open_picker(self) -> None:
-        def on_done(results: dict[str, list[float]]) -> None:
+        def on_done(results: dict[str, list[float]], full_image=None) -> None:
             n = apply_picker_results(self.monitor.cfg, results)
             self.monitor.log(f"ピッカー: {n} 要素を更新")
+            saved = save_anchor_templates(results, full_image, self.config_path.parent)
+            if saved:
+                self.monitor.log(f"位置補正の目印テンプレを {saved} 個保存")
             save_config(self.config_path, self.monitor.cfg)
             self.monitor.log(f"設定保存: {self.config_path}")
 

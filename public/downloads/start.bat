@@ -91,7 +91,7 @@ rem ====================================================================
 echo.
 echo === [4/4] Python packages ===
 echo [..] Installing/updating pywinauto pytesseract mss pillow...
-python -m pip install --quiet --disable-pip-version-check pywinauto pytesseract mss pillow bleak
+python -m pip install --quiet --disable-pip-version-check pywinauto pytesseract mss pillow bleak opencv-python numpy
 echo [OK] Python packages ready.
 
 where tesseract >nul 2>nul
