@@ -1036,6 +1036,9 @@ class RectPicker:
             self.monitor.log("[ピッカー] ウィンドウ未検出または画面キャプチャ失敗 → 中止")
             return
 
+        left, top, right, bottom = self.window_rect
+        ww = right - left
+        wh = bottom - top
         self.top = tk.Toplevel(parent)
         self.top.title("矩形設定（ドラッグで指定）")
         # 画面に収まるよう最大 1280x720 にリサイズ
