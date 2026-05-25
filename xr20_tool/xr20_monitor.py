@@ -473,16 +473,16 @@ class XR20Monitor:
             snap.comment_text = self._sampler.ocr_text_jpn(comment_abs)
             snap.precision_ng = self.cfg.precision_ng_keyword in snap.comment_text
 
-        # 6) 型式（品番）・機番 OCR — 集計の軸
+        # 6) 型式（品番）・機番 OCR — 集計の軸（英数字なので英語OCR）
         model_abs = self._locator.rel_to_abs(self.cfg.model_rect) if self.cfg.model_rect else None
         if model_abs:
-            snap.model_name = self._sampler.ocr_text_jpn(model_abs).replace("\n", " ").strip()
+            snap.model_name = self._sampler.ocr_text(model_abs).replace("\n", " ").strip()
             if snap.model_name:
                 self._current_model = snap.model_name
 
         machine_abs = self._locator.rel_to_abs(self.cfg.machine_rect) if self.cfg.machine_rect else None
         if machine_abs:
-            snap.machine_no = self._sampler.ocr_text_jpn(machine_abs).replace("\n", " ").strip()
+            snap.machine_no = self._sampler.ocr_text(machine_abs).replace("\n", " ").strip()
             if snap.machine_no:
                 self._current_machine = snap.machine_no
 
