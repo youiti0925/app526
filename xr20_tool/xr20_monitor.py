@@ -42,6 +42,7 @@ DEFAULT_BUTTON_CAPTURE = [0.104, 0.400, 0.069, 0.037]
 DEFAULT_BUTTON_AUTOCORRECT = [0.183, 0.400, 0.069, 0.037]
 DEFAULT_COMMENT_RECT = [0.183, 0.520, 0.450, 0.030]
 DEFAULT_MODEL_RECT = [0.050, 0.020, 0.200, 0.030]  # 型式（品番）表示位置
+DEFAULT_MACHINE_RECT = [0.260, 0.020, 0.180, 0.030]  # 機番（機械番号）表示位置
 
 DEFAULT_NO_RECTS = {
     "HR": [0.360, 0.160, 0.015, 0.028],
@@ -116,6 +117,7 @@ class MonitorConfig:
     button_autocorrect_rect: list[float] = field(default_factory=lambda: list(DEFAULT_BUTTON_AUTOCORRECT))
     comment_rect: list[float] = field(default_factory=lambda: list(DEFAULT_COMMENT_RECT))
     model_rect: list[float] = field(default_factory=lambda: list(DEFAULT_MODEL_RECT))
+    machine_rect: list[float] = field(default_factory=lambda: list(DEFAULT_MACHINE_RECT))
     no_column_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_NO_RECTS.items()})
     lamp_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_LAMP_RECTS.items()})
     tilt_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_TILT_RECTS.items()})
@@ -368,6 +370,7 @@ class Snapshot:
     comment_text: str = ""
     precision_ng: bool = False
     model_name: str = ""
+    machine_no: str = ""
 
 
 # ======================================================================
@@ -390,6 +393,7 @@ class XR20Monitor:
 
         # 集計用
         self._current_model: str = ""
+        self._current_machine: str = ""
         self._session_active: bool = False
         self._total_recaptures: int = 0
         self._ok_count: int = 0
@@ -469,12 +473,18 @@ class XR20Monitor:
             snap.comment_text = self._sampler.ocr_text_jpn(comment_abs)
             snap.precision_ng = self.cfg.precision_ng_keyword in snap.comment_text
 
-        # 6) 型式（品番）OCR — 集計の軸
+        # 6) 型式（品番）・機番 OCR — 集計の軸
         model_abs = self._locator.rel_to_abs(self.cfg.model_rect) if self.cfg.model_rect else None
         if model_abs:
             snap.model_name = self._sampler.ocr_text_jpn(model_abs).replace("\n", " ").strip()
             if snap.model_name:
                 self._current_model = snap.model_name
+
+        machine_abs = self._locator.rel_to_abs(self.cfg.machine_rect) if self.cfg.machine_rect else None
+        if machine_abs:
+            snap.machine_no = self._sampler.ocr_text_jpn(machine_abs).replace("\n", " ").strip()
+            if snap.machine_no:
+                self._current_machine = snap.machine_no
 
         return snap
 
@@ -662,6 +672,7 @@ class XR20Monitor:
             "running": bool(self._thread and self._thread.is_alive()),
             "state": self._state.value,
             "model": self._current_model,
+            "machine": self._current_machine,
             "tilt_retry": self._tilt_retry,
             "precision_retry": self._precision_retry,
             "max_tilt": self.cfg.max_tilt_retries,
@@ -902,17 +913,21 @@ class XR20Monitor:
     def _append_csv(self, snap: Snapshot, ng_rows: list[str], phase: str = "tilt") -> None:
         path = self._csv_path()
         rows = list(self.cfg.target_rows)
-        header = ["timestamp", "model", "phase", "active_rows", "ng_rows", "comment", "precision_ng",
+        header = ["date", "timestamp", "model", "machine_no", "phase", "active_rows",
+                  "ng_rows", "comment", "precision_ng",
                   *[f"{r}_tilt" for r in rows], *[f"{r}_lamp" for r in rows]]
         write_header = not path.exists()
+        now = datetime.now()
         try:
             with path.open("a", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 if write_header:
                     w.writerow(header)
                 w.writerow([
-                    datetime.now().isoformat(timespec="seconds"),
+                    now.strftime("%Y-%m-%d"),
+                    now.isoformat(timespec="seconds"),
                     self._current_model,
+                    self._current_machine,
                     phase,
                     "|".join(snap.active_rows),
                     "|".join(ng_rows),
@@ -925,20 +940,23 @@ class XR20Monitor:
             self.log(f"CSV 書込失敗: {exc}")
 
     def _append_summary(self, snap: Snapshot, outcome: str, attempts: int) -> None:
-        """測定セッション単位のサマリ。型式別の再測定回数集計に使う。"""
+        """測定セッション単位のサマリ。型式・機番別の再測定回数集計に使う。"""
         path = self._summary_path()
         rows = list(self.cfg.target_rows)
-        header = ["timestamp", "model", "outcome", "tilt_retries", "precision_retries",
-                  "total_attempts", "comment", *[f"{r}_tilt" for r in rows]]
+        header = ["date", "timestamp", "model", "machine_no", "outcome", "tilt_retries",
+                  "precision_retries", "total_attempts", "comment", *[f"{r}_tilt" for r in rows]]
         write_header = not path.exists()
+        now = datetime.now()
         try:
             with path.open("a", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 if write_header:
                     w.writerow(header)
                 w.writerow([
-                    datetime.now().isoformat(timespec="seconds"),
+                    now.strftime("%Y-%m-%d"),
+                    now.isoformat(timespec="seconds"),
                     self._current_model,
+                    self._current_machine,
                     outcome,
                     self._tilt_retry,
                     self._precision_retry,
@@ -972,6 +990,7 @@ class RectPicker:
         # 対象の順序（key, 説明ラベル）
         self.targets: list[tuple[str, str]] = []
         self.targets.append(("model", "型式（品番）の表示セル"))
+        self.targets.append(("machine", "機番（機械番号）の表示セル"))
         self.targets.append(("button_capture", "取込開始 ボタン"))
         self.targets.append(("button_autocorrect", "自動補正 ボタン"))
         self.targets.append(("comment", "コメント欄（精度不良が出る場所）"))
@@ -1103,6 +1122,8 @@ def apply_picker_results(cfg: MonitorConfig, results: dict[str, list[float]]) ->
             cfg.comment_rect = rel
         elif key == "model":
             cfg.model_rect = rel
+        elif key == "machine":
+            cfg.machine_rect = rel
         elif key.startswith("no:"):
             cfg.no_column_rects[key[3:]] = rel
         elif key.startswith("lamp:"):
@@ -1178,8 +1199,10 @@ class MonitorGUI:
         status.grid(row=7, column=0, columnspan=3, sticky="ew", pady=6)
         self.comment_var = tk.StringVar(value="(未取得)")
         self.model_var = tk.StringVar(value="(未取得)")
+        self.machine_var = tk.StringVar(value="(未取得)")
         for i, (lbl, var) in enumerate([
-            ("型式", self.model_var), ("状態", self.state_var), ("ボタン", self.button_var),
+            ("型式", self.model_var), ("機番", self.machine_var),
+            ("状態", self.state_var), ("ボタン", self.button_var),
             ("有効行", self.active_var), ("ランプ", self.lamps_var),
             ("傾値", self.values_var), ("コメント", self.comment_var),
         ]):
@@ -1255,16 +1278,40 @@ class MonitorGUI:
         mini.title("IK220 ミニ")
         mini.attributes("-topmost", True)
         mini.resizable(False, False)
-        # 画面右下に配置
+        mini.configure(bg="#1e1e1e")
         sw = mini.winfo_screenwidth()
         sh = mini.winfo_screenheight()
-        mini.geometry(f"240x150+{sw - 260}+{sh - 230}")
+        w, h = 320, 250
+        mini.geometry(f"{w}x{h}+{sw - w - 20}+{sh - h - 60}")
         self._mini = mini
-        self._mini_var = tk.StringVar(value="(待機)")
-        lbl = ttk.Label(mini, textvariable=self._mini_var, justify="left",
-                        font=("", 11), padding=8)
-        lbl.pack(fill="both", expand=True)
-        self._mini_dot = lbl
+
+        self._mini_run = tk.StringVar()
+        self._mini_state = tk.StringVar()
+        self._mini_model = tk.StringVar()
+        self._mini_machine = tk.StringVar()
+        self._mini_retry = tk.StringVar()
+        self._mini_total = tk.StringVar()
+
+        def row(var, size, color):
+            lab = tk.Label(mini, textvariable=var, bg="#1e1e1e", fg=color,
+                           font=("Meiryo", size, "bold"), anchor="w", justify="left")
+            lab.pack(fill="x", padx=12, pady=1)
+            return lab
+
+        self._mini_run_lbl = row(self._mini_run, 15, "#33dd55")
+        row(self._mini_state, 12, "#dddddd")
+        row(self._mini_model, 12, "#9cdcfe")
+        row(self._mini_machine, 12, "#9cdcfe")
+        row(self._mini_retry, 12, "#ffcc66")
+        row(self._mini_total, 12, "#dddddd")
+
+        btnbar = tk.Frame(mini, bg="#1e1e1e")
+        btnbar.pack(fill="x", padx=10, pady=(6, 8))
+        tk.Button(btnbar, text="監視開始", command=self._start,
+                  bg="#2d7d33", fg="white", relief="flat", width=10).pack(side="left", padx=4)
+        tk.Button(btnbar, text="停止", command=self.monitor.stop,
+                  bg="#9c3030", fg="white", relief="flat", width=8).pack(side="left", padx=4)
+
         mini.protocol("WM_DELETE_WINDOW", self._close_mini)
         self._refresh_mini()
 
@@ -1278,16 +1325,16 @@ class MonitorGUI:
         if mini is None:
             return
         c = self.monitor.counters()
-        run = "● 監視ON" if c["running"] else "○ 監視OFF"
-        self._mini_var.set(
-            f"{run}\n"
-            f"状態 : {c['state']}\n"
-            f"型式 : {c['model'] or '(未取得)'}\n"
-            f"傾再測定 {c['tilt_retry']}/{c['max_tilt']}  精度 {c['precision_retry']}/{c['max_precision']}\n"
-            f"累計 OK {c['ok']} / NG {c['ng']} / 再測定 {c['recaptures']}"
+        self._mini_run.set("●  監視中" if c["running"] else "■  停止中")
+        self._mini_state.set(f"状態　 : {c['state']}")
+        self._mini_model.set(f"型式　 : {c['model'] or '(未取得)'}")
+        self._mini_machine.set(f"機番　 : {c['machine'] or '(未取得)'}")
+        self._mini_retry.set(
+            f"再測定 : 傾 {c['tilt_retry']}/{c['max_tilt']}　精度 {c['precision_retry']}/{c['max_precision']}"
         )
+        self._mini_total.set(f"累計　 : OK {c['ok']} ／ NG {c['ng']} ／ 再測定 {c['recaptures']}")
         try:
-            self._mini_dot.configure(foreground="#0a8f08" if c["running"] else "#888888")
+            self._mini_run_lbl.configure(fg="#33dd55" if c["running"] else "#aaaaaa")
         except Exception:
             pass
 
@@ -1319,6 +1366,7 @@ class MonitorGUI:
             mark = " ⚠精度不良" if snap.precision_ng else ""
             self.comment_var.set(f"{snap.comment_text}{mark}" if snap.comment_text else "(なし)")
             self.model_var.set(snap.model_name or self.monitor._current_model or "(未取得)")
+            self.machine_var.set(snap.machine_no or self.monitor._current_machine or "(未取得)")
             self._refresh_mini()
         self.root.after(0, update)
 
@@ -1497,6 +1545,7 @@ class MonitorGUI:
         draw(c.button_autocorrect_rect, "#ff80ff", "自動補正")
         draw(c.comment_rect, "#ffa040", "コメント")
         draw(c.model_rect, "#ffffff", "型式")
+        draw(c.machine_rect, "#80ffff", "機番")
         for row in c.target_rows:
             draw(c.no_column_rects.get(row, []), "#40c0ff", f"No[{row}]")
             draw(c.lamp_rects.get(row, []), "#40ff40", f"Lamp[{row}]")
