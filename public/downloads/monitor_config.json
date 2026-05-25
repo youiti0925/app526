@@ -24,6 +24,7 @@
   "button_capture_rect": [0.104, 0.400, 0.069, 0.037],
   "button_autocorrect_rect": [0.183, 0.400, 0.069, 0.037],
   "comment_rect": [0.183, 0.520, 0.450, 0.030],
+  "model_rect": [0.050, 0.020, 0.200, 0.030],
   "no_column_rects": {
     "HR": [0.360, 0.160, 0.015, 0.028],
     "WR": [0.360, 0.204, 0.015, 0.028],
@@ -47,5 +48,6 @@
   "button_idle_color": [215, 200, 175],
   "button_active_color": [115, 125, 105],
   "color_tolerance": 55,
-  "csv_log_path": "xr20_monitor_history.csv"
+  "csv_log_path": "xr20_monitor_history.csv",
+  "summary_csv_path": "xr20_monitor_summary.csv"
 }

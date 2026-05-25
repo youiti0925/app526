@@ -41,6 +41,7 @@ SWITCHBOT_BLE_SERVICE = "0000fd3d-0000-1000-8000-00805f9b34fb"
 DEFAULT_BUTTON_CAPTURE = [0.104, 0.400, 0.069, 0.037]
 DEFAULT_BUTTON_AUTOCORRECT = [0.183, 0.400, 0.069, 0.037]
 DEFAULT_COMMENT_RECT = [0.183, 0.520, 0.450, 0.030]
+DEFAULT_MODEL_RECT = [0.050, 0.020, 0.200, 0.030]  # 型式（品番）表示位置
 
 DEFAULT_NO_RECTS = {
     "HR": [0.360, 0.160, 0.015, 0.028],
@@ -114,6 +115,7 @@ class MonitorConfig:
     button_capture_rect: list[float] = field(default_factory=lambda: list(DEFAULT_BUTTON_CAPTURE))
     button_autocorrect_rect: list[float] = field(default_factory=lambda: list(DEFAULT_BUTTON_AUTOCORRECT))
     comment_rect: list[float] = field(default_factory=lambda: list(DEFAULT_COMMENT_RECT))
+    model_rect: list[float] = field(default_factory=lambda: list(DEFAULT_MODEL_RECT))
     no_column_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_NO_RECTS.items()})
     lamp_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_LAMP_RECTS.items()})
     tilt_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_TILT_RECTS.items()})
@@ -130,6 +132,7 @@ class MonitorConfig:
 
     # 出力
     csv_log_path: str = "xr20_monitor_history.csv"
+    summary_csv_path: str = "xr20_monitor_summary.csv"
 
 
 def _color_distance(a: tuple[int, int, int], b: list[int]) -> float:
@@ -364,6 +367,7 @@ class Snapshot:
     raw_tilt: dict[str, str] = field(default_factory=dict)
     comment_text: str = ""
     precision_ng: bool = False
+    model_name: str = ""
 
 
 # ======================================================================
@@ -383,6 +387,13 @@ class XR20Monitor:
         self._thread: threading.Thread | None = None
         self._last_snapshot: Snapshot | None = None
         self._state_cb: Callable[[State, Snapshot], None] | None = None
+
+        # 集計用
+        self._current_model: str = ""
+        self._session_active: bool = False
+        self._total_recaptures: int = 0
+        self._ok_count: int = 0
+        self._ng_giveup_count: int = 0
 
         if err := self._sampler.init_error():
             self.log(f"[警告] {err}（OCR/色判定が機能しません）")
@@ -458,6 +469,13 @@ class XR20Monitor:
             snap.comment_text = self._sampler.ocr_text_jpn(comment_abs)
             snap.precision_ng = self.cfg.precision_ng_keyword in snap.comment_text
 
+        # 6) 型式（品番）OCR — 集計の軸
+        model_abs = self._locator.rel_to_abs(self.cfg.model_rect) if self.cfg.model_rect else None
+        if model_abs:
+            snap.model_name = self._sampler.ocr_text_jpn(model_abs).replace("\n", " ").strip()
+            if snap.model_name:
+                self._current_model = snap.model_name
+
         return snap
 
     # ------------------------------------------------------------------
@@ -529,6 +547,9 @@ class XR20Monitor:
 
             if self._state == State.IDLE:
                 if snap.button_pressed and not prev_pressed:
+                    if not self._session_active:
+                        self._session_active = True
+                        self.log(f"測定セッション開始 / 型式={self._current_model or '(未取得)'}")
                     self.log(f"取込開始検知 / 有効行={snap.active_rows}")
                     self._state = State.CAPTURING
 
@@ -554,13 +575,13 @@ class XR20Monitor:
                     self._state = State.AUTO_CORRECTING
                 else:
                     self.log(f"OK / 値={snap.tilt_values}（自動補正モードOFF）")
-                    self._tilt_retry = 0
-                    self._precision_retry = 0
+                    self._finish_session(snap, "OK")
                     self._state = State.IDLE
 
             elif self._state == State.TILT_NG_RETRY:
                 if not self.cfg.auto_retry or self._tilt_retry >= self.cfg.max_tilt_retries:
                     self.log(f"傾リトライ上限({self._tilt_retry}/{self.cfg.max_tilt_retries})到達")
+                    self._finish_session(snap, "NG_GIVEUP")
                     self._state = State.ERROR
                 else:
                     self._tilt_retry += 1
@@ -583,13 +604,13 @@ class XR20Monitor:
                     self._state = State.PRECISION_NG_RETRY
                 else:
                     self.log(f"精度OK / コメント='{snap.comment_text}' → 完了")
-                    self._tilt_retry = 0
-                    self._precision_retry = 0
+                    self._finish_session(snap, "OK")
                     self._state = State.IDLE
 
             elif self._state == State.PRECISION_NG_RETRY:
                 if not self.cfg.auto_retry or self._precision_retry >= self.cfg.max_precision_retries:
                     self.log(f"精度リトライ上限({self._precision_retry}/{self.cfg.max_precision_retries})到達")
+                    self._finish_session(snap, "NG_GIVEUP")
                     self._state = State.ERROR
                 else:
                     self._precision_retry += 1
@@ -608,6 +629,7 @@ class XR20Monitor:
 
     def _trigger_recapture(self) -> None:
         """SwitchBot でリモコン押下し、取込開始ボタンを再押下。"""
+        self._total_recaptures += 1
         if self.cfg.dry_run:
             self.log("[リハーサル] SwitchBot送信スキップ / 取込開始クリック実行")
         else:
@@ -616,6 +638,38 @@ class XR20Monitor:
             self._wait(1.0)
         clicked = self._locator.click_button(self.cfg.capture_button_text)
         self.log(f"取込開始クリック: {'成功' if clicked else '失敗'}")
+
+    def _finish_session(self, snap: Snapshot, outcome: str) -> None:
+        """1測定セッションの終端処理。集計カウンタ更新＋サマリCSV記録。"""
+        attempts = self._tilt_retry + 1  # 初回測定 + 傾リトライ回数
+        if outcome == "OK":
+            self._ok_count += 1
+            self.log(f"セッション完了[OK] 型式={self._current_model or '(未取得)'} "
+                     f"傾リトライ={self._tilt_retry} 精度リトライ={self._precision_retry} "
+                     f"（{attempts}回目で合格）")
+        else:
+            self._ng_giveup_count += 1
+            self.log(f"セッション完了[NG断念] 型式={self._current_model or '(未取得)'} "
+                     f"傾リトライ={self._tilt_retry} 精度リトライ={self._precision_retry}")
+        self._append_summary(snap, outcome, attempts)
+        self._session_active = False
+        self._tilt_retry = 0
+        self._precision_retry = 0
+
+    def counters(self) -> dict[str, Any]:
+        """ミニ表示用の現在カウンタ。"""
+        return {
+            "running": bool(self._thread and self._thread.is_alive()),
+            "state": self._state.value,
+            "model": self._current_model,
+            "tilt_retry": self._tilt_retry,
+            "precision_retry": self._precision_retry,
+            "max_tilt": self.cfg.max_tilt_retries,
+            "max_precision": self.cfg.max_precision_retries,
+            "ok": self._ok_count,
+            "ng": self._ng_giveup_count,
+            "recaptures": self._total_recaptures,
+        }
 
     def _send_switchbot(self) -> bool:
         ok, msg = self.send_switchbot_press()
@@ -832,18 +886,23 @@ class XR20Monitor:
     # ------------------------------------------------------------------
     # CSV 履歴
     # ------------------------------------------------------------------
-    def _csv_path(self) -> Path:
-        raw = self.cfg.csv_log_path or "xr20_monitor_history.csv"
-        p = Path(raw)
+    def _resolve_path(self, raw: str, default: str) -> Path:
+        p = Path(raw or default)
         if not p.is_absolute():
             base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
             p = base / p
         return p
 
+    def _csv_path(self) -> Path:
+        return self._resolve_path(self.cfg.csv_log_path, "xr20_monitor_history.csv")
+
+    def _summary_path(self) -> Path:
+        return self._resolve_path(self.cfg.summary_csv_path, "xr20_monitor_summary.csv")
+
     def _append_csv(self, snap: Snapshot, ng_rows: list[str], phase: str = "tilt") -> None:
         path = self._csv_path()
         rows = list(self.cfg.target_rows)
-        header = ["timestamp", "phase", "active_rows", "ng_rows", "comment", "precision_ng",
+        header = ["timestamp", "model", "phase", "active_rows", "ng_rows", "comment", "precision_ng",
                   *[f"{r}_tilt" for r in rows], *[f"{r}_lamp" for r in rows]]
         write_header = not path.exists()
         try:
@@ -853,6 +912,7 @@ class XR20Monitor:
                     w.writerow(header)
                 w.writerow([
                     datetime.now().isoformat(timespec="seconds"),
+                    self._current_model,
                     phase,
                     "|".join(snap.active_rows),
                     "|".join(ng_rows),
@@ -863,6 +923,31 @@ class XR20Monitor:
                 ])
         except OSError as exc:
             self.log(f"CSV 書込失敗: {exc}")
+
+    def _append_summary(self, snap: Snapshot, outcome: str, attempts: int) -> None:
+        """測定セッション単位のサマリ。型式別の再測定回数集計に使う。"""
+        path = self._summary_path()
+        rows = list(self.cfg.target_rows)
+        header = ["timestamp", "model", "outcome", "tilt_retries", "precision_retries",
+                  "total_attempts", "comment", *[f"{r}_tilt" for r in rows]]
+        write_header = not path.exists()
+        try:
+            with path.open("a", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                if write_header:
+                    w.writerow(header)
+                w.writerow([
+                    datetime.now().isoformat(timespec="seconds"),
+                    self._current_model,
+                    outcome,
+                    self._tilt_retry,
+                    self._precision_retry,
+                    attempts,
+                    snap.comment_text,
+                    *[snap.tilt_values.get(r, "") for r in rows],
+                ])
+        except OSError as exc:
+            self.log(f"サマリCSV 書込失敗: {exc}")
 
 
 # ======================================================================
@@ -886,6 +971,7 @@ class RectPicker:
 
         # 対象の順序（key, 説明ラベル）
         self.targets: list[tuple[str, str]] = []
+        self.targets.append(("model", "型式（品番）の表示セル"))
         self.targets.append(("button_capture", "取込開始 ボタン"))
         self.targets.append(("button_autocorrect", "自動補正 ボタン"))
         self.targets.append(("comment", "コメント欄（精度不良が出る場所）"))
@@ -1015,6 +1101,8 @@ def apply_picker_results(cfg: MonitorConfig, results: dict[str, list[float]]) ->
             cfg.button_autocorrect_rect = rel
         elif key == "comment":
             cfg.comment_rect = rel
+        elif key == "model":
+            cfg.model_rect = rel
         elif key.startswith("no:"):
             cfg.no_column_rects[key[3:]] = rel
         elif key.startswith("lamp:"):
@@ -1089,8 +1177,9 @@ class MonitorGUI:
         status = ttk.LabelFrame(frm, text="現在状態", padding=6)
         status.grid(row=7, column=0, columnspan=3, sticky="ew", pady=6)
         self.comment_var = tk.StringVar(value="(未取得)")
+        self.model_var = tk.StringVar(value="(未取得)")
         for i, (lbl, var) in enumerate([
-            ("状態", self.state_var), ("ボタン", self.button_var),
+            ("型式", self.model_var), ("状態", self.state_var), ("ボタン", self.button_var),
             ("有効行", self.active_var), ("ランプ", self.lamps_var),
             ("傾値", self.values_var), ("コメント", self.comment_var),
         ]):
@@ -1101,11 +1190,8 @@ class MonitorGUI:
         btns.grid(row=8, column=0, columnspan=3, sticky="ew", pady=4)
         ttk.Button(btns, text="監視ON", command=self._start).pack(side="left", padx=2)
         ttk.Button(btns, text="監視OFF", command=self.monitor.stop).pack(side="left", padx=2)
-        ttk.Button(btns, text="矩形設定(ドラッグ)", command=self._open_picker).pack(side="left", padx=2)
-        ttk.Button(btns, text="キャリブ表示", command=self._show_calibration).pack(side="left", padx=2)
-        ttk.Button(btns, text="SwitchBot設定", command=self._open_switchbot_dialog).pack(side="left", padx=2)
-        ttk.Button(btns, text="設定保存", command=self._save).pack(side="left", padx=2)
-        ttk.Button(btns, text="1回だけ読み取り", command=self._read_once).pack(side="left", padx=2)
+        ttk.Button(btns, text="ミニ表示", command=self._open_mini).pack(side="left", padx=2)
+        ttk.Button(btns, text="詳細設定…", command=self._open_settings).pack(side="left", padx=2)
 
         self.log_box = tk.Text(frm, height=15, wrap="none")
         self.log_box.grid(row=9, column=0, columnspan=3, sticky="nsew", pady=4)
@@ -1138,6 +1224,73 @@ class MonitorGUI:
         c.auto_retry = bool(self.auto_retry_var.get())
         c.auto_correction_enabled = bool(self.auto_correct_var.get())
 
+    def _open_settings(self) -> None:
+        tk, ttk = self._tk, self._ttk
+        win = tk.Toplevel(self.root)
+        win.title("詳細設定 / 調整")
+        win.transient(self.root)
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="調整・診断ツール", font=("", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        for text, cmd in [
+            ("SwitchBot設定", self._open_switchbot_dialog),
+            ("矩形設定（ドラッグで位置合わせ）", self._open_picker),
+            ("キャリブ表示（認識枠の確認）", self._show_calibration),
+            ("1回だけ読み取り（動作確認）", self._read_once),
+            ("設定を保存", self._save),
+        ]:
+            ttk.Button(frm, text=text, width=34, command=cmd).pack(fill="x", pady=2)
+        ttk.Button(frm, text="閉じる", command=win.destroy).pack(fill="x", pady=(10, 0))
+
+    def _open_mini(self) -> None:
+        tk, ttk = self._tk, self._ttk
+        if getattr(self, "_mini", None) is not None:
+            try:
+                self._mini.deiconify()
+                self._mini.lift()
+                return
+            except Exception:
+                self._mini = None
+        mini = tk.Toplevel(self.root)
+        mini.title("IK220 ミニ")
+        mini.attributes("-topmost", True)
+        mini.resizable(False, False)
+        # 画面右下に配置
+        sw = mini.winfo_screenwidth()
+        sh = mini.winfo_screenheight()
+        mini.geometry(f"240x150+{sw - 260}+{sh - 230}")
+        self._mini = mini
+        self._mini_var = tk.StringVar(value="(待機)")
+        lbl = ttk.Label(mini, textvariable=self._mini_var, justify="left",
+                        font=("", 11), padding=8)
+        lbl.pack(fill="both", expand=True)
+        self._mini_dot = lbl
+        mini.protocol("WM_DELETE_WINDOW", self._close_mini)
+        self._refresh_mini()
+
+    def _close_mini(self) -> None:
+        if getattr(self, "_mini", None) is not None:
+            self._mini.destroy()
+            self._mini = None
+
+    def _refresh_mini(self) -> None:
+        mini = getattr(self, "_mini", None)
+        if mini is None:
+            return
+        c = self.monitor.counters()
+        run = "● 監視ON" if c["running"] else "○ 監視OFF"
+        self._mini_var.set(
+            f"{run}\n"
+            f"状態 : {c['state']}\n"
+            f"型式 : {c['model'] or '(未取得)'}\n"
+            f"傾再測定 {c['tilt_retry']}/{c['max_tilt']}  精度 {c['precision_retry']}/{c['max_precision']}\n"
+            f"累計 OK {c['ok']} / NG {c['ng']} / 再測定 {c['recaptures']}"
+        )
+        try:
+            self._mini_dot.configure(foreground="#0a8f08" if c["running"] else "#888888")
+        except Exception:
+            pass
+
     def _start(self) -> None:
         self._apply()
         self.monitor.start()
@@ -1165,6 +1318,8 @@ class MonitorGUI:
             )
             mark = " ⚠精度不良" if snap.precision_ng else ""
             self.comment_var.set(f"{snap.comment_text}{mark}" if snap.comment_text else "(なし)")
+            self.model_var.set(snap.model_name or self.monitor._current_model or "(未取得)")
+            self._refresh_mini()
         self.root.after(0, update)
 
     def _open_picker(self) -> None:
@@ -1341,6 +1496,7 @@ class MonitorGUI:
         draw(c.button_capture_rect, "#ff4040", "取込開始")
         draw(c.button_autocorrect_rect, "#ff80ff", "自動補正")
         draw(c.comment_rect, "#ffa040", "コメント")
+        draw(c.model_rect, "#ffffff", "型式")
         for row in c.target_rows:
             draw(c.no_column_rects.get(row, []), "#40c0ff", f"No[{row}]")
             draw(c.lamp_rects.get(row, []), "#40ff40", f"Lamp[{row}]")
