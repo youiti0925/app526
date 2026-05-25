@@ -331,18 +331,38 @@ class ScreenSampler:
             return None
 
     def ocr_text(self, abs_rect: tuple[int, int, int, int], whitelist: str | None = None) -> str:
-        """矩形を OCR。whitelist を指定すると数字記号のみに絞る。"""
+        """矩形を OCR。whitelist を指定すると数字記号のみに絞る。
+
+        小さい数値セル＋マイナス符号の読取精度を上げるため、拡大→コントラスト
+        最大化→2値化→白余白付与の前処理を行い、空振り時はPSMを変えて再試行。
+        """
         img = self.grab(abs_rect)
         if img is None:
             return ""
         try:
             import pytesseract
-            # 数値読み取り精度向上: グレースケール→3倍拡大→2値化
-            gray = img.convert("L").resize((img.width * 3, img.height * 3))
-            config = "--psm 7"
-            if whitelist:
-                config += f" -c tessedit_char_whitelist={whitelist}"
-            return pytesseract.image_to_string(gray, config=config).strip()
+            from PIL import ImageOps
+            gray = img.convert("L").resize((img.width * 4, img.height * 4))
+            gray = ImageOps.autocontrast(gray)
+            bw = gray.point(lambda p: 0 if p < 128 else 255)
+            # 文字が白地に黒であることを多数決で確認（反転していれば戻す）
+            if bw.histogram()[0] > bw.histogram()[255]:
+                bw = ImageOps.invert(bw)
+            bw = ImageOps.expand(bw, border=12, fill=255)
+
+            def run(psm: int, wl: str | None) -> str:
+                cfg = f"--psm {psm}"
+                if wl:
+                    cfg += f" -c tessedit_char_whitelist={wl}"
+                return pytesseract.image_to_string(bw, config=cfg).strip()
+
+            txt = run(7, whitelist)
+            if not txt:
+                txt = run(8, whitelist)  # 単語扱いで再試行
+            if not txt and whitelist:
+                raw = run(7, None)  # whitelist無しで拾い、許可文字だけ残す
+                txt = "".join(ch for ch in raw if ch in whitelist)
+            return txt
         except Exception:
             return ""
 
