@@ -259,7 +259,10 @@ class ScreenSampler:
         self._fake_image: Any = None  # PIL.Image をセットすると全 grab がここから返る
         try:
             import mss
-            self._mss = mss.mss()
+            try:
+                self._mss = mss.MSS()
+            except AttributeError:
+                self._mss = mss.mss()
         except Exception as exc:
             self._init_error = f"mss 未導入: {exc}"
 
