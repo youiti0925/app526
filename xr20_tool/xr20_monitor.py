@@ -595,25 +595,25 @@ class XR20Monitor:
     def _template_path(self, name: str) -> Path:
         return self._resolve_path(name, name)
 
-    def _match_template(self, win_img: Any, fname: str) -> tuple[float, float] | None:
-        """ウィンドウ画像から目印テンプレを探し、中心の分数座標を返す。失敗時 None。"""
+    def _match_template(self, win_img: Any, fname: str) -> tuple[tuple[float, float] | None, float, bool]:
+        """目印テンプレを探す。戻り値 (中心分数 or None, 最良スコア, ファイル有無)。"""
         path = self._template_path(fname)
         if not path.exists():
-            return None
+            return None, 0.0, False
         try:
             import cv2
             import numpy as np
         except Exception:
-            self.log("[アンカー] opencv 未導入（start.bat 再実行で導入）")
-            return None
+            self.log("[位置補正] opencv 未導入（start.bat 再実行で導入）")
+            return None, 0.0, True
         try:
             templ0 = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
             if templ0 is None:
-                return None
+                return None, 0.0, True
             hay = cv2.cvtColor(np.array(win_img), cv2.COLOR_RGB2GRAY)
             best = None  # (score, cx, cy)
             # マルチスケール: ウィンドウ拡大縮小に追従するため複数倍率で探索
-            for scale in [s / 100.0 for s in range(60, 145, 5)]:
+            for scale in [s / 100.0 for s in range(50, 156, 5)]:
                 tw = max(8, int(templ0.shape[1] * scale))
                 th = max(8, int(templ0.shape[0] * scale))
                 if hay.shape[0] < th or hay.shape[1] < tw:
@@ -623,12 +623,13 @@ class XR20Monitor:
                 _minv, maxv, _minl, maxl = cv2.minMaxLoc(res)
                 if best is None or maxv > best[0]:
                     best = (maxv, maxl[0] + tw / 2.0, maxl[1] + th / 2.0)
-            if best is None or best[0] < self.cfg.anchor_match_threshold:
-                return None
-            return (best[1] / win_img.width, best[2] / win_img.height)
+            score = best[0] if best else 0.0
+            if best is None or score < self.cfg.anchor_match_threshold:
+                return None, score, True
+            return (best[1] / win_img.width, best[2] / win_img.height), score, True
         except Exception as exc:
-            self.log(f"[アンカー] 照合例外: {exc}")
-            return None
+            self.log(f"[位置補正] 照合例外: {exc}")
+            return None, 0.0, True
 
     def _update_anchor_correction(self) -> None:
         if not self.cfg.use_template_anchor:
@@ -648,12 +649,21 @@ class XR20Monitor:
         if win_img is None:
             self._locator.set_anchor_correction(None)
             return
-        a_cur = self._match_template(win_img, "anchor_a.png")
-        b_cur = self._match_template(win_img, "anchor_b.png")
+        a_cur, a_sc, a_exist = self._match_template(win_img, "anchor_a.png")
+        b_cur, b_sc, b_exist = self._match_template(win_img, "anchor_b.png")
+        if not a_exist or not b_exist:
+            self._locator.set_anchor_correction(None)
+            if not self._anchor_warned:
+                self.log("[位置補正] 目印テンプレ未保存。矩形設定で目印A/Bを"
+                         "スキップせずドラッグ登録してください（チェックON状態で）")
+                self._anchor_warned = True
+            return
         if a_cur is None or b_cur is None:
             self._locator.set_anchor_correction(None)
             if not self._anchor_warned:
-                self.log("[位置補正] 目印が見つからず固定座標で動作中（目印未登録か、画面が変わった可能性）")
+                self.log(f"[位置補正] 目印の一致度が低く固定座標で継続 "
+                         f"(A={a_sc:.2f} B={b_sc:.2f} / 必要{self.cfg.anchor_match_threshold:.2f})。"
+                         f"目印領域が登録時と違う可能性（値が変わる欄を避け、型式ラベルや表ヘッダーを囲む）")
                 self._anchor_warned = True
             return
         self._anchor_warned = False  # 見つかったら警告フラグを戻す
@@ -668,7 +678,7 @@ class XR20Monitor:
         # 倍率が異常なら補正を捨てる（誤マッチ保険）
         if not (0.5 <= sx <= 2.0 and 0.5 <= sy <= 2.0):
             self._locator.set_anchor_correction(None)
-            self.log(f"[アンカー] 倍率異常(sx={sx:.2f}, sy={sy:.2f})→固定座標で継続")
+            self.log(f"[位置補正] 倍率異常(sx={sx:.2f}, sy={sy:.2f})→固定座標で継続")
             return
         ox = a_cur[0] - sx * arx
         oy = a_cur[1] - sy * ary
