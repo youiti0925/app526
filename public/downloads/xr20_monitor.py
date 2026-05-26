@@ -1494,20 +1494,28 @@ class MonitorGUI:
         self.root.after(250, self._gui_tick)
 
     def _apply_snapshot_to_panel(self, snap: "Snapshot") -> None:
+        # 項目ごとに「判明している値」を保持する。データが無い周期で空に戻さない
+        # （測定中の軽いスナップショットには傾値等が無いため）。
         c = self.monitor.counters()
         self.state_var.set(c.get("state", ""))
         self.button_var.set(
             f"{'PRESSED' if snap.button_pressed else 'IDLE'} RGB={snap.button_color}"
         )
-        self.active_var.set(", ".join(snap.active_rows) if snap.active_rows else "(なし)")
-        self.lamps_var.set(", ".join(f"{k}={v}" for k, v in snap.lamp_states.items()))
-        self.values_var.set(
-            ", ".join(f"{k}={v}" for k, v in snap.tilt_values.items()) or "(未取得)"
-        )
-        mark = " ⚠精度不良" if snap.precision_ng else ""
-        self.comment_var.set(f"{snap.comment_text}{mark}" if snap.comment_text else "(なし)")
-        self.model_var.set(snap.model_name or self.monitor._current_model or "(未取得)")
-        self.machine_var.set(snap.machine_no or self.monitor._current_machine or "(未取得)")
+        if snap.active_rows:
+            self.active_var.set(", ".join(snap.active_rows))
+        if snap.lamp_states:
+            self.lamps_var.set(", ".join(f"{k}={v}" for k, v in snap.lamp_states.items()))
+        if snap.tilt_values:  # 傾は判定時のみ取得 → 取れた時だけ更新し以降保持
+            self.values_var.set(", ".join(f"{k}={v}" for k, v in snap.tilt_values.items()))
+        if snap.comment_text:
+            mark = " ⚠精度不良" if snap.precision_ng else ""
+            self.comment_var.set(f"{snap.comment_text}{mark}")
+        model = snap.model_name or self.monitor._current_model
+        if model:
+            self.model_var.set(model)
+        machine = snap.machine_no or self.monitor._current_machine
+        if machine:
+            self.machine_var.set(machine)
 
     def _build(self) -> None:
         tk, ttk = self._tk, self._ttk
@@ -1769,6 +1777,7 @@ class MonitorGUI:
 
         def done(snap):
             # done は _run_bg によりメインスレッドで呼ばれる
+            self.monitor._last_snapshot = snap  # ポーリングに上書きされず残るように
             self._apply_snapshot_to_panel(snap)
             self.monitor.log(f"手動読取: 型式={snap.model_name or '(未取得)'} 機番={snap.machine_no or '(未取得)'} "
                              f"tilt={snap.tilt_values} lamps={snap.lamp_states} active={snap.active_rows}")
