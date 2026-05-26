@@ -663,7 +663,7 @@ class XR20Monitor:
             if not self._anchor_warned:
                 self.log(f"[位置補正] 目印の一致度が低く固定座標で継続 "
                          f"(A={a_sc:.2f} B={b_sc:.2f} / 必要{self.cfg.anchor_match_threshold:.2f})。"
-                         f"目印領域が登録時と違う可能性（値が変わる欄を避け、型式ラベルや表ヘッダーを囲む）")
+                         f"目印領域が登録時と違う可能性（値が変わる欄を避け、終了ボタンやCW/CCW凡例を囲む）")
                 self._anchor_warned = True
             return
         self._anchor_warned = False  # 見つかったら警告フラグを戻す
@@ -1266,8 +1266,8 @@ class RectPicker:
         # 対象の順序（key, 説明ラベル）
         self.targets: list[tuple[str, str]] = []
         if monitor.cfg.use_template_anchor:
-            self.targets.append(("anchor_a", "【位置補正 目印A】「型式」ラベル付近（動かない部分）"))
-            self.targets.append(("anchor_b", "【位置補正 目印B】表ヘッダー行（間隔 1/N 点数 傾…）"))
+            self.targets.append(("anchor_a", "【位置補正 目印A】「終了」赤ボタン（左上・特徴的で動かない）"))
+            self.targets.append(("anchor_b", "【位置補正 目印B】「CW/CCW」凡例（右下・特徴的で動かない）"))
         self.targets.append(("model", "型式（品番）の表示セル"))
         self.targets.append(("machine", "機番（機械番号）の表示セル"))
         self.targets.append(("button_capture", "取込開始 ボタン"))
