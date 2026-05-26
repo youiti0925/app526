@@ -103,6 +103,15 @@ class MonitorConfig:
     max_tilt_retries: int = 2
     max_precision_retries: int = 1
 
+    # 再測定（リカバリ）シーケンスの待ち時間（秒）
+    wait_before_capture_sec: float = 1.0   # NG検知/スクショ後 → 取込開始押下まで
+    wait_after_capture_sec: float = 2.0    # 取込開始押下 → SwitchBot起動まで
+    wait_after_switchbot_sec: float = 1.0  # SwitchBot起動後の待ち
+
+    # NG時のスクリーンショット保存
+    save_ng_screenshot: bool = True
+    ng_screenshot_dir: str = "ng_shots"
+
     # 動作フラグ
     dry_run: bool = True
     auto_retry: bool = True
@@ -694,9 +703,18 @@ class XR20Monitor:
     def _run_loop(self) -> None:
         prev_pressed = False
         prev_all_done = False
+        prev_window_ok = None
         while not self._stop.is_set():
             snap = self.take_snapshot()
             self._emit(snap)
+
+            if snap.window_ok != prev_window_ok:
+                if snap.window_ok:
+                    self.log(f"画面認識OK / 型式={snap.model_name or '(未取得)'} "
+                             f"機番={snap.machine_no or '(未取得)'}")
+                else:
+                    self.log("画面認識NG（対象ウィンドウが見つからない）")
+                prev_window_ok = snap.window_ok
 
             if not snap.window_ok:
                 self._wait(self.cfg.idle_poll_interval_sec)
@@ -726,10 +744,20 @@ class XR20Monitor:
             elif self._state == State.JUDGING:
                 snap = self.take_snapshot()
                 self._emit(snap)
+                # 各行の傾値・閾値・OK/NGを明示ログ（実験中の可視化）
+                detail = []
+                for r in snap.active_rows:
+                    v = snap.tilt_values.get(r)
+                    th = self.threshold_for(r)
+                    mark = "NG" if self.is_ng(r, v) else ("?" if v is None else "OK")
+                    detail.append(f"{r}={v}(閾値±{th}/{mark})")
+                self.log("傾判定: " + "  ".join(detail))
                 ng_rows = [r for r in snap.active_rows if self.is_ng(r, snap.tilt_values.get(r))]
                 self._append_csv(snap, ng_rows, phase="tilt")
                 if ng_rows:
-                    self.log(f"傾NG: {ng_rows} / 値={snap.tilt_values}")
+                    self.log(f"傾NG検知: {ng_rows} → スクショ保存して再測定準備")
+                    if self.cfg.save_ng_screenshot:
+                        self._save_screenshot("tiltNG")
                     self._state = State.TILT_NG_RETRY
                 elif self.cfg.auto_correction_enabled:
                     self.log(f"傾OK / 値={snap.tilt_values} → 自動補正へ")
@@ -761,7 +789,9 @@ class XR20Monitor:
                 self._emit(snap)
                 self._append_csv(snap, [], phase="precision")
                 if snap.precision_ng:
-                    self.log(f"精度不良検出: '{snap.comment_text}'")
+                    self.log(f"精度不良検出: '{snap.comment_text}' → スクショ保存して再測定準備")
+                    if self.cfg.save_ng_screenshot:
+                        self._save_screenshot("precisionNG")
                     self._state = State.PRECISION_NG_RETRY
                 else:
                     self.log(f"精度OK / コメント='{snap.comment_text}' → 完了")
@@ -788,17 +818,48 @@ class XR20Monitor:
     def _wait(self, seconds: float) -> None:
         self._stop.wait(max(0.1, seconds))
 
+    def _save_screenshot(self, tag: str) -> str | None:
+        """現在のウィンドウ全体をスクショ保存。保存先パスを返す。"""
+        rect = self._locator.rect()
+        if not rect:
+            return None
+        left, top, right, bottom = rect
+        img = self._sampler.grab((left, top, right - left, bottom - top))
+        if img is None:
+            return None
+        out_dir = self._resolve_path(self.cfg.ng_screenshot_dir, "ng_shots")
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model = (self._current_model or "NA").replace("/", "_").replace("\\", "_")
+            mach = (self._current_machine or "NA").replace("/", "_").replace("\\", "_")
+            path = out_dir / f"{ts}_{model}_{mach}_{tag}.png"
+            img.save(path)
+            self.log(f"スクショ保存: {path.name}")
+            return str(path)
+        except Exception as exc:
+            self.log(f"スクショ保存失敗: {exc}")
+            return None
+
     def _trigger_recapture(self) -> None:
-        """SwitchBot でリモコン押下し、取込開始ボタンを再押下。"""
+        """再測定の準備: 取込開始ボタンを押し、その後 SwitchBot を起動。
+        各ステップ間に設定した待ち時間を挟む。"""
         self._total_recaptures += 1
-        if self.cfg.dry_run:
-            self.log("[リハーサル] SwitchBot送信スキップ / 取込開始クリック実行")
-        else:
-            ok = self._send_switchbot()
-            self.log(f"SwitchBot 送信: {'成功' if ok else '失敗'}")
-            self._wait(1.0)
+        # 1) NG画面のスクショ後、取込開始押下まで待つ
+        self._wait(self.cfg.wait_before_capture_sec)
+        # 2) 取込開始ボタンを押す
         clicked = self._locator.click_button(self.cfg.capture_button_text)
         self.log(f"取込開始クリック: {'成功' if clicked else '失敗'}")
+        # 3) SwitchBot起動まで待つ
+        self._wait(self.cfg.wait_after_capture_sec)
+        # 4) SwitchBotを起動（dry_runならスキップ）
+        if self.cfg.dry_run:
+            self.log("[リハーサル] SwitchBot送信スキップ")
+        else:
+            ok, msg = self.send_switchbot_press()
+            self.log(f"SwitchBot 起動: {'成功' if ok else '失敗'} {msg}")
+        # 5) 起動後の待ち
+        self._wait(self.cfg.wait_after_switchbot_sec)
 
     def _finish_session(self, snap: Snapshot, outcome: str) -> None:
         """1測定セッションの終端処理。集計カウンタ更新＋サマリCSV記録。"""
@@ -1451,10 +1512,59 @@ class MonitorGUI:
             ("矩形設定（ドラッグで位置合わせ）", self._open_picker),
             ("キャリブ表示（認識枠の確認）", self._show_calibration),
             ("1回だけ読み取り（動作確認）", self._read_once),
+            ("NG画像フォルダを開く", self._open_ng_folder),
             ("設定を保存", self._save),
         ]:
             ttk.Button(frm, text=text, width=34, command=cmd).pack(fill="x", pady=2)
+
+        # 再測定シーケンスの待ち時間
+        c = self.monitor.cfg
+        seq = ttk.LabelFrame(frm, text="再測定シーケンスの待ち時間 (秒)", padding=8)
+        seq.pack(fill="x", pady=(10, 0))
+        self._wait_vars = {
+            "wait_before_capture_sec": tk.DoubleVar(value=c.wait_before_capture_sec),
+            "wait_after_capture_sec": tk.DoubleVar(value=c.wait_after_capture_sec),
+            "wait_after_switchbot_sec": tk.DoubleVar(value=c.wait_after_switchbot_sec),
+        }
+        labels = {
+            "wait_before_capture_sec": "NG検知/スクショ後→取込開始押下まで",
+            "wait_after_capture_sec": "取込開始押下→SwitchBot起動まで",
+            "wait_after_switchbot_sec": "SwitchBot起動後の待ち",
+        }
+        for i, (k, var) in enumerate(self._wait_vars.items()):
+            ttk.Label(seq, text=labels[k]).grid(row=i, column=0, sticky="w", padx=2, pady=1)
+            ttk.Spinbox(seq, from_=0, to=60, increment=0.5, textvariable=var,
+                        width=6).grid(row=i, column=1, padx=4)
+        self._screenshot_var = tk.BooleanVar(value=c.save_ng_screenshot)
+        ttk.Checkbutton(seq, text="NG時に画面スクショを保存", variable=self._screenshot_var)\
+            .grid(row=len(self._wait_vars), column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        def apply_seq():
+            for k, var in self._wait_vars.items():
+                setattr(self.monitor.cfg, k, round(float(var.get()), 1))
+            self.monitor.cfg.save_ng_screenshot = bool(self._screenshot_var.get())
+            save_config(self.config_path, self.monitor.cfg)
+            self.monitor.log("再測定タイミングを保存")
+        ttk.Button(seq, text="この待ち時間を適用・保存", command=apply_seq)\
+            .grid(row=len(self._wait_vars) + 1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+
         ttk.Button(frm, text="閉じる", command=win.destroy).pack(fill="x", pady=(10, 0))
+
+    def _open_ng_folder(self) -> None:
+        import os
+        import subprocess
+        d = self.monitor._resolve_path(self.monitor.cfg.ng_screenshot_dir, "ng_shots")
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(d))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(d)])
+            else:
+                subprocess.Popen(["xdg-open", str(d)])
+            self.monitor.log(f"NG画像フォルダ: {d}")
+        except Exception as exc:
+            self.monitor.log(f"フォルダを開けません: {d} ({exc})")
 
     def _open_mini(self) -> None:
         tk, ttk = self._tk, self._ttk
