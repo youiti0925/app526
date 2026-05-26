@@ -477,6 +477,7 @@ class XR20Monitor:
         self._ng_giveup_count: int = 0
         self._activity: str = "停止中"  # 現在の動作（ミニ表示用）
         self._active_rows: list[str] = []  # 直近の有効行（軽い周期で流用）
+        self._anchor_warned: bool = False  # アンカー未検出ログを1回だけにする
 
         if err := self._sampler.init_error():
             self.log(f"[警告] {err}（OCR/色判定が機能しません）")
@@ -635,6 +636,9 @@ class XR20Monitor:
             return
         if len(self.cfg.anchor_a_rect) != 4 or len(self.cfg.anchor_b_rect) != 4:
             self._locator.set_anchor_correction(None)
+            if not self._anchor_warned:
+                self.log("[位置補正] 目印が未登録のため固定座標で動作（詳細設定→矩形設定で目印A/Bを登録すると有効）")
+                self._anchor_warned = True
             return
         rect = self._locator.rect()
         if not rect:
@@ -648,8 +652,11 @@ class XR20Monitor:
         b_cur = self._match_template(win_img, "anchor_b.png")
         if a_cur is None or b_cur is None:
             self._locator.set_anchor_correction(None)
-            self.log("[アンカー] 目印が見つからず固定座標で継続")
+            if not self._anchor_warned:
+                self.log("[位置補正] 目印が見つからず固定座標で動作中（目印未登録か、画面が変わった可能性）")
+                self._anchor_warned = True
             return
+        self._anchor_warned = False  # 見つかったら警告フラグを戻す
         # 参照位置（登録時の目印中心、分数）
         ar = self.cfg.anchor_a_rect
         br = self.cfg.anchor_b_rect
@@ -728,8 +735,10 @@ class XR20Monitor:
         while not self._stop.is_set():
             # フェーズ別に必要な処理だけ実行（測定中は色判定のみで高速・表示が追従）
             if self._state == State.CAPTURING:
+                # 測定中も型式/機番は読み直す（表示が古い化け値で固定されないように）。
+                # 重い傾OCR・コメント・位置補正は判定時のみ。
                 snap = self.take_snapshot(read_no=False, read_tilt=False,
-                                          read_comment=False, read_meta=False, do_anchor=False)
+                                          read_comment=False, read_meta=True, do_anchor=False)
             else:  # IDLE 等: 型式/機番/有効行も読む（傾・コメントは判定時のみ）
                 snap = self.take_snapshot(read_tilt=False, read_comment=False, do_anchor=False)
             self._emit(snap)
