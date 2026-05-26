@@ -362,27 +362,38 @@ class ScreenSampler:
     def ocr_text(self, abs_rect: tuple[int, int, int, int], whitelist: str | None = None) -> str:
         """矩形を OCR。whitelist を指定すると数字記号のみに絞る。
 
-        セル枠線をOCRが拾ってマイナス符号等を潰すため、外周を数px(枠線分)
-        だけ落としてから読む。割合トリムだと幅広フィールドの先頭文字を切る
-        ため固定3px。グレースケール→4倍拡大→コントラスト最大化→psm7。
+        前処理（ボケ・小文字に強い構成を実測で選定）:
+          枠線3pxトリム → グレースケール → 目標高さ約64pxへLanczos拡大 →
+          コントラスト最大化 → アンシャープで輪郭強調 → 白余白付与 →
+          psm7。空振り時のみ psm8 で再試行。
         """
         img = self.grab(abs_rect)
         if img is None:
             return ""
         try:
             import pytesseract
-            from PIL import ImageOps
+            from PIL import Image, ImageOps, ImageFilter
             trim = 3  # 枠線だけ除外（固定px。割合だと長い値の先頭を切る）
             w, h = img.width, img.height
             if w - 2 * trim >= 8 and h - 2 * trim >= 8:
                 img = img.crop((trim, trim, w - trim, h - trim))
-            gray = img.convert("L").resize((img.width * 4, img.height * 4))
-            gray = ImageOps.autocontrast(gray)
-            gray = ImageOps.expand(gray, border=12, fill=255)
-            cfg = "--psm 7"
-            if whitelist:
-                cfg += f" -c tessedit_char_whitelist={whitelist}"
-            return pytesseract.image_to_string(gray, config=cfg).strip()
+            g = img.convert("L")
+            scale = max(1, min(10, round(64 / max(1, g.height))))
+            g = g.resize((g.width * scale, g.height * scale), Image.LANCZOS)
+            g = ImageOps.autocontrast(g)
+            g = g.filter(ImageFilter.UnsharpMask(radius=2, percent=150))
+            g = ImageOps.expand(g, border=16, fill=255)
+
+            def run(psm: int) -> str:
+                cfg = f"--psm {psm} --oem 1"
+                if whitelist:
+                    cfg += f" -c tessedit_char_whitelist={whitelist}"
+                return pytesseract.image_to_string(g, config=cfg).strip()
+
+            txt = run(7)
+            if not txt:
+                txt = run(8)
+            return txt
         except Exception:
             return ""
 
@@ -536,13 +547,14 @@ class XR20Monitor:
         # 6) 型式（品番）・機番 OCR — 集計の軸（英数字なので英語OCR）
         model_abs = self._locator.rel_to_abs(self.cfg.model_rect) if self.cfg.model_rect else None
         if model_abs:
-            snap.model_name = self._sampler.ocr_text(model_abs).replace("\n", " ").strip()
+            # 型式・機番は品番なので空白を除去（OCRが稀に挿入する空白対策）
+            snap.model_name = "".join(self._sampler.ocr_text(model_abs).split())
             if snap.model_name:
                 self._current_model = snap.model_name
 
         machine_abs = self._locator.rel_to_abs(self.cfg.machine_rect) if self.cfg.machine_rect else None
         if machine_abs:
-            snap.machine_no = self._sampler.ocr_text(machine_abs).replace("\n", " ").strip()
+            snap.machine_no = "".join(self._sampler.ocr_text(machine_abs).split())
             if snap.machine_no:
                 self._current_machine = snap.machine_no
 
