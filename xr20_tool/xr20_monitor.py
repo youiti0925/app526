@@ -476,6 +476,7 @@ class XR20Monitor:
         self._ok_count: int = 0
         self._ng_giveup_count: int = 0
         self._activity: str = "停止中"  # 現在の動作（ミニ表示用）
+        self._active_rows: list[str] = []  # 直近の有効行（軽い周期で流用）
 
         if err := self._sampler.init_error():
             self.log(f"[警告] {err}（OCR/色判定が機能しません）")
@@ -495,17 +496,24 @@ class XR20Monitor:
     # ------------------------------------------------------------------
     # 1 サイクル分の画面読み取り
     # ------------------------------------------------------------------
-    def take_snapshot(self) -> Snapshot:
+    def take_snapshot(self, *, read_no: bool = True, read_tilt: bool = True,
+                      read_comment: bool = True, read_meta: bool = True,
+                      do_anchor: bool = True) -> Snapshot:
+        """画面を1回読む。フラグで重いOCR/位置補正を省ける（測定中の高速化用）。
+
+        色判定（ボタン・ランプ）は常に実行（軽い）。OCR系は必要な時だけ。
+        """
         snap = Snapshot()
         if not self._locator.refresh():
             self.log("ウィンドウ未検出")
             return snap
         snap.window_ok = True
 
-        # 0) 位置自動補正（テンプレートマッチング、任意機能）
-        self._update_anchor_correction()
+        # 0) 位置自動補正（重いので必要な時だけ。色判定は多少のズレに強い）
+        if do_anchor:
+            self._update_anchor_correction()
 
-        # 1) 取込開始ボタンの色
+        # 1) 取込開始ボタンの色（常時・軽い）
         btn_abs = self._locator.rel_to_abs(self.cfg.button_capture_rect)
         if btn_abs:
             color = self._sampler.average_color(btn_abs)
@@ -513,20 +521,24 @@ class XR20Monitor:
             if color is not None:
                 snap.button_pressed = self._is_button_pressed(color)
 
-        # 2) No 列の数字有無 → 有効行
-        for row in self.cfg.target_rows:
-            rel = self.cfg.no_column_rects.get(row)
-            if not rel:
-                continue
-            rect = self._locator.rel_to_abs(rel)
-            if not rect:
-                continue
-            text = self._sampler.ocr_text(rect, whitelist="0123456789")
-            snap.raw_no[row] = text
-            if any(ch.isdigit() for ch in text):
-                snap.active_rows.append(row)
+        # 2) No 列の数字有無 → 有効行（OCR）。省略時は前回の有効行を流用
+        if read_no:
+            for row in self.cfg.target_rows:
+                rel = self.cfg.no_column_rects.get(row)
+                if not rel:
+                    continue
+                rect = self._locator.rel_to_abs(rel)
+                if not rect:
+                    continue
+                text = self._sampler.ocr_text(rect, whitelist="0123456789")
+                snap.raw_no[row] = text
+                if any(ch.isdigit() for ch in text):
+                    snap.active_rows.append(row)
+            self._active_rows = list(snap.active_rows)
+        else:
+            snap.active_rows = list(self._active_rows)
 
-        # 3) 行ごとの緑ランプ
+        # 3) 行ごとの緑ランプ（常時・軽い色判定）
         for row in self.cfg.target_rows:
             rel = self.cfg.lamp_rects.get(row)
             rect = self._locator.rel_to_abs(rel) if rel else None
@@ -536,37 +548,43 @@ class XR20Monitor:
             color = self._sampler.average_color(rect)
             snap.lamp_states[row] = self._classify_lamp(color) if color else "UNKNOWN"
 
-        # 4) 傾列 OCR（有効行のみ）
-        for row in snap.active_rows:
-            rel = self.cfg.tilt_rects.get(row)
-            rect = self._locator.rel_to_abs(rel) if rel else None
-            if not rect:
-                snap.tilt_values[row] = None
-                continue
-            text = self._sampler.ocr_text(rect, whitelist="0123456789.-+,")
-            snap.raw_tilt[row] = text
-            snap.tilt_values[row] = _safe_float(text)
+        # 4) 傾列 OCR（必要時のみ・有効行）
+        if read_tilt:
+            for row in snap.active_rows:
+                rel = self.cfg.tilt_rects.get(row)
+                rect = self._locator.rel_to_abs(rel) if rel else None
+                if not rect:
+                    snap.tilt_values[row] = None
+                    continue
+                text = self._sampler.ocr_text(rect, whitelist="0123456789.-+,")
+                snap.raw_tilt[row] = text
+                snap.tilt_values[row] = _safe_float(text)
 
-        # 5) コメント欄 OCR（精度NG検出用。日本語 OCR）
-        comment_rel = self.cfg.comment_rect
-        comment_abs = self._locator.rel_to_abs(comment_rel) if comment_rel else None
-        if comment_abs:
-            snap.comment_text = self._sampler.ocr_text_jpn(comment_abs)
-            snap.precision_ng = self.cfg.precision_ng_keyword in snap.comment_text
+        # 5) コメント欄 OCR（精度NG検出用・必要時のみ・日本語OCR）
+        if read_comment:
+            comment_rel = self.cfg.comment_rect
+            comment_abs = self._locator.rel_to_abs(comment_rel) if comment_rel else None
+            if comment_abs:
+                snap.comment_text = self._sampler.ocr_text_jpn(comment_abs)
+                snap.precision_ng = self.cfg.precision_ng_keyword in snap.comment_text
 
-        # 6) 型式（品番）・機番 OCR — 集計の軸（英数字なので英語OCR）
-        model_abs = self._locator.rel_to_abs(self.cfg.model_rect) if self.cfg.model_rect else None
-        if model_abs:
-            # 型式・機番は品番なので空白を除去（OCRが稀に挿入する空白対策）
-            snap.model_name = "".join(self._sampler.ocr_text(model_abs).split())
-            if snap.model_name:
-                self._current_model = snap.model_name
-
-        machine_abs = self._locator.rel_to_abs(self.cfg.machine_rect) if self.cfg.machine_rect else None
-        if machine_abs:
-            snap.machine_no = "".join(self._sampler.ocr_text(machine_abs).split())
-            if snap.machine_no:
-                self._current_machine = snap.machine_no
+        # 6) 型式・機番 OCR（必要時のみ・英数字なので英語OCR）
+        if read_meta:
+            model_abs = self._locator.rel_to_abs(self.cfg.model_rect) if self.cfg.model_rect else None
+            if model_abs:
+                snap.model_name = "".join(self._sampler.ocr_text(model_abs).split())
+                if snap.model_name:
+                    self._current_model = snap.model_name
+            machine_abs = self._locator.rel_to_abs(self.cfg.machine_rect) if self.cfg.machine_rect else None
+            if machine_abs:
+                snap.machine_no = "".join(self._sampler.ocr_text(machine_abs).split())
+                if snap.machine_no:
+                    self._current_machine = snap.machine_no
+        # 表示用に現在値を引き継ぐ（軽い周期でも型式/機番が消えないように）
+        if not snap.model_name:
+            snap.model_name = self._current_model
+        if not snap.machine_no:
+            snap.machine_no = self._current_machine
 
         return snap
 
@@ -708,7 +726,12 @@ class XR20Monitor:
         prev_all_done = False
         prev_window_ok = None
         while not self._stop.is_set():
-            snap = self.take_snapshot()
+            # フェーズ別に必要な処理だけ実行（測定中は色判定のみで高速・表示が追従）
+            if self._state == State.CAPTURING:
+                snap = self.take_snapshot(read_no=False, read_tilt=False,
+                                          read_comment=False, read_meta=False, do_anchor=False)
+            else:  # IDLE 等: 型式/機番/有効行も読む（傾・コメントは判定時のみ）
+                snap = self.take_snapshot(read_tilt=False, read_comment=False, do_anchor=False)
             self._emit(snap)
 
             if snap.window_ok != prev_window_ok:
@@ -750,7 +773,9 @@ class XR20Monitor:
 
             elif self._state == State.JUDGING:
                 self._activity = "傾の数値を判定中"
-                snap = self.take_snapshot()
+                # 判定時はフル（位置補正＋傾OCR＋型式機番）
+                snap = self.take_snapshot(read_no=True, read_tilt=True,
+                                          read_comment=False, read_meta=True, do_anchor=True)
                 self._emit(snap)
                 # 各行の傾値・閾値・OK/NGを明示ログ（実験中の可視化）
                 detail = []
@@ -796,7 +821,8 @@ class XR20Monitor:
 
             elif self._state == State.PRECISION_JUDGING:
                 self._activity = "精度（コメント欄）を判定中"
-                snap = self.take_snapshot()
+                snap = self.take_snapshot(read_no=False, read_tilt=False,
+                                          read_comment=True, read_meta=False, do_anchor=True)
                 self._emit(snap)
                 self._append_csv(snap, [], phase="precision")
                 if snap.precision_ng:
