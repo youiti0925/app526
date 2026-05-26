@@ -112,10 +112,10 @@ class MonitorConfig:
     save_ng_screenshot: bool = True
     ng_screenshot_dir: str = "ng_shots"
 
-    # 動作フラグ
+    # 動作フラグ（既定で全ON。実機運用前にリハーサルを外す等は画面で調整）
     dry_run: bool = True
     auto_retry: bool = True
-    auto_correction_enabled: bool = False  # 傾OK後、自動補正→精度チェックを実施するか
+    auto_correction_enabled: bool = True  # 傾OK後、自動補正→精度チェックを実施するか
 
     # 自動補正／精度不良監視
     auto_correct_button_text: str = "自動補正"
@@ -132,7 +132,7 @@ class MonitorConfig:
     tilt_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_TILT_RECTS.items()})
 
     # 位置自動補正（テンプレートマッチング）— 任意機能。OFF時は固定座標のまま
-    use_template_anchor: bool = False
+    use_template_anchor: bool = True
     anchor_a_rect: list[float] = field(default_factory=list)  # 目印A（例:「型式」ラベル）
     anchor_b_rect: list[float] = field(default_factory=list)  # 目印B（例: 表ヘッダー行）
     anchor_match_threshold: float = 0.6  # マッチ信頼度の下限
@@ -475,6 +475,7 @@ class XR20Monitor:
         self._total_recaptures: int = 0
         self._ok_count: int = 0
         self._ng_giveup_count: int = 0
+        self._activity: str = "停止中"  # 現在の動作（ミニ表示用）
 
         if err := self._sampler.init_error():
             self.log(f"[警告] {err}（OCR/色判定が機能しません）")
@@ -684,12 +685,14 @@ class XR20Monitor:
         self._state = State.IDLE
         self._tilt_retry = 0
         self._precision_retry = 0
+        self._activity = "起動中…"
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
         self.log("監視開始")
 
     def stop(self) -> None:
         self._stop.set()
+        self._activity = "停止中"
         self.log("監視停止要求")
 
     def _emit(self, snap: Snapshot) -> None:
@@ -725,6 +728,7 @@ class XR20Monitor:
             )
 
             if self._state == State.IDLE:
+                self._activity = f"取込開始の押下を待機中（{self.cfg.idle_poll_interval_sec:g}秒ごと確認）"
                 if snap.button_pressed and not prev_pressed:
                     if not self._session_active:
                         self._session_active = True
@@ -735,13 +739,17 @@ class XR20Monitor:
             elif self._state == State.CAPTURING:
                 if not snap.button_pressed and all_done and not prev_all_done:
                     self.log("取込完了検知 → 判定待機")
+                    self._activity = "取込完了 → 判定待機中"
                     self._wait(self.cfg.judge_delay_sec)  # 表示が安定するまで少し待つ
                     self._state = State.JUDGING
                 elif snap.active_rows:
                     progress = [f"{r}:{snap.lamp_states.get(r, '?')}" for r in snap.active_rows]
+                    done_n = sum(1 for r in snap.active_rows if snap.lamp_states.get(r) == "ON")
+                    self._activity = f"測定中… ランプ {done_n}/{len(snap.active_rows)} 点灯"
                     self.log("測定中 " + " ".join(progress))
 
             elif self._state == State.JUDGING:
+                self._activity = "傾の数値を判定中"
                 snap = self.take_snapshot()
                 self._emit(snap)
                 # 各行の傾値・閾値・OK/NGを明示ログ（実験中の可視化）
@@ -771,6 +779,7 @@ class XR20Monitor:
                 if not self.cfg.auto_retry or self._tilt_retry >= self.cfg.max_tilt_retries:
                     self.log(f"傾リトライ上限({self._tilt_retry}/{self.cfg.max_tilt_retries})到達")
                     self._finish_session(snap, "NG_GIVEUP")
+                    self._activity = "停止: 傾NG上限到達（監視OFF→ONで再開）"
                     self._state = State.ERROR
                 else:
                     self._tilt_retry += 1
@@ -779,12 +788,14 @@ class XR20Monitor:
                     self._state = State.IDLE
 
             elif self._state == State.AUTO_CORRECTING:
+                self._activity = "自動補正を実行中"
                 clicked = self._locator.click_button(self.cfg.auto_correct_button_text)
                 self.log(f"自動補正クリック: {'成功' if clicked else '失敗'}")
                 self._wait(self.cfg.auto_correct_wait_sec)
                 self._state = State.PRECISION_JUDGING
 
             elif self._state == State.PRECISION_JUDGING:
+                self._activity = "精度（コメント欄）を判定中"
                 snap = self.take_snapshot()
                 self._emit(snap)
                 self._append_csv(snap, [], phase="precision")
@@ -802,6 +813,7 @@ class XR20Monitor:
                 if not self.cfg.auto_retry or self._precision_retry >= self.cfg.max_precision_retries:
                     self.log(f"精度リトライ上限({self._precision_retry}/{self.cfg.max_precision_retries})到達")
                     self._finish_session(snap, "NG_GIVEUP")
+                    self._activity = "停止: 精度NG上限到達（監視OFF→ONで再開）"
                     self._state = State.ERROR
                 else:
                     self._precision_retry += 1
@@ -846,19 +858,24 @@ class XR20Monitor:
         各ステップ間に設定した待ち時間を挟む。"""
         self._total_recaptures += 1
         # 1) NG画面のスクショ後、取込開始押下まで待つ
+        self._activity = f"再測定準備: 待機中 ({self.cfg.wait_before_capture_sec}秒)"
         self._wait(self.cfg.wait_before_capture_sec)
         # 2) 取込開始ボタンを押す
+        self._activity = "再測定: 取込開始ボタンを押下"
         clicked = self._locator.click_button(self.cfg.capture_button_text)
         self.log(f"取込開始クリック: {'成功' if clicked else '失敗'}")
         # 3) SwitchBot起動まで待つ
+        self._activity = f"再測定: SwitchBot起動待ち ({self.cfg.wait_after_capture_sec}秒)"
         self._wait(self.cfg.wait_after_capture_sec)
         # 4) SwitchBotを起動（dry_runならスキップ）
+        self._activity = "再測定: SwitchBot起動"
         if self.cfg.dry_run:
             self.log("[リハーサル] SwitchBot送信スキップ")
         else:
             ok, msg = self.send_switchbot_press()
             self.log(f"SwitchBot 起動: {'成功' if ok else '失敗'} {msg}")
         # 5) 起動後の待ち
+        self._activity = f"再測定: 起動後待ち ({self.cfg.wait_after_switchbot_sec}秒)"
         self._wait(self.cfg.wait_after_switchbot_sec)
 
     def _finish_session(self, snap: Snapshot, outcome: str) -> None:
@@ -883,6 +900,7 @@ class XR20Monitor:
         return {
             "running": bool(self._thread and self._thread.is_alive()),
             "state": self._state.value,
+            "activity": self._activity,
             "model": self._current_model,
             "machine": self._current_machine,
             "tilt_retry": self._tilt_retry,
@@ -1582,11 +1600,12 @@ class MonitorGUI:
         mini.configure(bg="#1e1e1e")
         sw = mini.winfo_screenwidth()
         sh = mini.winfo_screenheight()
-        w, h = 340, 310
+        w, h = 360, 340
         mini.geometry(f"{w}x{h}+{sw - w - 20}+{sh - h - 60}")
         self._mini = mini
 
         self._mini_run = tk.StringVar()
+        self._mini_activity = tk.StringVar()
         self._mini_state = tk.StringVar()
         self._mini_model = tk.StringVar()
         self._mini_machine = tk.StringVar()
@@ -1610,14 +1629,21 @@ class MonitorGUI:
             return lab
 
         self._mini_run_lbl = row(self._mini_run, 14, "#33dd55")
-        row(self._mini_state, 11, "#dddddd")
+        row(self._mini_activity, 12, "#ffe27a")  # 今の動作（強調）
+        row(self._mini_state, 10, "#aaaaaa")
         row(self._mini_model, 11, "#9cdcfe")
         row(self._mini_machine, 11, "#9cdcfe")
         row(self._mini_retry, 11, "#ffcc66")
         row(self._mini_total, 11, "#dddddd")
 
         mini.protocol("WM_DELETE_WINDOW", self._close_mini)
+        self._mini_tick()  # 0.5秒ごとに自動更新（待ち時間中も追従）
+
+    def _mini_tick(self) -> None:
+        if getattr(self, "_mini", None) is None:
+            return
         self._refresh_mini()
+        self.root.after(500, self._mini_tick)
 
     def _close_mini(self) -> None:
         if getattr(self, "_mini", None) is not None:
@@ -1630,6 +1656,7 @@ class MonitorGUI:
             return
         c = self.monitor.counters()
         self._mini_run.set("●  監視中" if c["running"] else "■  停止中")
+        self._mini_activity.set(f"動作　 : {c.get('activity', '')}")
         self._mini_state.set(f"状態　 : {c['state']}")
         self._mini_model.set(f"型式　 : {c['model'] or '(未取得)'}")
         self._mini_machine.set(f"機番　 : {c['machine'] or '(未取得)'}")
