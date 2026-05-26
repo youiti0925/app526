@@ -1765,6 +1765,9 @@ class MonitorGUI:
             self.monitor.log("[キャリブレーション] ウィンドウ未検出（対象アプリは起動してる？）")
             return
         left, top, right, bottom = rect
+        # 位置自動補正がONなら、補正を計算してから枠を描く（補正後の位置を可視化）
+        self.monitor._update_anchor_correction()
+        corr = self.monitor._locator._anchor_corr
         overlay = tk.Toplevel(self.root)
         overlay.overrideredirect(True)
         overlay.attributes("-topmost", True)
@@ -1772,6 +1775,10 @@ class MonitorGUI:
         overlay.geometry(f"{right-left}x{bottom-top}+{left}+{top}")
         canvas = tk.Canvas(overlay, highlightthickness=0, bg="black")
         canvas.pack(fill="both", expand=True)
+
+        mode = "位置補正ON" if (self.monitor.cfg.use_template_anchor and corr) else \
+               ("位置補正ON(目印未検出→固定)" if self.monitor.cfg.use_template_anchor else "固定座標")
+        canvas.create_text(8, 8, text=mode, fill="#ffffff", anchor="nw", font=("Arial", 11, "bold"))
 
         def draw(rel, color, label):
             abs_rect = self.monitor._locator.rel_to_abs(rel)
