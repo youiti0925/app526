@@ -1430,12 +1430,14 @@ def save_anchor_templates(results: dict[str, list[float]], full_image: Any, base
 # ======================================================================
 class MonitorGUI:
     def __init__(self, monitor: XR20Monitor, config_path: Path) -> None:
+        import queue
         import tkinter as tk
         from tkinter import ttk
         self._tk = tk
         self._ttk = ttk
         self.monitor = monitor
         self.config_path = config_path
+        self._log_q: "queue.Queue[str]" = queue.Queue()
 
         self.root = tk.Tk()
         self.root.title("IK220 自動監視モニター")
@@ -1459,8 +1461,44 @@ class MonitorGUI:
         self.button_var = tk.StringVar(value="(未取得)")
 
         self._build()
-        monitor._log_cb = self._append_log
-        monitor.set_state_callback(self._on_state)
+        # GUIはメインスレッドからのみ更新する。監視スレッドはログをキューに積み、
+        # スナップショットは monitor._last_snapshot に置くだけ。GUIが定期的に読みに行く。
+        monitor._log_cb = self._log_q.put  # スレッドセーフ（Tkを触らない）
+        self.root.after(200, self._gui_tick)
+
+    def _gui_tick(self) -> None:
+        # 1) ログをキューから取り出して反映
+        drained = 0
+        try:
+            while drained < 200:
+                msg = self._log_q.get_nowait()
+                self._do_append(msg)
+                drained += 1
+        except Exception:
+            pass
+        # 2) 最新スナップショットで状態パネルを更新
+        snap = self.monitor.last_snapshot()
+        if snap is not None:
+            self._apply_snapshot_to_panel(snap)
+        # 3) ミニ表示も更新
+        self._refresh_mini()
+        self.root.after(250, self._gui_tick)
+
+    def _apply_snapshot_to_panel(self, snap: "Snapshot") -> None:
+        c = self.monitor.counters()
+        self.state_var.set(c.get("state", ""))
+        self.button_var.set(
+            f"{'PRESSED' if snap.button_pressed else 'IDLE'} RGB={snap.button_color}"
+        )
+        self.active_var.set(", ".join(snap.active_rows) if snap.active_rows else "(なし)")
+        self.lamps_var.set(", ".join(f"{k}={v}" for k, v in snap.lamp_states.items()))
+        self.values_var.set(
+            ", ".join(f"{k}={v}" for k, v in snap.tilt_values.items()) or "(未取得)"
+        )
+        mark = " ⚠精度不良" if snap.precision_ng else ""
+        self.comment_var.set(f"{snap.comment_text}{mark}" if snap.comment_text else "(なし)")
+        self.model_var.set(snap.model_name or self.monitor._current_model or "(未取得)")
+        self.machine_var.set(snap.machine_no or self.monitor._current_machine or "(未取得)")
 
     def _build(self) -> None:
         tk, ttk = self._tk, self._ttk
@@ -1663,13 +1701,7 @@ class MonitorGUI:
         row(self._mini_total, 11, "#dddddd")
 
         mini.protocol("WM_DELETE_WINDOW", self._close_mini)
-        self._mini_tick()  # 0.5秒ごとに自動更新（待ち時間中も追従）
-
-    def _mini_tick(self) -> None:
-        if getattr(self, "_mini", None) is None:
-            return
-        self._refresh_mini()
-        self.root.after(500, self._mini_tick)
+        self._refresh_mini()  # 以降は _gui_tick が定期更新する
 
     def _close_mini(self) -> None:
         if getattr(self, "_mini", None) is not None:
@@ -1727,28 +1759,11 @@ class MonitorGUI:
         self.monitor.log("手動読取中…")
 
         def done(snap):
-            self._on_state(self.monitor._state, snap)
+            # done は _run_bg によりメインスレッドで呼ばれる
+            self._apply_snapshot_to_panel(snap)
             self.monitor.log(f"手動読取: 型式={snap.model_name or '(未取得)'} 機番={snap.machine_no or '(未取得)'} "
                              f"tilt={snap.tilt_values} lamps={snap.lamp_states} active={snap.active_rows}")
         self._run_bg(self.monitor.take_snapshot, done)
-
-    def _on_state(self, state: State, snap: Snapshot) -> None:
-        def update():
-            self.state_var.set(state.value)
-            self.button_var.set(
-                f"{'PRESSED' if snap.button_pressed else 'IDLE'} RGB={snap.button_color}"
-            )
-            self.active_var.set(", ".join(snap.active_rows) if snap.active_rows else "(なし)")
-            self.lamps_var.set(", ".join(f"{k}={v}" for k, v in snap.lamp_states.items()))
-            self.values_var.set(
-                ", ".join(f"{k}={v}" for k, v in snap.tilt_values.items()) or "(未取得)"
-            )
-            mark = " ⚠精度不良" if snap.precision_ng else ""
-            self.comment_var.set(f"{snap.comment_text}{mark}" if snap.comment_text else "(なし)")
-            self.model_var.set(snap.model_name or self.monitor._current_model or "(未取得)")
-            self.machine_var.set(snap.machine_no or self.monitor._current_machine or "(未取得)")
-            self._refresh_mini()
-        self.root.after(0, update)
 
     def _open_picker(self) -> None:
         def on_done(results: dict[str, list[float]], full_image=None) -> None:
@@ -1982,9 +1997,6 @@ class MonitorGUI:
             draw(c.lamp_rects.get(row, []), "#40ff40", f"Lamp[{row}]")
             draw(c.tilt_rects.get(row, []), "#ffff40", f"傾[{row}]")
         overlay.after(4000, overlay.destroy)
-
-    def _append_log(self, msg: str) -> None:
-        self.root.after(0, lambda: self._do_append(msg))
 
     def _do_append(self, msg: str) -> None:
         self.log_box.insert("end", msg + "\n")
