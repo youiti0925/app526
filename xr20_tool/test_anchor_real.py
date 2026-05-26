@@ -60,14 +60,19 @@ def draw_screen(W: int, H: int, tf: tuple[float, float, float, float]) -> Image.
         y = (sy * yf + oy) * H
         return [x, y, x + wf * sx * W, y + hf * sy * H]
 
-    def cell(xf, yf, wf, hf, text, font, bg=CELL_BG):
+    def cell(xf, yf, wf, hf, text, font, bg=CELL_BG, align="center"):
         box = rect(xf, yf, wf, hf)
         d.rectangle(box, fill=bg, outline=(120, 120, 120))
         if text:
             bb = d.textbbox((0, 0), text, font=font)
             tw, th = bb[2] - bb[0], bb[3] - bb[1]
-            d.text((box[0] + (box[2] - box[0] - tw) / 2,
-                    box[1] + (box[3] - box[1] - th) / 2 - bb[1]), text, fill=(0, 0, 0), font=font)
+            if align == "left":
+                tx = box[0] + 4
+            elif align == "right":
+                tx = box[2] - tw - 4
+            else:
+                tx = box[0] + (box[2] - box[0] - tw) / 2
+            d.text((tx, box[1] + (box[3] - box[1] - th) / 2 - bb[1]), text, fill=(0, 0, 0), font=font)
 
     # 目印A: 「型式」ラベル（グレー地に黒文字）
     box = rect(*MODEL_LABEL)
@@ -76,14 +81,15 @@ def draw_screen(W: int, H: int, tf: tuple[float, float, float, float]) -> Image.
     box = rect(*HEADER)
     d.text((box[0], box[1]), "間隔 1/N 点数 傾 精度 精度", fill=(0, 0, 0), font=fj)
 
-    cell(*MODEL_VAL[:4], MODEL_VAL[4], fn)
-    cell(*MACHINE_VAL[:4], MACHINE_VAL[4], fn)
+    # 実画面に合わせ、型式・機番は左寄せ、傾は右寄せ
+    cell(*MODEL_VAL[:4], MODEL_VAL[4], fn, align="left")
+    cell(*MACHINE_VAL[:4], MACHINE_VAL[4], fn, align="left")
     for r, yf in ROW_Y.items():
-        cell(NO_X, yf, CELL_W, CELL_H, NO_VALS[r], fn)
+        cell(NO_X, yf, CELL_W, CELL_H, NO_VALS[r], fn, align="center")
         # ランプ（緑丸）
         lb = rect(LAMP_X, yf, CELL_W, CELL_H)
         d.ellipse(lb, fill=tuple(xm.MonitorConfig().lamp_on_color))
-        cell(TILT_X, yf, TILT_W, CELL_H, TILT_VALS[r], fn)
+        cell(TILT_X, yf, TILT_W, CELL_H, TILT_VALS[r], fn, align="right")
     return img
 
 

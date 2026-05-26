@@ -362,9 +362,9 @@ class ScreenSampler:
     def ocr_text(self, abs_rect: tuple[int, int, int, int], whitelist: str | None = None) -> str:
         """矩形を OCR。whitelist を指定すると数字記号のみに絞る。
 
-        セル枠線をOCRが拾ってマイナス符号等を潰すため、内側に少し縮めて
-        から読む（枠除外）。グレースケール→4倍拡大→コントラスト最大化→
-        白余白付与→psm7 の1回処理。
+        セル枠線をOCRが拾ってマイナス符号等を潰すため、外周を数px(枠線分)
+        だけ落としてから読む。割合トリムだと幅広フィールドの先頭文字を切る
+        ため固定3px。グレースケール→4倍拡大→コントラスト最大化→psm7。
         """
         img = self.grab(abs_rect)
         if img is None:
@@ -372,11 +372,10 @@ class ScreenSampler:
         try:
             import pytesseract
             from PIL import ImageOps
-            # 枠線を除外（各辺を10%内側にトリム）。極小セルは縮めない。
+            trim = 3  # 枠線だけ除外（固定px。割合だと長い値の先頭を切る）
             w, h = img.width, img.height
-            mx, my = int(w * 0.10), int(h * 0.10)
-            if w - 2 * mx >= 8 and h - 2 * my >= 8:
-                img = img.crop((mx, my, w - mx, h - my))
+            if w - 2 * trim >= 8 and h - 2 * trim >= 8:
+                img = img.crop((trim, trim, w - trim, h - trim))
             gray = img.convert("L").resize((img.width * 4, img.height * 4))
             gray = ImageOps.autocontrast(gray)
             gray = ImageOps.expand(gray, border=12, fill=255)
