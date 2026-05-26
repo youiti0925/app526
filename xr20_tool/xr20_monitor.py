@@ -362,8 +362,9 @@ class ScreenSampler:
     def ocr_text(self, abs_rect: tuple[int, int, int, int], whitelist: str | None = None) -> str:
         """矩形を OCR。whitelist を指定すると数字記号のみに絞る。
 
-        グレースケール→3倍拡大→コントラスト最大化→2値化の軽い前処理で
-        1回だけ実行（速度優先）。2値化でマイナス符号も拾いやすい。
+        セル枠線をOCRが拾ってマイナス符号等を潰すため、内側に少し縮めて
+        から読む（枠除外）。グレースケール→4倍拡大→コントラスト最大化→
+        白余白付与→psm7 の1回処理。
         """
         img = self.grab(abs_rect)
         if img is None:
@@ -371,16 +372,18 @@ class ScreenSampler:
         try:
             import pytesseract
             from PIL import ImageOps
-            gray = img.convert("L").resize((img.width * 3, img.height * 3))
+            # 枠線を除外（各辺を10%内側にトリム）。極小セルは縮めない。
+            w, h = img.width, img.height
+            mx, my = int(w * 0.10), int(h * 0.10)
+            if w - 2 * mx >= 8 and h - 2 * my >= 8:
+                img = img.crop((mx, my, w - mx, h - my))
+            gray = img.convert("L").resize((img.width * 4, img.height * 4))
             gray = ImageOps.autocontrast(gray)
-            bw = gray.point(lambda p: 0 if p < 128 else 255)
-            if bw.histogram()[0] > bw.histogram()[255]:
-                bw = ImageOps.invert(bw)
-            bw = ImageOps.expand(bw, border=10, fill=255)
+            gray = ImageOps.expand(gray, border=12, fill=255)
             cfg = "--psm 7"
             if whitelist:
                 cfg += f" -c tessedit_char_whitelist={whitelist}"
-            return pytesseract.image_to_string(bw, config=cfg).strip()
+            return pytesseract.image_to_string(gray, config=cfg).strip()
         except Exception:
             return ""
 
@@ -564,20 +567,25 @@ class XR20Monitor:
             self.log("[アンカー] opencv 未導入（start.bat 再実行で導入）")
             return None
         try:
-            templ = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-            if templ is None:
+            templ0 = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+            if templ0 is None:
                 return None
             hay = cv2.cvtColor(np.array(win_img), cv2.COLOR_RGB2GRAY)
-            if hay.shape[0] < templ.shape[0] or hay.shape[1] < templ.shape[1]:
+            best = None  # (score, cx, cy)
+            # マルチスケール: ウィンドウ拡大縮小に追従するため複数倍率で探索
+            for scale in [s / 100.0 for s in range(60, 145, 5)]:
+                tw = max(8, int(templ0.shape[1] * scale))
+                th = max(8, int(templ0.shape[0] * scale))
+                if hay.shape[0] < th or hay.shape[1] < tw:
+                    continue
+                templ = cv2.resize(templ0, (tw, th), interpolation=cv2.INTER_AREA)
+                res = cv2.matchTemplate(hay, templ, cv2.TM_CCOEFF_NORMED)
+                _minv, maxv, _minl, maxl = cv2.minMaxLoc(res)
+                if best is None or maxv > best[0]:
+                    best = (maxv, maxl[0] + tw / 2.0, maxl[1] + th / 2.0)
+            if best is None or best[0] < self.cfg.anchor_match_threshold:
                 return None
-            res = cv2.matchTemplate(hay, templ, cv2.TM_CCOEFF_NORMED)
-            _minv, maxv, _minl, maxl = cv2.minMaxLoc(res)
-            if maxv < self.cfg.anchor_match_threshold:
-                return None
-            th, tw = templ.shape[:2]
-            cx = maxl[0] + tw / 2.0
-            cy = maxl[1] + th / 2.0
-            return (cx / win_img.width, cy / win_img.height)
+            return (best[1] / win_img.width, best[2] / win_img.height)
         except Exception as exc:
             self.log(f"[アンカー] 照合例外: {exc}")
             return None
