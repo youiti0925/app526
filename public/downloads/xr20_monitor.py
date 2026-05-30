@@ -132,8 +132,10 @@ class MonitorConfig:
     # 「データが保存されていません。このまま測定しますか？」ダイアログ用（任意）
     # confirm_dialog_rect: ダイアログが出てるか判定する文字位置（独自テキスト部分）
     # confirm_button_rect: 出ていた時クリックする「測定開始」ボタン位置
-    confirm_dialog_rect: list[float] = field(default_factory=list)
-    confirm_button_rect: list[float] = field(default_factory=list)
+    # 既定値: 提供スクショ（LabVIEW最大化、ダイアログ中央）から算出した近似値。
+    #         画面解像度/ウィンドウサイズが大きく異なる場合は矩形設定で上書きする。
+    confirm_dialog_rect: list[float] = field(default_factory=lambda: [0.432, 0.447, 0.137, 0.029])
+    confirm_button_rect: list[float] = field(default_factory=lambda: [0.432, 0.534, 0.063, 0.029])
 
     # ウィンドウ相対矩形
     button_capture_rect: list[float] = field(default_factory=lambda: list(DEFAULT_BUTTON_CAPTURE))
