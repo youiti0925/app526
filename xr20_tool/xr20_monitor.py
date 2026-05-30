@@ -881,6 +881,9 @@ class XR20Monitor:
 
             if self._state == State.IDLE:
                 self._activity = f"取込開始の押下を待機中（{self.cfg.idle_poll_interval_sec:g}秒ごと確認）"
+                # 待機中も確認ダイアログが出てたら自動で押す（手動押下でも対応）
+                if self.cfg.confirm_button_rect and len(self.cfg.confirm_button_rect) == 4:
+                    self._dismiss_confirm_dialog_quick()
                 if snap.button_pressed and not prev_pressed:
                     if not self._session_active:
                         self._session_active = True
@@ -1038,6 +1041,79 @@ class XR20Monitor:
         # 5) 起動後の待ち
         self._activity = f"再測定: 起動後待ち ({self.cfg.wait_after_switchbot_sec}秒)"
         self._wait(self.cfg.wait_after_switchbot_sec)
+
+    def _dismiss_confirm_dialog_quick(self) -> bool:
+        """確認ダイアログが今出ているか1回だけ確認して、出てたら押す。
+        IDLE中の定期チェック用（ポーリングはしない・無ければ即時False）。"""
+        btn_rel = self.cfg.confirm_button_rect
+        if not btn_rel or len(btn_rel) != 4:
+            return False
+        det_rel = self.cfg.confirm_dialog_rect
+        check_rel = det_rel if (det_rel and len(det_rel) == 4) else btn_rel
+        keywords = (("データ", "保存", "このまま", "測定", "ません")
+                    if check_rel is det_rel else ("測定開始",))
+        abs_r = self._locator.rel_to_abs(check_rel)
+        if not abs_r:
+            return False
+        text = self._sampler.ocr_text_jpn(abs_r)
+        cleaned = "".join(text.split()) if text else ""
+        if cleaned and any(k in cleaned for k in keywords):
+            self.log(f"[確認ダイアログ] 検出: '{cleaned}' → 測定開始 押下")
+            return self._locator.click_at_rect(btn_rel)
+        return False
+
+    def diagnose_confirm_dialog(self) -> dict:
+        """確認ダイアログ検出を今すぐテストする（クリックはしない）。
+        登録状態・OCR結果・判定・クリック予定位置を実数値で返してログにも出す。"""
+        report: dict[str, Any] = {}
+        self.log("=== 確認ダイアログ 診断開始 ===")
+        btn_rel = self.cfg.confirm_button_rect
+        det_rel = self.cfg.confirm_dialog_rect
+        report["button_registered"] = bool(btn_rel) and len(btn_rel) == 4
+        report["dialog_registered"] = bool(det_rel) and len(det_rel) == 4
+        self.log(f"[診断] ボタン矩形登録={report['button_registered']} / "
+                 f"本文矩形登録={report['dialog_registered']}")
+        if not report["button_registered"]:
+            self.log("[診断] 押下用ボタン矩形が未登録。矩形設定で登録してください")
+            return report
+        if not self._locator.refresh() or not self._locator.rect():
+            self.log("[診断] ウィンドウ未検出")
+            report["reason"] = "no_window"
+            return report
+        check_rel = det_rel if report["dialog_registered"] else btn_rel
+        check_label = "本文" if report["dialog_registered"] else "ボタン位置"
+        abs_r = self._locator.rel_to_abs(check_rel)
+        report["check_rect_abs"] = abs_r
+        self.log(f"[診断] 検出に使う矩形({check_label}): rel={check_rel} → abs={abs_r}")
+        if not abs_r:
+            return report
+        text = self._sampler.ocr_text_jpn(abs_r)
+        cleaned = "".join(text.split()) if text else ""
+        report["ocr_text"] = text
+        report["ocr_cleaned"] = cleaned
+        self.log(f"[診断] OCR結果(生)='{text}'")
+        self.log(f"[診断] OCR結果(空白除去)='{cleaned}'")
+        keywords = (("データ", "保存", "このまま", "測定", "ません")
+                    if report["dialog_registered"] else ("測定開始",))
+        hits = [k for k in keywords if k in cleaned]
+        report["keywords_checked"] = list(keywords)
+        report["keywords_hit"] = hits
+        report["detected"] = bool(hits)
+        self.log(f"[診断] キーワード判定 {list(keywords)} → ヒット={hits} → 検出={'OK' if hits else 'NG'}")
+        if hits:
+            click_abs = self._locator.rel_to_abs(btn_rel)
+            report["would_click_at"] = click_abs
+            if click_abs:
+                cx, cy = click_abs[0] + click_abs[2] // 2, click_abs[1] + click_abs[3] // 2
+                self.log(f"[診断] 検出時は (x={cx}, y={cy}) をクリックする予定（テストではクリックしません）")
+        else:
+            self.log("[診断] ダイアログが見つからない理由の候補:")
+            if not cleaned:
+                self.log("  → OCRが何も読めなかった。矩形が画面外/極小、もしくはダイアログがそこに出ていない")
+            else:
+                self.log(f"  → OCRは'{cleaned}'を読んだがキーワードに該当しない。矩形がダイアログ本文ではなく別領域を指している可能性")
+        self.log("=== 確認ダイアログ 診断終了 ===")
+        return report
 
     def _dismiss_confirm_dialog(self) -> bool:
         """「データが保存されていません。このまま測定しますか？」確認ダイアログが
@@ -1814,6 +1890,7 @@ class MonitorGUI:
             ("矩形設定（ドラッグで位置合わせ）", self._open_picker),
             ("キャリブ表示（認識枠の確認）", self._show_calibration),
             ("[診断] 位置補正の状態を確認", self._diagnose_anchor),
+            ("[診断] 確認ダイアログ検出テスト（今ダイアログ出して押す）", self._diagnose_confirm),
             ("1回だけ読み取り（動作確認）", self._read_once),
             ("NG画像フォルダを開く", self._open_ng_folder),
             ("設定を保存", self._save),
@@ -1947,6 +2024,12 @@ class MonitorGUI:
         """位置補正の診断を別スレッドで実行（GUIを止めない）。"""
         self.monitor.log("[診断] 位置補正の状態を確認します…")
         self._run_bg(self.monitor.diagnose_anchor, lambda r: None)
+
+    def _diagnose_confirm(self) -> None:
+        """確認ダイアログ検出を別スレッドで実行（GUIを止めない）。"""
+        self.monitor.log("[診断] 確認ダイアログ検出テストを実行します… "
+                         "（実機でダイアログを出した状態で押してください）")
+        self._run_bg(self.monitor.diagnose_confirm_dialog, lambda r: None)
 
     def _open_ng_folder(self) -> None:
         import os
