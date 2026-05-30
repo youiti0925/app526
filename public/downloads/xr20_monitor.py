@@ -121,8 +121,10 @@ class MonitorConfig:
     auto_correct_button_text: str = "自動補正"
     precision_ng_keyword: str = "精度不良"
 
-    # 「データが保存されていません。このまま測定しますか？」ダイアログの
-    # 「測定開始」ボタン位置（時々出る・任意・矩形設定で登録）
+    # 「データが保存されていません。このまま測定しますか？」ダイアログ用（任意）
+    # confirm_dialog_rect: ダイアログが出てるか判定する文字位置（独自テキスト部分）
+    # confirm_button_rect: 出ていた時クリックする「測定開始」ボタン位置
+    confirm_dialog_rect: list[float] = field(default_factory=list)
     confirm_button_rect: list[float] = field(default_factory=list)
 
     # ウィンドウ相対矩形
@@ -498,6 +500,7 @@ class XR20Monitor:
         self._activity: str = "停止中"  # 現在の動作（ミニ表示用）
         self._active_rows: list[str] = []  # 直近の有効行（軽い周期で流用）
         self._anchor_warned: bool = False  # アンカー未検出ログを1回だけにする
+        self._confirm_warned: bool = False  # 確認ダイアログ未登録ヒントを1回だけ
         self._saw_lamp_on: bool = False  # CAPTURING中に一度でもランプ点灯を観測したか
 
         if err := self._sampler.init_error():
@@ -950,10 +953,8 @@ class XR20Monitor:
         self._activity = "再測定: 取込開始ボタンを押下"
         clicked = self._locator.click_at_rect(self.cfg.button_capture_rect)
         self.log(f"取込開始クリック: {'成功' if clicked else '失敗'}")
-        # 2.5) 確認ダイアログが出たら「測定開始」を押す（出ない時はスキップ）
-        self._wait(0.8)
+        # 2.5) 確認ダイアログが出たら「測定開始」を押す（最大3秒ポーリング）
         if self._dismiss_confirm_dialog():
-            self.log("確認ダイアログ「測定開始」を押下")
             self._wait(0.6)
         # 3) SwitchBot起動まで待つ
         self._activity = f"再測定: SwitchBot起動待ち ({self.cfg.wait_after_capture_sec}秒)"
@@ -970,18 +971,47 @@ class XR20Monitor:
         self._wait(self.cfg.wait_after_switchbot_sec)
 
     def _dismiss_confirm_dialog(self) -> bool:
-        """「データが保存されていません。このまま測定しますか？」の確認ダイアログが
-        出ていれば「測定開始」を押す。出てない/未登録なら何もしない。"""
-        rect_rel = self.cfg.confirm_button_rect
-        if not rect_rel or len(rect_rel) != 4:
+        """「データが保存されていません。このまま測定しますか？」確認ダイアログが
+        出ていれば「測定開始」を押す。出ない/未登録なら何もしない。
+
+        2段階構成（推奨）:
+          confirm_dialog_rect = ダイアログ本文の独自テキストを囲む（出現検知用）
+          confirm_button_rect = 押す「測定開始」ボタン位置
+        最大3秒、0.5秒間隔でポーリング。
+        """
+        btn_rel = self.cfg.confirm_button_rect
+        det_rel = self.cfg.confirm_dialog_rect
+        if not btn_rel or len(btn_rel) != 4:
+            if not self._confirm_warned:
+                self.log("[ヒント] 確認ダイアログの位置が未登録です。"
+                         "矩形設定で『確認ダイアログ本文』と『測定開始ボタン』の2つを登録すると自動で押せます")
+                self._confirm_warned = True
             return False
-        abs_r = self._locator.rel_to_abs(rect_rel)
-        if not abs_r:
-            return False
-        text = self._sampler.ocr_text_jpn(abs_r)
-        # 「測定」「開始」のどれかが見えたらダイアログが出てると判断
-        if "測定" in text or "開始" in text:
-            return self._locator.click_at_rect(rect_rel)
+
+        # 出現検知に使う矩形を選ぶ: 本文側があればそちらを優先（誤検知が少ない）
+        if det_rel and len(det_rel) == 4:
+            check_rel = det_rel
+            keywords = ("データ", "保存", "このまま", "測定")
+        else:
+            # フォールバック: ボタン位置の文字「測定開始」で判定
+            check_rel = btn_rel
+            keywords = ("測定開始",)
+
+        import time as _t
+        deadline = _t.monotonic() + 3.0
+        attempts = 0
+        last_text = ""
+        while _t.monotonic() < deadline and not self._stop.is_set():
+            attempts += 1
+            abs_r = self._locator.rel_to_abs(check_rel)
+            if abs_r:
+                text = self._sampler.ocr_text_jpn(abs_r)
+                last_text = "".join(text.split()) if text else ""
+                if last_text and any(k in last_text for k in keywords):
+                    self.log(f"[確認ダイアログ] 検出: '{last_text}' → 測定開始 押下")
+                    return self._locator.click_at_rect(btn_rel)
+            self._wait(0.5)
+        self.log(f"[確認ダイアログ] 出現せず（{attempts}回確認・直近OCR='{last_text}'）")
         return False
 
     def _finish_session(self, snap: Snapshot, outcome: str) -> None:
@@ -1334,8 +1364,9 @@ class RectPicker:
         self.targets.append(("button_capture", "取込開始 ボタン"))
         self.targets.append(("button_autocorrect", "自動補正 ボタン"))
         self.targets.append(("comment", "コメント欄（精度不良が出る場所）"))
-        self.targets.append(("confirm_button", "[任意・スキップ可] 確認ダイアログの「測定開始」ボタン"
-                              "（『データが保存されていません』の時押される位置）"))
+        self.targets.append(("confirm_dialog", "[任意・スキップ可] 確認ダイアログの本文"
+                              "（『データが保存されていません』の文字部分・出現検知用）"))
+        self.targets.append(("confirm_button", "[任意・スキップ可] 確認ダイアログの「測定開始」ボタン位置"))
         for row in monitor.cfg.target_rows:
             self.targets.append((f"no:{row}", f"No 列 [{row}]（番号が表示されるセル）"))
             self.targets.append((f"lamp:{row}", f"緑ランプ [{row}]"))
@@ -1465,6 +1496,8 @@ def apply_picker_results(cfg: MonitorConfig, results: dict[str, list[float]]) ->
             cfg.button_autocorrect_rect = rel
         elif key == "comment":
             cfg.comment_rect = rel
+        elif key == "confirm_dialog":
+            cfg.confirm_dialog_rect = rel
         elif key == "confirm_button":
             cfg.confirm_button_rect = rel
         elif key == "model":

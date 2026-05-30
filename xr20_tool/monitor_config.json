@@ -26,6 +26,7 @@
   "dry_run": true,
   "auto_retry": true,
   "auto_correction_enabled": false,
+  "confirm_dialog_rect": [],
   "confirm_button_rect": [],
   "button_capture_rect": [0.104, 0.400, 0.069, 0.037],
   "button_autocorrect_rect": [0.183, 0.400, 0.069, 0.037],
