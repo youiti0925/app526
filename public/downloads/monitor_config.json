@@ -5,6 +5,13 @@
   "switchbot_use_ble": false,
   "switchbot_ble_mac": "",
   "switchbot_ble_password": "",
+  "switchbot_patterns": {
+    "1回押し": [0.0],
+    "2回押し（5秒間隔）": [5.0, 0.0],
+    "2回押し（3秒間隔）": [3.0, 0.0],
+    "3回押し（3秒間隔）": [3.0, 3.0, 0.0]
+  },
+  "switchbot_pattern_name": "1回押し",
   "app_title": "IK220分割測定",
   "capture_button_text": "取込開始",
   "auto_correct_button_text": "自動補正",

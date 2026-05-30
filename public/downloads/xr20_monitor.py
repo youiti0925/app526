@@ -85,6 +85,14 @@ class MonitorConfig:
     switchbot_use_ble: bool = False        # True: PCのBluetoothから直接Botを操作（ハブ不要）
     switchbot_ble_mac: str = ""            # Bot の Bluetooth MACアドレス
     switchbot_ble_password: str = ""       # Bot にパスワード設定時のみ（通常は空欄）
+    # 押下パターン: 名前→各押下後の待ち秒のリスト。例 [5.0, 0.0] = 押す→5秒待つ→押す
+    switchbot_patterns: dict[str, list[float]] = field(default_factory=lambda: {
+        "1回押し": [0.0],
+        "2回押し（5秒間隔）": [5.0, 0.0],
+        "2回押し（3秒間隔）": [3.0, 0.0],
+        "3回押し（3秒間隔）": [3.0, 3.0, 0.0],
+    })
+    switchbot_pattern_name: str = "1回押し"  # 使用するパターン名
 
     # ウィンドウ特定（部分一致）
     app_title: str = "IK220分割測定"
@@ -959,13 +967,8 @@ class XR20Monitor:
         # 3) SwitchBot起動まで待つ
         self._activity = f"再測定: SwitchBot起動待ち ({self.cfg.wait_after_capture_sec}秒)"
         self._wait(self.cfg.wait_after_capture_sec)
-        # 4) SwitchBotを起動（dry_runならスキップ）
-        self._activity = "再測定: SwitchBot起動"
-        if self.cfg.dry_run:
-            self.log("[リハーサル] SwitchBot送信スキップ")
-        else:
-            ok, msg = self.send_switchbot_press()
-            self.log(f"SwitchBot 起動: {'成功' if ok else '失敗'} {msg}")
+        # 4) SwitchBotを起動（選択パターンに従い複数押し対応・dry_runならスキップ）
+        self.execute_switchbot_pattern()
         # 5) 起動後の待ち
         self._activity = f"再測定: 起動後待ち ({self.cfg.wait_after_switchbot_sec}秒)"
         self._wait(self.cfg.wait_after_switchbot_sec)
@@ -1059,6 +1062,27 @@ class XR20Monitor:
         if self.cfg.switchbot_use_ble:
             return self.send_switchbot_ble_press()
         return self._send_switchbot_cloud()
+
+    def execute_switchbot_pattern(self) -> bool:
+        """選択中のパターンに従って SwitchBot を複数回押す。
+        パターン = 各押下の後ろに置く待ち秒のリスト。例 [5.0, 0.0] = 押→5秒→押。"""
+        name = self.cfg.switchbot_pattern_name
+        pattern = self.cfg.switchbot_patterns.get(name) or [0.0]
+        n = len(pattern)
+        success = True
+        for i, wait_after in enumerate(pattern, start=1):
+            self._activity = f"再測定: SwitchBot押下 {i}/{n}"
+            if self.cfg.dry_run:
+                self.log(f"[リハーサル] SwitchBot送信スキップ ({i}/{n} - パターン『{name}』)")
+            else:
+                ok, msg = self.send_switchbot_press()
+                self.log(f"SwitchBot 起動 {i}/{n}（パターン『{name}』）: "
+                         f"{'成功' if ok else '失敗'} {msg}")
+                success = success and ok
+            if wait_after > 0 and i < n:
+                self._activity = f"再測定: 次の押下まで待機 ({wait_after}秒) [{i}/{n}]"
+                self._wait(wait_after)
+        return success
 
     # ---- BLE 直結（ハブ不要） -------------------------------------------
     @staticmethod
@@ -1716,6 +1740,7 @@ class MonitorGUI:
         ttk.Label(frm, text="調整・診断ツール", font=("", 11, "bold")).pack(anchor="w", pady=(0, 8))
         for text, cmd in [
             ("SwitchBot設定", self._open_switchbot_dialog),
+            ("SwitchBot押下パターン編集", self._open_switchbot_pattern_dialog),
             ("矩形設定（ドラッグで位置合わせ）", self._open_picker),
             ("キャリブ表示（認識枠の確認）", self._show_calibration),
             ("1回だけ読み取り（動作確認）", self._read_once),
@@ -1756,6 +1781,96 @@ class MonitorGUI:
             .grid(row=len(self._wait_vars) + 1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         ttk.Button(frm, text="閉じる", command=win.destroy).pack(fill="x", pady=(10, 0))
+
+    def _open_switchbot_pattern_dialog(self) -> None:
+        """SwitchBot押下パターンの選択・編集ダイアログ。
+        パターンは「名前」と「各押下後の待ち秒(カンマ区切り)」のテキストで管理。"""
+        tk, ttk = self._tk, self._ttk
+        c = self.monitor.cfg
+        win = tk.Toplevel(self.root)
+        win.title("SwitchBot 押下パターン")
+        win.geometry("560x460")
+        win.transient(self.root)
+
+        frm = ttk.Frame(win, padding=10)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="使用するパターン:").pack(anchor="w")
+        sel_var = tk.StringVar(value=c.switchbot_pattern_name)
+        combo = ttk.Combobox(frm, textvariable=sel_var, state="readonly", values=[])
+        combo.pack(fill="x", pady=(0, 8))
+
+        ttk.Label(frm, text=(
+            "パターン定義（1行1パターン、形式『名前: 各押下後の待ち秒(カンマ区切り)』）\n"
+            "例:  2回押し（5秒間隔）: 5, 0   →  押す → 5秒待つ → 押す（最後の0は最終押下後）"
+        ), foreground="#444").pack(anchor="w")
+        text = tk.Text(frm, height=10, wrap="none")
+        text.pack(fill="both", expand=True, pady=4)
+
+        status_var = tk.StringVar(value="")
+        ttk.Label(frm, textvariable=status_var, foreground="#0060a0").pack(anchor="w")
+
+        def render():
+            text.delete("1.0", "end")
+            for name, waits in c.switchbot_patterns.items():
+                text.insert("end", f"{name}: {', '.join(str(w) for w in waits)}\n")
+            combo["values"] = list(c.switchbot_patterns.keys())
+            if c.switchbot_pattern_name not in c.switchbot_patterns:
+                if c.switchbot_patterns:
+                    c.switchbot_pattern_name = next(iter(c.switchbot_patterns))
+                    sel_var.set(c.switchbot_pattern_name)
+
+        def parse_and_apply() -> str | None:
+            new_patterns: dict[str, list[float]] = {}
+            for ln in text.get("1.0", "end").splitlines():
+                ln = ln.strip()
+                if not ln or ":" not in ln:
+                    continue
+                name, rest = ln.split(":", 1)
+                name = name.strip()
+                if not name:
+                    continue
+                try:
+                    waits = [float(x.strip()) for x in rest.split(",") if x.strip() != ""]
+                except ValueError:
+                    return f"数値解析エラー: {ln!r}"
+                if not waits:
+                    return f"待ち秒が空: {ln!r}"
+                new_patterns[name] = waits
+            if not new_patterns:
+                return "パターンが1つもありません"
+            c.switchbot_patterns = new_patterns
+            chosen = sel_var.get().strip()
+            c.switchbot_pattern_name = chosen if chosen in new_patterns else next(iter(new_patterns))
+            return None
+
+        def do_save():
+            err = parse_and_apply()
+            if err:
+                status_var.set(f"[エラー] {err}")
+                return
+            save_config(self.config_path, c)
+            status_var.set(f"保存しました（選択中: {c.switchbot_pattern_name}）")
+            self.monitor.log(f"SwitchBotパターン保存: 選択中『{c.switchbot_pattern_name}』")
+            render()
+
+        def do_test():
+            err = parse_and_apply()
+            if err:
+                status_var.set(f"[エラー] {err}")
+                return
+            status_var.set(f"テスト実行中（{c.switchbot_pattern_name}）…")
+            win.update_idletasks()
+            # GUIスレッドを長く止めないようバックグラウンドで実行
+            self._run_bg(self.monitor.execute_switchbot_pattern,
+                         lambda ok: status_var.set(f"テスト完了（成功={ok}）"))
+
+        btns = ttk.Frame(frm)
+        btns.pack(fill="x", pady=(6, 0))
+        ttk.Button(btns, text="保存", command=do_save).pack(side="left", padx=2)
+        ttk.Button(btns, text="このパターンでテスト送信", command=do_test).pack(side="left", padx=2)
+        ttk.Button(btns, text="閉じる", command=win.destroy).pack(side="right", padx=2)
+
+        render()
 
     def _open_ng_folder(self) -> None:
         import os
