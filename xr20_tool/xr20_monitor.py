@@ -1749,11 +1749,108 @@ class MonitorGUI:
         self.active_var = tk.StringVar(value="(未取得)")
         self.button_var = tk.StringVar(value="(未取得)")
 
+        # タスクトレイ/通知用の状態
+        self._tray = None
+        self._prev_state_for_notify: str | None = None
+        self._prev_ok = 0
+        self._prev_ng = 0
+
         self._build()
         # GUIはメインスレッドからのみ更新する。監視スレッドはログをキューに積み、
         # スナップショットは monitor._last_snapshot に置くだけ。GUIが定期的に読みに行く。
         monitor._log_cb = self._log_q.put  # スレッドセーフ（Tkを触らない）
+        self._setup_tray()
         self.root.after(200, self._gui_tick)
+
+    def _setup_tray(self) -> None:
+        """タスクトレイ常駐＋メニュー＋通知。pystray 未導入でも他機能は動く。"""
+        try:
+            import pystray
+            from PIL import Image as PILImage, ImageDraw as PILDraw
+        except Exception as exc:
+            self.monitor.log(f"[トレイ] pystray 未導入のためタスクトレイ機能はOFF: {exc}")
+            return
+        img = PILImage.new("RGB", (64, 64), (40, 120, 50))
+        d = PILDraw.Draw(img)
+        d.rectangle([6, 6, 58, 58], outline=(255, 255, 255), width=3)
+        d.text((16, 18), "IK", fill=(255, 255, 255))
+        menu = pystray.Menu(
+            pystray.MenuItem("メイン画面を表示", lambda _i=None, _it=None: self.root.after(0, self._show_main),
+                             default=True),
+            pystray.MenuItem("ミニ表示を開閉", lambda _i=None, _it=None: self.root.after(0, self._toggle_mini)),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("監視 開始", lambda _i=None, _it=None: self.root.after(0, self._start)),
+            pystray.MenuItem("監視 停止", lambda _i=None, _it=None: self.root.after(0, self.monitor.stop)),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("終了", lambda _i=None, _it=None: self.root.after(0, self._exit_app)),
+        )
+        self._tray = pystray.Icon("IK220Monitor", img, "IK220 自動監視モニター", menu)
+        threading.Thread(target=self._tray.run, daemon=True).start()
+        # メイン画面の「×」は終了ではなく非表示（トレイへ）
+        self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
+        self.monitor.log("[トレイ] タスクトレイにアイコンを配置。閉じるボタンで非表示、"
+                         "アイコンクリックで再表示できます")
+
+    def _show_main(self) -> None:
+        try:
+            self.root.deiconify(); self.root.lift(); self.root.focus_force()
+        except Exception:
+            pass
+
+    def _toggle_mini(self) -> None:
+        mini = getattr(self, "_mini", None)
+        try:
+            if mini is not None and mini.winfo_viewable():
+                mini.withdraw()
+            else:
+                if mini is None:
+                    self._open_mini()
+                else:
+                    mini.deiconify(); mini.lift()
+        except Exception:
+            self._open_mini()
+
+    def _hide_to_tray(self) -> None:
+        self.root.withdraw()
+
+    def _exit_app(self) -> None:
+        try:
+            if self._tray:
+                self._tray.stop()
+        except Exception:
+            pass
+        try:
+            self.monitor.stop()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def _notify_event(self, title: str, message: str) -> None:
+        """イベント発生をトレイ通知＋ミニ表示の強調で知らせる。"""
+        # トレイ通知（OSのトースト）
+        if self._tray:
+            try:
+                self._tray.notify(message, title)
+            except Exception:
+                pass
+        # ミニ表示を最前面で出す（隠れてれば表示）
+        mini = getattr(self, "_mini", None)
+        try:
+            if mini is None:
+                self._open_mini()
+                mini = self._mini
+            if mini is not None:
+                mini.deiconify(); mini.lift()
+                try:
+                    mini.attributes("-topmost", True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self.monitor.log(f"[通知] {title}: {message}")
 
     def _gui_tick(self) -> None:
         # 1) ログをキューから取り出して反映
@@ -1771,7 +1868,45 @@ class MonitorGUI:
             self._apply_snapshot_to_panel(snap)
         # 3) ミニ表示も更新
         self._refresh_mini()
+        # 4) 状態遷移を見てイベント通知（トレイ常駐時の自動ポップアップ）
+        self._check_event_transitions()
         self.root.after(250, self._gui_tick)
+
+    def _check_event_transitions(self) -> None:
+        """カウンタ/状態の差分を見て、必要ならトレイ通知＋ミニ強調を発火。"""
+        c = self.monitor.counters()
+        new_state = c.get("state")
+        prev_state = self._prev_state_for_notify
+        snap = self.monitor.last_snapshot()
+        # 傾NG検知
+        if new_state == "TILT_NG_RETRY" and prev_state != "TILT_NG_RETRY":
+            detail = ""
+            if snap and snap.tilt_values:
+                ng = [f"{r}={v}" for r, v in snap.tilt_values.items()
+                       if v is not None and self.monitor.is_ng(r, v)]
+                detail = " ".join(ng)
+            self._notify_event("傾NG検知 → 再測定",
+                               f"{detail}  リトライ {c['tilt_retry']}/{c['max_tilt']}")
+        # 精度NG検知
+        if new_state == "PRECISION_NG_RETRY" and prev_state != "PRECISION_NG_RETRY":
+            self._notify_event("精度NG検知 → 再測定",
+                               f"リトライ {c['precision_retry']}/{c['max_precision']}")
+        # 上限到達(ERROR)
+        if new_state == "ERROR" and prev_state != "ERROR":
+            self._notify_event("⚠ リトライ上限到達",
+                               "手動対応が必要です（監視OFF→ONで再開）")
+        # OK完了（OKカウンタ増加）
+        if c["ok"] > self._prev_ok:
+            self._notify_event("測定OK",
+                               f"型式={c.get('model','')} 機番={c.get('machine','')} "
+                               f"累計 OK={c['ok']}")
+        # NG断念（NGカウンタ増加）
+        if c["ng"] > self._prev_ng:
+            self._notify_event("測定 NG断念",
+                               f"型式={c.get('model','')} 累計 NG={c['ng']}")
+        self._prev_state_for_notify = new_state
+        self._prev_ok = c["ok"]
+        self._prev_ng = c["ng"]
 
     def _apply_snapshot_to_panel(self, snap: "Snapshot") -> None:
         # 項目ごとに「判明している値」を保持する。データが無い周期で空に戻さない
