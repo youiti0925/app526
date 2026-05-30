@@ -629,6 +629,72 @@ class XR20Monitor:
     def _template_path(self, name: str) -> Path:
         return self._resolve_path(name, name)
 
+    def diagnose_anchor(self) -> dict:
+        """位置補正の現在の状態を診断する。テンプレ存在/最良スコア/しきい値/結論を返す。
+        ログにも出力するので、なぜ補正が効かないかを実数値で確認できる。"""
+        report: dict[str, Any] = {"enabled": self.cfg.use_template_anchor}
+        self.log("=== 位置補正 診断開始 ===")
+        if not self.cfg.use_template_anchor:
+            self.log("[診断] 位置自動補正がOFFです（チェックボックスをONに）")
+            report["reason"] = "off"
+            return report
+        if not self._locator.refresh():
+            self.log("[診断] ウィンドウ未検出（対象アプリは起動してる？）")
+            report["reason"] = "no_window"
+            return report
+        rect = self._locator.rect()
+        if not rect:
+            self.log("[診断] ウィンドウ矩形が取得できず")
+            report["reason"] = "no_rect"
+            return report
+        left, top, right, bottom = rect
+        ww, wh = right - left, bottom - top
+        win_img = self._sampler.grab((left, top, ww, wh))
+        if win_img is None:
+            self.log("[診断] 画面キャプチャ失敗")
+            report["reason"] = "no_capture"
+            return report
+        report["window"] = (ww, wh)
+        self.log(f"[診断] ウィンドウ {ww}x{wh} 取得")
+
+        # 各目印のテンプレ存在＋全スケールでのスコア最大値を計算
+        threshold = self.cfg.anchor_match_threshold
+        for name, rect_cfg in (("A", self.cfg.anchor_a_rect),
+                                ("B", self.cfg.anchor_b_rect)):
+            file_name = f"anchor_{name.lower()}.png"
+            path = self._template_path(file_name)
+            entry: dict[str, Any] = {"file": str(path), "exists": path.exists(),
+                                     "rect_registered": len(rect_cfg) == 4}
+            self.log(f"[診断] 目印{name}: ファイル={path.name} 存在={entry['exists']} "
+                     f"矩形登録={entry['rect_registered']}")
+            if not path.exists() or not entry["rect_registered"]:
+                entry["passed"] = False
+                report[name] = entry
+                continue
+            pos, score, _ = self._match_template(win_img, file_name)
+            entry["best_score"] = round(score, 3)
+            entry["threshold"] = threshold
+            entry["passed"] = pos is not None
+            entry["center_frac"] = pos
+            self.log(f"[診断] 目印{name}: 最良スコア={score:.3f} (必要 {threshold:.2f}) "
+                     f"判定={'OK' if entry['passed'] else 'NG'}")
+            report[name] = entry
+
+        a_ok = report.get("A", {}).get("passed", False)
+        b_ok = report.get("B", {}).get("passed", False)
+        if a_ok and b_ok:
+            self._update_anchor_correction()
+            corr = self._locator._anchor_corr
+            report["correction"] = corr
+            self.log(f"[診断] 両方OK → 補正値 sx={corr[0]:.3f} sy={corr[1]:.3f} "
+                     f"ox={corr[2]:.4f} oy={corr[3]:.4f}" if corr else "[診断] 補正値なし")
+        else:
+            self.log("[診断] 少なくとも片方の目印が見つからないため、固定座標で動作中。"
+                     "矩形設定で目印A/Bを『他と紛れない大きめの範囲』で囲み直すと改善することが多い")
+            report["correction"] = None
+        self.log("=== 位置補正 診断終了 ===")
+        return report
+
     def _match_template(self, win_img: Any, fname: str) -> tuple[tuple[float, float] | None, float, bool]:
         """目印テンプレを探す。戻り値 (中心分数 or None, 最良スコア, ファイル有無)。"""
         path = self._template_path(fname)
@@ -1065,22 +1131,26 @@ class XR20Monitor:
 
     def execute_switchbot_pattern(self) -> bool:
         """選択中のパターンに従って SwitchBot を複数回押す。
-        パターン = 各押下の後ろに置く待ち秒のリスト。例 [5.0, 0.0] = 押→5秒→押。"""
+        パターン = 各押下の後ろに置く待ち秒のリスト。例 [5.0, 0.0] = 押→5秒→押。
+        最後の要素の待ちも実行する（『1回押し→7秒待つ』のような表現を可能に）。"""
         name = self.cfg.switchbot_pattern_name
         pattern = self.cfg.switchbot_patterns.get(name) or [0.0]
         n = len(pattern)
+        self.log(f"[パターン] 『{name}』を実行: {n}回押し、待ち={pattern}秒"
+                 + ("（リハーサル中なので物理押下はスキップ）" if self.cfg.dry_run else ""))
         success = True
         for i, wait_after in enumerate(pattern, start=1):
             self._activity = f"再測定: SwitchBot押下 {i}/{n}"
             if self.cfg.dry_run:
-                self.log(f"[リハーサル] SwitchBot送信スキップ ({i}/{n} - パターン『{name}』)")
+                self.log(f"[リハーサル] SwitchBot送信スキップ ({i}/{n})")
             else:
                 ok, msg = self.send_switchbot_press()
-                self.log(f"SwitchBot 起動 {i}/{n}（パターン『{name}』）: "
-                         f"{'成功' if ok else '失敗'} {msg}")
+                self.log(f"SwitchBot 起動 {i}/{n}: {'成功' if ok else '失敗'} {msg}")
                 success = success and ok
-            if wait_after > 0 and i < n:
-                self._activity = f"再測定: 次の押下まで待機 ({wait_after}秒) [{i}/{n}]"
+            if wait_after > 0:
+                next_label = f"次の押下まで待機 [{i}/{n}]" if i < n else f"押下後の待機 [{i}/{n}]"
+                self._activity = f"再測定: {next_label} ({wait_after}秒)"
+                self.log(f"[パターン] {next_label}: {wait_after}秒")
                 self._wait(wait_after)
         return success
 
@@ -1743,6 +1813,7 @@ class MonitorGUI:
             ("SwitchBot押下パターン編集", self._open_switchbot_pattern_dialog),
             ("矩形設定（ドラッグで位置合わせ）", self._open_picker),
             ("キャリブ表示（認識枠の確認）", self._show_calibration),
+            ("[診断] 位置補正の状態を確認", self._diagnose_anchor),
             ("1回だけ読み取り（動作確認）", self._read_once),
             ("NG画像フォルダを開く", self._open_ng_folder),
             ("設定を保存", self._save),
@@ -1871,6 +1942,11 @@ class MonitorGUI:
         ttk.Button(btns, text="閉じる", command=win.destroy).pack(side="right", padx=2)
 
         render()
+
+    def _diagnose_anchor(self) -> None:
+        """位置補正の診断を別スレッドで実行（GUIを止めない）。"""
+        self.monitor.log("[診断] 位置補正の状態を確認します…")
+        self._run_bg(self.monitor.diagnose_anchor, lambda r: None)
 
     def _open_ng_folder(self) -> None:
         import os
