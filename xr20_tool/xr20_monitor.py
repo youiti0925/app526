@@ -112,14 +112,18 @@ class MonitorConfig:
     save_ng_screenshot: bool = True
     ng_screenshot_dir: str = "ng_shots"
 
-    # 動作フラグ（既定で全ON。実機運用前にリハーサルを外す等は画面で調整）
+    # 動作フラグ
     dry_run: bool = True
     auto_retry: bool = True
-    auto_correction_enabled: bool = True  # 傾OK後、自動補正→精度チェックを実施するか
+    auto_correction_enabled: bool = False  # 精度判定（傾OK後 自動補正→コメントOCR）。既定OFF
 
     # 自動補正／精度不良監視
     auto_correct_button_text: str = "自動補正"
     precision_ng_keyword: str = "精度不良"
+
+    # 「データが保存されていません。このまま測定しますか？」ダイアログの
+    # 「測定開始」ボタン位置（時々出る・任意・矩形設定で登録）
+    confirm_button_rect: list[float] = field(default_factory=list)
 
     # ウィンドウ相対矩形
     button_capture_rect: list[float] = field(default_factory=lambda: list(DEFAULT_BUTTON_CAPTURE))
@@ -946,6 +950,11 @@ class XR20Monitor:
         self._activity = "再測定: 取込開始ボタンを押下"
         clicked = self._locator.click_at_rect(self.cfg.button_capture_rect)
         self.log(f"取込開始クリック: {'成功' if clicked else '失敗'}")
+        # 2.5) 確認ダイアログが出たら「測定開始」を押す（出ない時はスキップ）
+        self._wait(0.8)
+        if self._dismiss_confirm_dialog():
+            self.log("確認ダイアログ「測定開始」を押下")
+            self._wait(0.6)
         # 3) SwitchBot起動まで待つ
         self._activity = f"再測定: SwitchBot起動待ち ({self.cfg.wait_after_capture_sec}秒)"
         self._wait(self.cfg.wait_after_capture_sec)
@@ -959,6 +968,21 @@ class XR20Monitor:
         # 5) 起動後の待ち
         self._activity = f"再測定: 起動後待ち ({self.cfg.wait_after_switchbot_sec}秒)"
         self._wait(self.cfg.wait_after_switchbot_sec)
+
+    def _dismiss_confirm_dialog(self) -> bool:
+        """「データが保存されていません。このまま測定しますか？」の確認ダイアログが
+        出ていれば「測定開始」を押す。出てない/未登録なら何もしない。"""
+        rect_rel = self.cfg.confirm_button_rect
+        if not rect_rel or len(rect_rel) != 4:
+            return False
+        abs_r = self._locator.rel_to_abs(rect_rel)
+        if not abs_r:
+            return False
+        text = self._sampler.ocr_text_jpn(abs_r)
+        # 「測定」「開始」のどれかが見えたらダイアログが出てると判断
+        if "測定" in text or "開始" in text:
+            return self._locator.click_at_rect(rect_rel)
+        return False
 
     def _finish_session(self, snap: Snapshot, outcome: str) -> None:
         """1測定セッションの終端処理。集計カウンタ更新＋サマリCSV記録。"""
@@ -1310,6 +1334,8 @@ class RectPicker:
         self.targets.append(("button_capture", "取込開始 ボタン"))
         self.targets.append(("button_autocorrect", "自動補正 ボタン"))
         self.targets.append(("comment", "コメント欄（精度不良が出る場所）"))
+        self.targets.append(("confirm_button", "[任意・スキップ可] 確認ダイアログの「測定開始」ボタン"
+                              "（『データが保存されていません』の時押される位置）"))
         for row in monitor.cfg.target_rows:
             self.targets.append((f"no:{row}", f"No 列 [{row}]（番号が表示されるセル）"))
             self.targets.append((f"lamp:{row}", f"緑ランプ [{row}]"))
@@ -1439,6 +1465,8 @@ def apply_picker_results(cfg: MonitorConfig, results: dict[str, list[float]]) ->
             cfg.button_autocorrect_rect = rel
         elif key == "comment":
             cfg.comment_rect = rel
+        elif key == "confirm_button":
+            cfg.confirm_button_rect = rel
         elif key == "model":
             cfg.model_rect = rel
         elif key == "machine":
@@ -1583,7 +1611,7 @@ class MonitorGUI:
                         command=self._apply).pack(side="left", padx=4)
         ttk.Checkbutton(flags, text="NG自動リトライ", variable=self.auto_retry_var,
                         command=self._apply).pack(side="left", padx=4)
-        ttk.Checkbutton(flags, text="傾OK後に自動補正→精度チェック", variable=self.auto_correct_var,
+        ttk.Checkbutton(flags, text="精度判定する（傾OK後 自動補正→コメント確認）", variable=self.auto_correct_var,
                         command=self._apply).pack(side="left", padx=4)
 
         flags2 = ttk.Frame(frm)
