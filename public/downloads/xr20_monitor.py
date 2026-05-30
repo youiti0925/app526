@@ -479,6 +479,7 @@ class XR20Monitor:
         self._activity: str = "停止中"  # 現在の動作（ミニ表示用）
         self._active_rows: list[str] = []  # 直近の有効行（軽い周期で流用）
         self._anchor_warned: bool = False  # アンカー未検出ログを1回だけにする
+        self._saw_lamp_on: bool = False  # CAPTURING中に一度でもランプ点灯を観測したか
 
         if err := self._sampler.init_error():
             self.log(f"[警告] {err}（OCR/色判定が機能しません）")
@@ -768,8 +769,18 @@ class XR20Monitor:
                 self._wait(self.cfg.idle_poll_interval_sec)
                 continue
 
-            all_done = bool(snap.active_rows) and all(
+            # 測定完了の検出: 「測定中に一度ランプが点いた」→「全ランプ消えた」瞬間。
+            # このアプリのランプは測定中の行を順次点灯し、完了で全部消える挙動なので。
+            any_lamp_on = bool(snap.active_rows) and any(
                 snap.lamp_states.get(r) == "ON" for r in snap.active_rows
+            )
+            if self._state == State.CAPTURING and any_lamp_on:
+                self._saw_lamp_on = True
+            all_done = (
+                self._state == State.CAPTURING
+                and self._saw_lamp_on
+                and bool(snap.active_rows)
+                and not any_lamp_on  # 一度ONを見てから全てOFFに戻った
             )
 
             if self._state == State.IDLE:
@@ -779,18 +790,24 @@ class XR20Monitor:
                         self._session_active = True
                         self.log(f"測定セッション開始 / 型式={self._current_model or '(未取得)'}")
                     self.log(f"取込開始検知 / 有効行={snap.active_rows}")
+                    self._saw_lamp_on = False  # 新測定の開始: ランプ観測フラグをリセット
                     self._state = State.CAPTURING
 
             elif self._state == State.CAPTURING:
-                if not snap.button_pressed and all_done and not prev_all_done:
-                    self.log("取込完了検知 → 判定待機")
-                    self._activity = "取込完了 → 判定待機中"
+                if all_done and not prev_all_done:
+                    self.log("測定完了検知（ランプ点灯→消灯）→ 判定待機")
+                    self._activity = "測定完了 → 判定待機中"
                     self._wait(self.cfg.judge_delay_sec)  # 表示が安定するまで少し待つ
                     self._state = State.JUDGING
                 elif snap.active_rows:
                     progress = [f"{r}:{snap.lamp_states.get(r, '?')}" for r in snap.active_rows]
-                    done_n = sum(1 for r in snap.active_rows if snap.lamp_states.get(r) == "ON")
-                    self._activity = f"測定中… ランプ {done_n}/{len(snap.active_rows)} 点灯"
+                    on_n = sum(1 for r in snap.active_rows if snap.lamp_states.get(r) == "ON")
+                    if not self._saw_lamp_on:
+                        self._activity = "測定開始待ち（ランプ点灯を監視）"
+                    elif on_n > 0:
+                        self._activity = f"測定中… ランプ {on_n}/{len(snap.active_rows)} 点灯"
+                    else:
+                        self._activity = "測定終了確認中（ランプ全消灯→判定へ）"
                     self.log("測定中 " + " ".join(progress))
 
             elif self._state == State.JUDGING:
