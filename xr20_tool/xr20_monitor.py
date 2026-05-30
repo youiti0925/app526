@@ -299,6 +299,21 @@ class WindowLocator:
         except Exception:
             return False
 
+    def click_at_rect(self, rel_rect: list[float]) -> bool:
+        """ウィンドウ相対矩形の中心をマウスでクリック。LabVIEW のように
+        pywinauto から直接ボタンを叩けない場合に使う（位置補正があれば適用）。"""
+        abs_rect = self.rel_to_abs(rel_rect)
+        if not abs_rect:
+            return False
+        x, y, w, h = abs_rect
+        cx, cy = x + w // 2, y + h // 2
+        try:
+            from pywinauto.mouse import click as pwa_click
+            pwa_click(button="left", coords=(cx, cy))
+            return True
+        except Exception:
+            return False
+
 
 class ScreenSampler:
     """mss + PIL で画面の矩形を取得し、ピクセル色／OCR を提供する."""
@@ -853,7 +868,8 @@ class XR20Monitor:
 
             elif self._state == State.AUTO_CORRECTING:
                 self._activity = "自動補正を実行中"
-                clicked = self._locator.click_button(self.cfg.auto_correct_button_text)
+                # LabVIEW ボタンは pywinauto から叩けないので座標クリック
+                clicked = self._locator.click_at_rect(self.cfg.button_autocorrect_rect)
                 self.log(f"自動補正クリック: {'成功' if clicked else '失敗'}")
                 self._wait(self.cfg.auto_correct_wait_sec)
                 self._state = State.PRECISION_JUDGING
@@ -925,9 +941,10 @@ class XR20Monitor:
         # 1) NG画面のスクショ後、取込開始押下まで待つ
         self._activity = f"再測定準備: 待機中 ({self.cfg.wait_before_capture_sec}秒)"
         self._wait(self.cfg.wait_before_capture_sec)
-        # 2) 取込開始ボタンを押す
+        # 2) 取込開始ボタンを押す（LabVIEWボタンは pywinauto から
+        #   叩けないため、矩形の中心を座標クリック）
         self._activity = "再測定: 取込開始ボタンを押下"
-        clicked = self._locator.click_button(self.cfg.capture_button_text)
+        clicked = self._locator.click_at_rect(self.cfg.button_capture_rect)
         self.log(f"取込開始クリック: {'成功' if clicked else '失敗'}")
         # 3) SwitchBot起動まで待つ
         self._activity = f"再測定: SwitchBot起動待ち ({self.cfg.wait_after_capture_sec}秒)"
