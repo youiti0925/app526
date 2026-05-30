@@ -441,6 +441,7 @@ class Snapshot:
     button_color: tuple[int, int, int] | None = None
     active_rows: list[str] = field(default_factory=list)  # No 列に数字がある行
     lamp_states: dict[str, str] = field(default_factory=dict)  # row -> ON/OFF/UNKNOWN
+    lamp_colors: dict[str, tuple[int, int, int] | None] = field(default_factory=dict)  # 診断用 実RGB
     tilt_values: dict[str, float | None] = field(default_factory=dict)
     raw_no: dict[str, str] = field(default_factory=dict)
     raw_tilt: dict[str, str] = field(default_factory=dict)
@@ -539,14 +540,16 @@ class XR20Monitor:
         else:
             snap.active_rows = list(self._active_rows)
 
-        # 3) 行ごとの緑ランプ（常時・軽い色判定）
+        # 3) 行ごとの緑ランプ（常時・軽い色判定）。実RGBも残して診断に使う
         for row in self.cfg.target_rows:
             rel = self.cfg.lamp_rects.get(row)
             rect = self._locator.rel_to_abs(rel) if rel else None
             if not rect:
                 snap.lamp_states[row] = "UNKNOWN"
+                snap.lamp_colors[row] = None
                 continue
             color = self._sampler.average_color(rect)
+            snap.lamp_colors[row] = color
             snap.lamp_states[row] = self._classify_lamp(color) if color else "UNKNOWN"
 
         # 4) 傾列 OCR（必要時のみ・有効行）
@@ -745,7 +748,7 @@ class XR20Monitor:
         while not self._stop.is_set():
             # フェーズ別に必要な処理だけ実行（測定中は色判定のみで高速・表示が追従）
             if self._state == State.CAPTURING:
-                # 測定中も型式/機番は読み直す（表示が古い化け値で固定されないように）。
+                # 測定中も型式/機番は読み直す（古い化け値で固定されないように）。
                 # 重い傾OCR・コメント・位置補正は判定時のみ。
                 snap = self.take_snapshot(read_no=False, read_tilt=False,
                                           read_comment=False, read_meta=True, do_anchor=False)
