@@ -1767,11 +1767,19 @@ def apply_picker_results(cfg: MonitorConfig, results: dict[str, list[float]]) ->
 def save_anchor_templates(results: dict[str, list[float]], full_image: Any, base_dir: Path,
                           log: Callable[[str], None] | None = None) -> int:
     """目印A/Bの矩形からテンプレ画像を切り出して保存。保存数を返す。
-    テンプレが小さすぎる場合は警告（誤マッチの原因になる）。"""
+    テンプレは縮小表示画像ではなく**元解像度の full_image から切り出している**こと、
+    実際のサイズをログで明示する（精度の不安を解消するため）。"""
     saved = 0
     if full_image is None:
         return 0
-    W, H = full_image.size
+    W, H = full_image.size  # 元解像度
+    debug_dir = None
+    try:
+        debug_dir = (base_dir / "debug_captures")
+        debug_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        debug_dir = None
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     for key, fname in [("anchor_a", "anchor_a.png"), ("anchor_b", "anchor_b.png")]:
         rel = results.get(key)
         if not rel or len(rel) != 4:
@@ -1783,8 +1791,18 @@ def save_anchor_templates(results: dict[str, list[float]], full_image: Any, base
             log(f"[警告] 目印{key[-1].upper()}が小さい({w_px}x{h_px}px)。"
                 f"特徴不足で誤マッチしやすい。30x20px以上、できれば50x30px以上を推奨")
         try:
-            full_image.crop((x0, y0, x1, y1)).save(base_dir / fname)
+            crop = full_image.crop((x0, y0, x1, y1))
+            crop.save(base_dir / fname)
             saved += 1
+            if log is not None:
+                log(f"目印{key[-1].upper()} 保存: {fname} (実サイズ {w_px}x{h_px}px、"
+                    f"元画像 {W}x{H} から切出)")
+            # 検証用に debug_captures にも同じ画像を残す
+            if debug_dir is not None:
+                try:
+                    crop.save(debug_dir / f"{ts}_{key}_template.png")
+                except Exception:
+                    pass
         except Exception:
             pass
     return saved
