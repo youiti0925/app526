@@ -682,10 +682,20 @@ class XR20Monitor:
             pos, score, _ = self._match_template(win_img, file_name)
             entry["best_score"] = round(score, 3)
             entry["threshold"] = threshold
-            entry["passed"] = pos is not None
+            entry["floor"] = 0.30
+            # 適応的判定: 設定閾値以上=強, 0.30〜閾値=弱(受理), 0.30未満=不可
+            if pos is None:
+                judge = "計算不可"; passed = False
+            elif score >= threshold:
+                judge = "強"; passed = True
+            elif score >= 0.30:
+                judge = "弱(適応受理)"; passed = True
+            else:
+                judge = "不可"; passed = False
+            entry["passed"] = passed
             entry["center_frac"] = pos
-            self.log(f"[診断] 目印{name}: 最良スコア={score:.3f} (必要 {threshold:.2f}) "
-                     f"判定={'OK' if entry['passed'] else 'NG'}")
+            self.log(f"[診断] 目印{name}: 最良スコア={score:.3f} (設定閾値={threshold:.2f}/床=0.30) "
+                     f"判定={judge}")
             report[name] = entry
 
         a_ok = report.get("A", {}).get("passed", False)
@@ -704,7 +714,8 @@ class XR20Monitor:
         return report
 
     def _match_template(self, win_img: Any, fname: str) -> tuple[tuple[float, float] | None, float, bool]:
-        """目印テンプレを探す。戻り値 (中心分数 or None, 最良スコア, ファイル有無)。"""
+        """目印テンプレを探す。戻り値 (最良位置, 最良スコア, ファイル有無)。
+        位置はマッチが計算できなかった時のみ None（しきい値判定は呼び出し側で行う）。"""
         path = self._template_path(fname)
         if not path.exists():
             return None, 0.0, False
@@ -723,9 +734,6 @@ class XR20Monitor:
             hay_gray = cv2.cvtColor(arr_rgb, cv2.COLOR_RGB2GRAY)
             hay_color = cv2.cvtColor(arr_rgb, cv2.COLOR_RGB2BGR)
             best = None  # (score, cx, cy)
-            # マルチスケール: 拡大縮小に強く追従するよう 0.4〜1.8倍を探索。
-            # 色情報を活かす『カラー照合』とアンチエイリアスに強い『グレー照合』
-            # の両方を試して、より一致度が高い方を採用する。
             for scale in [s / 100.0 for s in range(40, 181, 5)]:
                 tw = max(8, int(templ_gray0.shape[1] * scale))
                 th = max(8, int(templ_gray0.shape[0] * scale))
@@ -742,10 +750,9 @@ class XR20Monitor:
                     _mn2, mx2, _ml2, ml2 = cv2.minMaxLoc(r2)
                     if mx2 > best[0]:
                         best = (mx2, ml2[0] + tw / 2.0, ml2[1] + th / 2.0)
-            score = best[0] if best else 0.0
-            if best is None or score < self.cfg.anchor_match_threshold:
-                return None, score, True
-            return (best[1] / win_img.width, best[2] / win_img.height), score, True
+            if best is None:
+                return None, 0.0, True
+            return (best[1] / win_img.width, best[2] / win_img.height), best[0], True
         except Exception as exc:
             self.log(f"[位置補正] 照合例外: {exc}")
             return None, 0.0, True
@@ -778,13 +785,29 @@ class XR20Monitor:
                 self._anchor_warned = True
             return
         if a_cur is None or b_cur is None:
+            # マッチ計算自体が走らなかった（テンプレ大きすぎ等）
             self._locator.set_anchor_correction(None)
             if not self._anchor_warned:
-                self.log(f"[位置補正] 目印の一致度が低く固定座標で継続 "
-                         f"(A={a_sc:.2f} B={b_sc:.2f} / 必要{self.cfg.anchor_match_threshold:.2f})。"
-                         f"目印領域が登録時と違う可能性（値が変わる欄を避け、終了ボタンやCW/CCW凡例を囲む）")
+                self.log("[位置補正] テンプレ照合が走らず（テンプレがウィンドウより大きい等）→ 固定座標")
                 self._anchor_warned = True
             return
+        # 適応的しきい値: 設定値で見つからなくても 0.30 まで自動で緩めて発見する
+        # （PC環境差で同じ画像でもスコアが下がる事があるため）。
+        # 倍率異常チェックが下流にあるので、明らかに変な一致は弾かれる安全網付き。
+        configured = self.cfg.anchor_match_threshold
+        floor = 0.30
+        min_sc = min(a_sc, b_sc)
+        if min_sc < floor:
+            self._locator.set_anchor_correction(None)
+            if not self._anchor_warned:
+                self.log(f"[位置補正] 一致度が低すぎ (A={a_sc:.2f} B={b_sc:.2f} / 床{floor:.2f})。"
+                         f"目印領域が登録時と違う可能性（動く要素を避け、終了ボタン/CW・CCW凡例を囲む）")
+                self._anchor_warned = True
+            return
+        if min_sc < configured:
+            # 適応的に受理（弱マッチでも倍率チェックを通れば使う）
+            self.log(f"[位置補正] 適応的に受理: A={a_sc:.2f} B={b_sc:.2f} (設定閾値={configured:.2f})"
+                     "。倍率検証へ進む")
         self._anchor_warned = False  # 見つかったら警告フラグを戻す
         # 参照位置（登録時の目印中心、分数）
         ar = self.cfg.anchor_a_rect
