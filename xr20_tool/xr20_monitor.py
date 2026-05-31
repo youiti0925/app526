@@ -151,7 +151,7 @@ class MonitorConfig:
     use_template_anchor: bool = True
     anchor_a_rect: list[float] = field(default_factory=list)  # 目印A（例:「型式」ラベル）
     anchor_b_rect: list[float] = field(default_factory=list)  # 目印B（例: 表ヘッダー行）
-    anchor_match_threshold: float = 0.6  # マッチ信頼度の下限
+    anchor_match_threshold: float = 0.5  # マッチ信頼度の下限（厳しすぎず緩すぎず）
 
     # 色基準（RGB）／許容誤差
     # 画像からの実測値:
@@ -715,22 +715,33 @@ class XR20Monitor:
             self.log("[位置補正] opencv 未導入（start.bat 再実行で導入）")
             return None, 0.0, True
         try:
-            templ0 = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-            if templ0 is None:
+            templ_gray0 = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+            templ_color0 = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if templ_gray0 is None:
                 return None, 0.0, True
-            hay = cv2.cvtColor(np.array(win_img), cv2.COLOR_RGB2GRAY)
+            arr_rgb = np.array(win_img)
+            hay_gray = cv2.cvtColor(arr_rgb, cv2.COLOR_RGB2GRAY)
+            hay_color = cv2.cvtColor(arr_rgb, cv2.COLOR_RGB2BGR)
             best = None  # (score, cx, cy)
-            # マルチスケール: ウィンドウ拡大縮小に追従するため複数倍率で探索
-            for scale in [s / 100.0 for s in range(50, 156, 5)]:
-                tw = max(8, int(templ0.shape[1] * scale))
-                th = max(8, int(templ0.shape[0] * scale))
-                if hay.shape[0] < th or hay.shape[1] < tw:
+            # マルチスケール: 拡大縮小に強く追従するよう 0.4〜1.8倍を探索。
+            # 色情報を活かす『カラー照合』とアンチエイリアスに強い『グレー照合』
+            # の両方を試して、より一致度が高い方を採用する。
+            for scale in [s / 100.0 for s in range(40, 181, 5)]:
+                tw = max(8, int(templ_gray0.shape[1] * scale))
+                th = max(8, int(templ_gray0.shape[0] * scale))
+                if hay_gray.shape[0] < th or hay_gray.shape[1] < tw:
                     continue
-                templ = cv2.resize(templ0, (tw, th), interpolation=cv2.INTER_AREA)
-                res = cv2.matchTemplate(hay, templ, cv2.TM_CCOEFF_NORMED)
-                _minv, maxv, _minl, maxl = cv2.minMaxLoc(res)
-                if best is None or maxv > best[0]:
-                    best = (maxv, maxl[0] + tw / 2.0, maxl[1] + th / 2.0)
+                t_gray = cv2.resize(templ_gray0, (tw, th), interpolation=cv2.INTER_AREA)
+                r1 = cv2.matchTemplate(hay_gray, t_gray, cv2.TM_CCOEFF_NORMED)
+                _mn1, mx1, _ml1, ml1 = cv2.minMaxLoc(r1)
+                if best is None or mx1 > best[0]:
+                    best = (mx1, ml1[0] + tw / 2.0, ml1[1] + th / 2.0)
+                if templ_color0 is not None:
+                    t_col = cv2.resize(templ_color0, (tw, th), interpolation=cv2.INTER_AREA)
+                    r2 = cv2.matchTemplate(hay_color, t_col, cv2.TM_CCOEFF_NORMED)
+                    _mn2, mx2, _ml2, ml2 = cv2.minMaxLoc(r2)
+                    if mx2 > best[0]:
+                        best = (mx2, ml2[0] + tw / 2.0, ml2[1] + th / 2.0)
             score = best[0] if best else 0.0
             if best is None or score < self.cfg.anchor_match_threshold:
                 return None, score, True
@@ -1730,8 +1741,10 @@ def apply_picker_results(cfg: MonitorConfig, results: dict[str, list[float]]) ->
     return count
 
 
-def save_anchor_templates(results: dict[str, list[float]], full_image: Any, base_dir: Path) -> int:
-    """目印A/Bの矩形からテンプレ画像を切り出して保存。保存数を返す。"""
+def save_anchor_templates(results: dict[str, list[float]], full_image: Any, base_dir: Path,
+                          log: Callable[[str], None] | None = None) -> int:
+    """目印A/Bの矩形からテンプレ画像を切り出して保存。保存数を返す。
+    テンプレが小さすぎる場合は警告（誤マッチの原因になる）。"""
     saved = 0
     if full_image is None:
         return 0
@@ -1740,10 +1753,12 @@ def save_anchor_templates(results: dict[str, list[float]], full_image: Any, base
         rel = results.get(key)
         if not rel or len(rel) != 4:
             continue
-        x0 = int(rel[0] * W)
-        y0 = int(rel[1] * H)
-        x1 = int((rel[0] + rel[2]) * W)
-        y1 = int((rel[1] + rel[3]) * H)
+        x0 = int(rel[0] * W); y0 = int(rel[1] * H)
+        x1 = int((rel[0] + rel[2]) * W); y1 = int((rel[1] + rel[3]) * H)
+        w_px, h_px = x1 - x0, y1 - y0
+        if (w_px < 40 or h_px < 20) and log is not None:
+            log(f"[警告] 目印{key[-1].upper()}が小さい({w_px}x{h_px}px)。"
+                f"特徴不足で誤マッチしやすい。30x20px以上、できれば50x30px以上を推奨")
         try:
             full_image.crop((x0, y0, x1, y1)).save(base_dir / fname)
             saved += 1
@@ -2361,7 +2376,8 @@ class MonitorGUI:
         def on_done(results: dict[str, list[float]], full_image=None) -> None:
             n = apply_picker_results(self.monitor.cfg, results)
             self.monitor.log(f"ピッカー: {n} 要素を更新")
-            saved = save_anchor_templates(results, full_image, self.config_path.parent)
+            saved = save_anchor_templates(results, full_image, self.config_path.parent,
+                                           log=self.monitor.log)
             if saved:
                 self.monitor.log(f"位置補正の目印テンプレを {saved} 個保存")
             save_config(self.config_path, self.monitor.cfg)
