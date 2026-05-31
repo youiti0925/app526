@@ -1,2 +1,8 @@
 _test_*.png
 __pycache__/
+debug_captures/
+ng_shots/
+xr20_monitor_history.csv
+xr20_monitor_summary.csv
+anchor_a.png
+anchor_b.png

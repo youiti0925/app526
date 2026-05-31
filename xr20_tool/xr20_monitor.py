@@ -658,6 +658,12 @@ class XR20Monitor:
             return report
         report["window"] = (ww, wh)
         self.log(f"[診断] ウィンドウ {ww}x{wh} 取得")
+        # 実画像と保存テンプレを並べて確認できるように、現在のウィンドウ画像も保存
+        dbg = self._save_debug_capture((left, top, ww, wh), "anchor_current_window")
+        if dbg:
+            self.log(f"[診断] 現在のウィンドウ画像を保存: {dbg}")
+            self.log("[診断]   ↑この画像と debug_captures/ にあるテンプレを見比べると"
+                     " 『なぜ一致しないか』が目視で分かる")
 
         # 各目印のテンプレ存在＋全スケールでのスコア最大値を計算
         threshold = self.cfg.anchor_match_threshold
@@ -1044,6 +1050,29 @@ class XR20Monitor:
         self._activity = f"再測定: 起動後待ち ({self.cfg.wait_after_switchbot_sec}秒)"
         self._wait(self.cfg.wait_after_switchbot_sec)
 
+    def _save_debug_capture(self, abs_rect: tuple[int, int, int, int] | None,
+                            name: str) -> str | None:
+        """指定矩形（None ならウィンドウ全体）をデバッグフォルダに保存。
+        戻り値: 保存パス（失敗時 None）。実機で『ツールは何を見ているか』を確認するため。"""
+        if abs_rect is None:
+            rect = self._locator.rect()
+            if not rect:
+                return None
+            left, top, right, bottom = rect
+            abs_rect = (left, top, right - left, bottom - top)
+        img = self._sampler.grab(abs_rect)
+        if img is None:
+            return None
+        out_dir = self._resolve_path("debug_captures", "debug_captures")
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = out_dir / f"{ts}_{name}.png"
+            img.save(path)
+            return str(path)
+        except Exception:
+            return None
+
     def _dismiss_confirm_dialog_quick(self) -> bool:
         """確認ダイアログが今出ているか1回だけ確認して、出てたら押す。
         IDLE中の定期チェック用（ポーリングはしない・無ければ即時False）。"""
@@ -1089,10 +1118,19 @@ class XR20Monitor:
         self.log(f"[診断] 検出に使う矩形({check_label}): rel={check_rel} → abs={abs_r}")
         if not abs_r:
             return report
+        # 何を捕まえているか画像で残す（実機で目視確認するため）
+        dbg_check = self._save_debug_capture(abs_r, "confirm_check_area")
+        if dbg_check:
+            self.log(f"[診断] 検出領域の画像を保存: {dbg_check}")
+        # ウィンドウ全体も保存（位置関係の確認用）
+        dbg_full = self._save_debug_capture(None, "confirm_full_window")
+        if dbg_full:
+            self.log(f"[診断] ウィンドウ全体の画像を保存: {dbg_full}")
         text = self._sampler.ocr_text_jpn(abs_r)
         cleaned = "".join(text.split()) if text else ""
         report["ocr_text"] = text
         report["ocr_cleaned"] = cleaned
+        report["debug_image"] = dbg_check
         self.log(f"[診断] OCR結果(生)='{text}'")
         self.log(f"[診断] OCR結果(空白除去)='{cleaned}'")
         keywords = (("データ", "保存", "このまま", "測定", "ません")
@@ -2030,6 +2068,7 @@ class MonitorGUI:
             ("[診断] 確認ダイアログ検出テスト（今ダイアログ出して押す）", self._diagnose_confirm),
             ("1回だけ読み取り（動作確認）", self._read_once),
             ("NG画像フォルダを開く", self._open_ng_folder),
+            ("[診断] デバッグ画像フォルダを開く", self._open_debug_folder),
             ("設定を保存", self._save),
         ]:
             ttk.Button(frm, text=text, width=34, command=cmd).pack(fill="x", pady=2)
@@ -2167,6 +2206,22 @@ class MonitorGUI:
         self.monitor.log("[診断] 確認ダイアログ検出テストを実行します… "
                          "（実機でダイアログを出した状態で押してください）")
         self._run_bg(self.monitor.diagnose_confirm_dialog, lambda r: None)
+
+    def _open_debug_folder(self) -> None:
+        import os
+        import subprocess
+        d = self.monitor._resolve_path("debug_captures", "debug_captures")
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(d))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(d)])
+            else:
+                subprocess.Popen(["xdg-open", str(d)])
+            self.monitor.log(f"デバッグ画像フォルダ: {d}")
+        except Exception as exc:
+            self.monitor.log(f"フォルダを開けません: {d} ({exc})")
 
     def _open_ng_folder(self) -> None:
         import os
