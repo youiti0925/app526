@@ -67,7 +67,6 @@ DEFAULT_TILT_RECTS = {
 class State(Enum):
     IDLE = "IDLE"
     CAPTURING = "CAPTURING"
-    DONE = "DONE"
     JUDGING = "JUDGING"
     TILT_NG_RETRY = "TILT_NG_RETRY"
     AUTO_CORRECTING = "AUTO_CORRECTING"
@@ -176,6 +175,20 @@ def _color_matches(rgb: tuple[int, int, int], target: list[int], tolerance: int)
     return _color_distance(rgb, target) <= tolerance
 
 
+def _safe_filename(s: str, fallback: str = "NA") -> str:
+    """Windows/Unix で安全なファイル名要素に変換。<>:"/\\|?* と制御文字を _ に置換。"""
+    if not s:
+        return fallback
+    out: list[str] = []
+    for ch in s:
+        if ch in '<>:"/\\|?*' or ord(ch) < 32:
+            out.append("_")
+        else:
+            out.append(ch)
+    cleaned = "".join(out).strip(" .")  # 先頭末尾の空白/点も除去
+    return cleaned or fallback
+
+
 def _safe_float(text: str) -> float | None:
     cleaned = text.replace(",", "").replace("＋", "+").replace("－", "-").replace(" ", "").strip()
     if not cleaned:
@@ -216,8 +229,14 @@ def load_config(path: Path) -> MonitorConfig:
     return cfg
 
 
+_SAVE_CONFIG_LOCK = threading.Lock()
+
+
 def save_config(path: Path, cfg: MonitorConfig) -> None:
-    path.write_text(json.dumps(_cfg_to_dict(cfg), ensure_ascii=False, indent=2), encoding="utf-8")
+    """設定をJSONへ保存。複数ダイアログから並行呼出されても直列化する。"""
+    payload = json.dumps(_cfg_to_dict(cfg), ensure_ascii=False, indent=2)
+    with _SAVE_CONFIG_LOCK:
+        path.write_text(payload, encoding="utf-8")
 
 
 # ======================================================================
@@ -472,7 +491,6 @@ class Snapshot:
     button_color: tuple[int, int, int] | None = None
     active_rows: list[str] = field(default_factory=list)  # No 列に数字がある行
     lamp_states: dict[str, str] = field(default_factory=dict)  # row -> ON/OFF/UNKNOWN
-    lamp_colors: dict[str, tuple[int, int, int] | None] = field(default_factory=dict)  # 診断用 実RGB
     tilt_values: dict[str, float | None] = field(default_factory=dict)
     raw_no: dict[str, str] = field(default_factory=dict)
     raw_tilt: dict[str, str] = field(default_factory=dict)
@@ -498,7 +516,6 @@ class XR20Monitor:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_snapshot: Snapshot | None = None
-        self._state_cb: Callable[[State, Snapshot], None] | None = None
 
         # 集計用
         self._current_model: str = ""
@@ -521,9 +538,6 @@ class XR20Monitor:
     # ------------------------------------------------------------------
     def log(self, msg: str) -> None:
         self._log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-
-    def set_state_callback(self, cb: Callable[[State, Snapshot], None]) -> None:
-        self._state_cb = cb
 
     def last_snapshot(self) -> Snapshot | None:
         return self._last_snapshot
@@ -579,10 +593,8 @@ class XR20Monitor:
             rect = self._locator.rel_to_abs(rel) if rel else None
             if not rect:
                 snap.lamp_states[row] = "UNKNOWN"
-                snap.lamp_colors[row] = None
                 continue
             color = self._sampler.average_color(rect)
-            snap.lamp_colors[row] = color
             snap.lamp_states[row] = self._classify_lamp(color) if color else "UNKNOWN"
 
         # 4) 傾列 OCR（必要時のみ・有効行）
@@ -863,6 +875,9 @@ class XR20Monitor:
         self._tilt_retry = 0
         self._precision_retry = 0
         self._activity = "起動中…"
+        # 一度きりの警告フラグをリセット（再開時に再評価できるように）
+        self._anchor_warned = False
+        self._confirm_warned = False
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
         self.log("監視開始")
@@ -873,12 +888,8 @@ class XR20Monitor:
         self.log("監視停止要求")
 
     def _emit(self, snap: Snapshot) -> None:
+        """最新スナップショットを公開。GUIはこれをポーリングで読む。"""
         self._last_snapshot = snap
-        if self._state_cb:
-            try:
-                self._state_cb(self._state, snap)
-            except Exception as exc:
-                self.log(f"[GUI更新例外] {exc}")
 
     def _run_loop(self) -> None:
         prev_pressed = False
@@ -1050,9 +1061,9 @@ class XR20Monitor:
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model = (self._current_model or "NA").replace("/", "_").replace("\\", "_")
-            mach = (self._current_machine or "NA").replace("/", "_").replace("\\", "_")
-            path = out_dir / f"{ts}_{model}_{mach}_{tag}.png"
+            model = _safe_filename(self._current_model)
+            mach = _safe_filename(self._current_machine)
+            path = out_dir / f"{ts}_{model}_{mach}_{_safe_filename(tag)}.png"
             img.save(path)
             self.log(f"スクショ保存: {path.name}")
             return str(path)
@@ -1217,19 +1228,25 @@ class XR20Monitor:
             keywords = ("測定開始",)
 
         import time as _t
-        deadline = _t.monotonic() + 3.0
+        timeout_sec = 2.0  # 監視ループのブロック時間を抑える
+        deadline = _t.monotonic() + timeout_sec
         attempts = 0
         last_text = ""
+        prev_activity = self._activity
         while _t.monotonic() < deadline and not self._stop.is_set():
             attempts += 1
+            # 待ち中もミニ表示の動作欄が進行を示すように更新
+            self._activity = f"確認ダイアログ出現を確認中… ({attempts}回目)"
             abs_r = self._locator.rel_to_abs(check_rel)
             if abs_r:
                 text = self._sampler.ocr_text_jpn(abs_r)
                 last_text = "".join(text.split()) if text else ""
                 if last_text and any(k in last_text for k in keywords):
                     self.log(f"[確認ダイアログ] 検出: '{last_text}' → 測定開始 押下")
+                    self._activity = prev_activity
                     return self._locator.click_at_rect(btn_rel)
             self._wait(0.5)
+        self._activity = prev_activity
         self.log(f"[確認ダイアログ] 出現せず（{attempts}回確認・直近OCR='{last_text}'）")
         return False
 
@@ -1801,10 +1818,12 @@ def save_anchor_templates(results: dict[str, list[float]], full_image: Any, base
             if debug_dir is not None:
                 try:
                     crop.save(debug_dir / f"{ts}_{key}_template.png")
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as exc2:
+                    if log is not None:
+                        log(f"[警告] debug_captures への複製保存失敗: {exc2}")
+        except Exception as exc:
+            if log is not None:
+                log(f"[エラー] 目印{key[-1].upper()} 保存失敗: {exc}")
     return saved
 
 
@@ -2417,6 +2436,11 @@ class MonitorGUI:
         def on_done(results: dict[str, list[float]], full_image=None) -> None:
             n = apply_picker_results(self.monitor.cfg, results)
             self.monitor.log(f"ピッカー: {n} 要素を更新")
+            # 登録し直したら関連警告フラグをリセット（次回検出を再評価できるように）
+            if "confirm_dialog" in results or "confirm_button" in results:
+                self.monitor._confirm_warned = False
+            if "anchor_a" in results or "anchor_b" in results:
+                self.monitor._anchor_warned = False
             saved = save_anchor_templates(results, full_image, self.config_path.parent,
                                            log=self.monitor.log)
             if saved:
