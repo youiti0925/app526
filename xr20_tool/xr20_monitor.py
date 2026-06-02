@@ -112,7 +112,8 @@ class MonitorConfig:
 
     # 再測定（リカバリ）シーケンスの待ち時間（秒）
     wait_before_capture_sec: float = 1.0   # NG検知/スクショ後 → 取込開始押下まで
-    wait_after_capture_sec: float = 2.0    # 取込開始押下 → SwitchBot起動まで
+    confirm_enter_delay_sec: float = 2.0   # 取込開始押下 → Enter送信(確認ダイアログ対策)まで
+    wait_after_capture_sec: float = 2.0    # Enter送信後 → SwitchBot起動まで
     wait_after_switchbot_sec: float = 1.0  # SwitchBot起動後の待ち
 
     # NG時のスクリーンショット保存
@@ -345,6 +346,16 @@ class WindowLocator:
         try:
             from pywinauto.mouse import click as pwa_click
             pwa_click(button="left", coords=(cx, cy))
+            return True
+        except Exception:
+            return False
+
+    def send_enter(self) -> bool:
+        """フォーカス中のウィンドウへ Enter キーを送る。
+        確認ダイアログ「測定開始」がEnterで押せるので、その自動押下用。"""
+        try:
+            from pywinauto.keyboard import send_keys
+            send_keys("{ENTER}")
             return True
         except Exception:
             return False
@@ -934,14 +945,14 @@ class XR20Monitor:
 
             if self._state == State.IDLE:
                 self._activity = f"取込開始の押下を待機中（{self.cfg.idle_poll_interval_sec:g}秒ごと確認）"
-                # 待機中も確認ダイアログが出てたら自動で押す（手動押下でも対応）
-                if self.cfg.confirm_button_rect and len(self.cfg.confirm_button_rect) == 4:
-                    self._dismiss_confirm_dialog_quick()
                 if snap.button_pressed and not prev_pressed:
                     if not self._session_active:
                         self._session_active = True
                         self.log(f"測定セッション開始 / 型式={self._current_model or '(未取得)'}")
                     self.log(f"取込開始検知 / 有効行={snap.active_rows}")
+                    # 手動押下の場合も、N秒後に Enter を送って確認ダイアログを閉じる
+                    # （別スレッドで非ブロッキングに）
+                    self._schedule_dialog_enter()
                     self._saw_lamp_on = False  # 新測定の開始: ランプ観測フラグをリセット
                     self._state = State.CAPTURING
 
@@ -1048,6 +1059,19 @@ class XR20Monitor:
     def _wait(self, seconds: float) -> None:
         self._stop.wait(max(0.1, seconds))
 
+    def _schedule_dialog_enter(self) -> None:
+        """取込開始押下を検知した後、設定秒待ってEnterキーを送る。
+        確認ダイアログが出ていれば「測定開始」がEnterで押される。
+        非ブロッキング（別スレッド）なので監視ループは止まらない。"""
+        delay = self.cfg.confirm_enter_delay_sec
+
+        def _worker() -> None:
+            self._stop.wait(delay)
+            if not self._stop.is_set():
+                if self._locator.send_enter():
+                    self.log(f"Enter送信（取込開始の{delay:g}秒後・確認ダイアログ対策）")
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _save_screenshot(self, tag: str) -> str | None:
         """現在のウィンドウ全体をスクショ保存。保存先パスを返す。"""
         rect = self._locator.rect()
@@ -1083,9 +1107,15 @@ class XR20Monitor:
         self._activity = "再測定: 取込開始ボタンを押下"
         clicked = self._locator.click_at_rect(self.cfg.button_capture_rect)
         self.log(f"取込開始クリック: {'成功' if clicked else '失敗'}")
-        # 2.5) 確認ダイアログが出たら「測定開始」を押す（最大3秒ポーリング）
-        if self._dismiss_confirm_dialog():
-            self._wait(0.6)
+        # 2.5) 確認ダイアログ対策: 2秒待ってEnterキーを送る
+        #   （『データが保存されていません』ダイアログは Enter で『測定開始』が
+        #    押せるため、OCRに頼らず確実に進めるためキーボード入力で対処）
+        self._activity = f"再測定: 確認ダイアログ用にEnter待機 ({self.cfg.confirm_enter_delay_sec}秒)"
+        self._wait(self.cfg.confirm_enter_delay_sec)
+        if self._locator.send_enter():
+            self.log("Enter送信（確認ダイアログ用・出てれば測定開始が押される）")
+        else:
+            self.log("[警告] Enter送信失敗")
         # 3) SwitchBot起動まで待つ
         self._activity = f"再測定: SwitchBot起動待ち ({self.cfg.wait_after_capture_sec}秒)"
         self._wait(self.cfg.wait_after_capture_sec)

@@ -26,6 +26,7 @@
   "max_tilt_retries": 2,
   "max_precision_retries": 1,
   "wait_before_capture_sec": 1.0,
+  "confirm_enter_delay_sec": 2.0,
   "wait_after_capture_sec": 2.0,
   "wait_after_switchbot_sec": 1.0,
   "save_ng_screenshot": true,
