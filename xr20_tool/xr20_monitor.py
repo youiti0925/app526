@@ -335,29 +335,42 @@ class WindowLocator:
         except Exception:
             return False
 
-    def click_at_rect(self, rel_rect: list[float]) -> bool:
-        """ウィンドウ相対矩形の中心をマウスでクリック。LabVIEW のように
-        pywinauto から直接ボタンを叩けない場合に使う（位置補正があれば適用）。"""
+    def click_at_rect(self, rel_rect: list[float],
+                      log: Callable[[str], None] | None = None) -> bool:
+        """ウィンドウ相対矩形の中心をマウスでクリック。座標と結果をログに出す。"""
+        if not self._rect:
+            if log:
+                log("[クリック] ウィンドウ矩形未取得（pywinautoが対象窓を見つけていない）")
+            return False
         abs_rect = self.rel_to_abs(rel_rect)
         if not abs_rect:
+            if log:
+                log(f"[クリック] 相対矩形→絶対変換に失敗 rel={rel_rect}")
             return False
         x, y, w, h = abs_rect
         cx, cy = x + w // 2, y + h // 2
+        if log:
+            log(f"[クリック] 実行: スクリーン座標 ({cx}, {cy}) "
+                f"= 矩形 rel={rel_rect} → abs=({x},{y},{w},{h})")
         try:
             from pywinauto.mouse import click as pwa_click
             pwa_click(button="left", coords=(cx, cy))
             return True
-        except Exception:
+        except Exception as exc:
+            if log:
+                log(f"[クリック] pywinauto.mouse.click 例外: {exc!r}")
             return False
 
-    def send_enter(self) -> bool:
+    def send_enter(self, log: Callable[[str], None] | None = None) -> bool:
         """フォーカス中のウィンドウへ Enter キーを送る。
         確認ダイアログ「測定開始」がEnterで押せるので、その自動押下用。"""
         try:
             from pywinauto.keyboard import send_keys
             send_keys("{ENTER}")
             return True
-        except Exception:
+        except Exception as exc:
+            if log:
+                log(f"[Enter] pywinauto.keyboard.send_keys 例外: {exc!r}")
             return False
 
 
@@ -926,6 +939,8 @@ class XR20Monitor:
                 prev_window_ok = snap.window_ok
 
             if not snap.window_ok:
+                self._activity = (f"対象ウィンドウを検索中…「{self.cfg.app_title}」を含むタイトルが必要。"
+                                  f"LabVIEWを起動してから再試行")
                 self._wait(self.cfg.idle_poll_interval_sec)
                 continue
 
@@ -1017,7 +1032,7 @@ class XR20Monitor:
             elif self._state == State.AUTO_CORRECTING:
                 self._activity = "自動補正を実行中"
                 # LabVIEW ボタンは pywinauto から叩けないので座標クリック
-                clicked = self._locator.click_at_rect(self.cfg.button_autocorrect_rect)
+                clicked = self._locator.click_at_rect(self.cfg.button_autocorrect_rect, log=self.log)
                 self.log(f"自動補正クリック: {'成功' if clicked else '失敗'}")
                 self._wait(self.cfg.auto_correct_wait_sec)
                 self._state = State.PRECISION_JUDGING
@@ -1068,7 +1083,7 @@ class XR20Monitor:
         def _worker() -> None:
             self._stop.wait(delay)
             if not self._stop.is_set():
-                if self._locator.send_enter():
+                if self._locator.send_enter(log=self.log):
                     self.log(f"Enter送信（取込開始の{delay:g}秒後・確認ダイアログ対策）")
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1105,14 +1120,14 @@ class XR20Monitor:
         # 2) 取込開始ボタンを押す（LabVIEWボタンは pywinauto から
         #   叩けないため、矩形の中心を座標クリック）
         self._activity = "再測定: 取込開始ボタンを押下"
-        clicked = self._locator.click_at_rect(self.cfg.button_capture_rect)
+        clicked = self._locator.click_at_rect(self.cfg.button_capture_rect, log=self.log)
         self.log(f"取込開始クリック: {'成功' if clicked else '失敗'}")
         # 2.5) 確認ダイアログ対策: 2秒待ってEnterキーを送る
         #   （『データが保存されていません』ダイアログは Enter で『測定開始』が
         #    押せるため、OCRに頼らず確実に進めるためキーボード入力で対処）
         self._activity = f"再測定: 確認ダイアログ用にEnter待機 ({self.cfg.confirm_enter_delay_sec}秒)"
         self._wait(self.cfg.confirm_enter_delay_sec)
-        if self._locator.send_enter():
+        if self._locator.send_enter(log=self.log):
             self.log("Enter送信（確認ダイアログ用・出てれば測定開始が押される）")
         else:
             self.log("[警告] Enter送信失敗")
@@ -2287,11 +2302,17 @@ class MonitorGUI:
             if err:
                 status_var.set(f"[エラー] {err}")
                 return
-            status_var.set(f"テスト実行中（{c.switchbot_pattern_name}）…")
+            status_var.set(f"テスト実行中（{c.switchbot_pattern_name}、リハーサル無効で実発射）…")
             win.update_idletasks()
-            # GUIスレッドを長く止めないようバックグラウンドで実行
-            self._run_bg(self.monitor.execute_switchbot_pattern,
-                         lambda ok: status_var.set(f"テスト完了（成功={ok}）"))
+            # テストは「実際に動くか」確認したいので、リハーサルでも本当に送る
+            saved_dry = c.dry_run
+            c.dry_run = False
+
+            def restore_then_done(ok):
+                c.dry_run = saved_dry
+                status_var.set(f"テスト完了（成功={ok}、リハーサル設定は元に戻しました）")
+
+            self._run_bg(self.monitor.execute_switchbot_pattern, restore_then_done)
 
         btns = ttk.Frame(frm)
         btns.pack(fill="x", pady=(6, 0))
