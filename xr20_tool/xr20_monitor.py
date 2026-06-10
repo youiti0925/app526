@@ -152,6 +152,13 @@ class MonitorConfig:
     scroll_reset_enabled: bool = True
     scroll_reset_wait_sec: float = 0.4  # リセット後の再描画待ち
 
+    # 位置自動補正（テキストアンカー）— 画面全体OCRでラベル文字の現在位置を
+    # 特定し、登録時とのズレ量で全座標を平行移動補正する。
+    # OCRは実機で動作実績があるため、テンプレ照合より環境差に強い。
+    use_text_anchor: bool = True
+    text_anchor_keywords: list[str] = field(default_factory=lambda: ["型式", "機番", "測定日"])
+    text_anchor_refs: dict[str, list[float]] = field(default_factory=dict)  # keyword -> [xf, yf] 登録時の中心
+
     # 位置自動補正（テンプレートマッチング）— 任意機能。OFF時は固定座標のまま
     use_template_anchor: bool = True
     anchor_a_rect: list[float] = field(default_factory=list)  # 目印A（例:「型式」ラベル）
@@ -494,7 +501,22 @@ class ScreenSampler:
             if w - 2 * trim >= 8 and h - 2 * trim >= 8:
                 img = img.crop((trim, trim, w - trim, h - trim))
             g = img.convert("L")
-            scale = max(1, min(10, round(64 / max(1, g.height))))
+            # 文字（インク）部分の bbox に自動クロップ。右寄せ数字などで
+            # セルの大半が空白だと psm7 が記号だけ拾う誤動作をするため。
+            try:
+                bw = ImageOps.autocontrast(g).point(lambda p: 255 if p < 128 else 0)
+                bbox = bw.getbbox()  # 非ゼロ(=文字)領域
+                if bbox:
+                    m = 2  # 余白（実測: 2px が最適。3px 以上だと単独の 0 を取りこぼす）
+                    x0 = max(0, bbox[0] - m); y0 = max(0, bbox[1] - m)
+                    x1 = min(g.width, bbox[2] + m); y1 = min(g.height, bbox[3] + m)
+                    if x1 - x0 >= 4 and y1 - y0 >= 4:
+                        g = g.crop((x0, y0, x1, y1))
+            except Exception:
+                pass  # クロップ失敗時は元画像のまま続行
+            # 目標高さ48px（実測で過剰拡大は逆効果: 大きい文字を3倍以上にすると
+            # マイナス記号や数字を取りこぼす）
+            scale = max(1, min(10, round(48 / max(1, g.height))))
             g = g.resize((g.width * scale, g.height * scale), Image.LANCZOS)
             g = ImageOps.autocontrast(g)
             g = g.filter(ImageFilter.UnsharpMask(radius=2, percent=150))
@@ -826,7 +848,114 @@ class XR20Monitor:
             self.log(f"[位置補正] 照合例外: {exc}")
             return None, 0.0, True
 
+    # ---- テキストアンカー（画面全体OCRでラベル位置を特定） ----------------
+    def _ocr_lines(self, win_img: Any) -> list[tuple[str, list[tuple[float, float]]]]:
+        """ウィンドウ画像全体を日本語OCRし、行ごとに (結合文字列, 各文字位置リスト) を返す。
+
+        Tesseract は「機番」を「機」「番」に分割する事があるため、
+        行単位でトークンを結合してからキーワード検索できるようにする。
+        位置リストは結合文字列の各文字に対応する (中心xf, 中心yf)。"""
+        try:
+            import pytesseract
+            data = pytesseract.image_to_data(
+                win_img, lang="jpn", output_type=pytesseract.Output.DICT)
+        except Exception as exc:
+            self.log(f"[テキストアンカー] OCR例外: {exc!r}")
+            return []
+        W, H = win_img.width, win_img.height
+        # (block, par, line) ごとにトークンを集める
+        lines: dict[tuple[int, int, int], list[tuple[str, float, float]]] = {}
+        n = len(data.get("text", []))
+        for i in range(n):
+            txt = (data["text"][i] or "").strip().replace(" ", "")
+            if not txt:
+                continue
+            key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+            cx = (data["left"][i] + data["width"][i] / 2.0) / W
+            cy = (data["top"][i] + data["height"][i] / 2.0) / H
+            lines.setdefault(key, []).append((txt, cx, cy))
+        out: list[tuple[str, list[tuple[float, float]]]] = []
+        for toks in lines.values():
+            joined = ""
+            positions: list[tuple[float, float]] = []
+            for txt, cx, cy in toks:
+                joined += txt
+                positions.extend([(cx, cy)] * len(txt))  # トークン内の文字は同位置とみなす
+            out.append((joined, positions))
+        return out
+
+    def find_text_anchors(self, win_img: Any) -> dict[str, tuple[float, float]]:
+        """登録キーワード（型式/機番/測定日…）の現在位置を画面OCRで探す。
+        行結合した文字列からキーワードを検索（分割トークンにも対応）。"""
+        lines = self._ocr_lines(win_img)
+        found: dict[str, tuple[float, float]] = {}
+        for kw in self.cfg.text_anchor_keywords:
+            cands: list[tuple[float, float]] = []
+            for joined, positions in lines:
+                idx = joined.find(kw)
+                if idx < 0:
+                    continue
+                # キーワードを構成する文字位置の平均を中心とする
+                span = positions[idx:idx + len(kw)]
+                cx = sum(p[0] for p in span) / len(span)
+                cy = sum(p[1] for p in span) / len(span)
+                cands.append((cx, cy))
+            if not cands:
+                continue
+            ref = self.cfg.text_anchor_refs.get(kw)
+            if ref and len(ref) == 2:
+                # 登録位置に最も近い候補を採用（同名語が複数あっても安定）
+                cands.sort(key=lambda c: (c[0] - ref[0]) ** 2 + (c[1] - ref[1]) ** 2)
+            found[kw] = cands[0]
+        return found
+
+    def register_text_anchors(self, full_image: Any) -> int:
+        """矩形設定時の画面キャプチャからラベル位置を登録する。登録数を返す。"""
+        found = self.find_text_anchors(full_image)
+        for kw, (xf, yf) in found.items():
+            self.cfg.text_anchor_refs[kw] = [round(xf, 4), round(yf, 4)]
+            self.log(f"[テキストアンカー] 基準登録: 『{kw}』 位置=({xf:.3f}, {yf:.3f})")
+        missing = [kw for kw in self.cfg.text_anchor_keywords if kw not in found]
+        if missing:
+            self.log(f"[テキストアンカー] 見つからなかったラベル: {missing}（残りで動作）")
+        return len(found)
+
+    def _update_text_anchor_correction(self) -> bool:
+        """画面OCRでラベルの現在位置を特定し、登録時とのズレで平行移動補正。
+        成功時 True（補正を設定）。失敗時 False（呼び出し側でフォールバック）。"""
+        if not self.cfg.use_text_anchor or not self.cfg.text_anchor_refs:
+            return False
+        rect = self._locator.rect()
+        if not rect:
+            return False
+        left, top, right, bottom = rect
+        win_img = self._sampler.grab((left, top, right - left, bottom - top))
+        if win_img is None:
+            return False
+        found = self.find_text_anchors(win_img)
+        offsets: list[tuple[float, float]] = []
+        for kw, (cx, cy) in found.items():
+            ref = self.cfg.text_anchor_refs.get(kw)
+            if ref and len(ref) == 2:
+                offsets.append((cx - ref[0], cy - ref[1]))
+        if not offsets:
+            self.log("[テキストアンカー] ラベルが1つも見つからず（固定座標へフォールバック）")
+            return False
+        # 複数ラベルの中央値で頑健にオフセットを決める
+        xs = sorted(o[0] for o in offsets)
+        ys = sorted(o[1] for o in offsets)
+        ox = xs[len(xs) // 2]
+        oy = ys[len(ys) // 2]
+        self._locator.set_anchor_correction((1.0, 1.0, ox, oy))
+        if abs(ox) > 0.005 or abs(oy) > 0.005:
+            self.log(f"[テキストアンカー] 位置ズレ検出→補正適用 "
+                     f"(Δx={ox:+.3f}, Δy={oy:+.3f} / 検出ラベル={list(found.keys())})")
+        return True
+
     def _update_anchor_correction(self) -> None:
+        # 1) テキストアンカー優先（OCRは実機で動作実績があり環境差に強い）
+        if self._update_text_anchor_correction():
+            return
         if not self.cfg.use_template_anchor:
             self._locator.set_anchor_correction(None)
             return
@@ -1066,8 +1195,9 @@ class XR20Monitor:
 
             elif self._state == State.AUTO_CORRECTING:
                 self._activity = "自動補正を実行中"
-                # クリック前にスクロール原点リセット（座標ズレ対策）
+                # クリック前にスクロール原点リセット＋位置補正更新（座標ズレ対策）
                 self._reset_scroll_if_enabled()
+                self._update_anchor_correction()
                 # LabVIEW ボタンは pywinauto から叩けないので座標クリック
                 clicked = self._locator.click_at_rect(self.cfg.button_autocorrect_rect, log=self.log)
                 self.log(f"自動補正クリック: {'成功' if clicked else '失敗'}")
@@ -1166,6 +1296,8 @@ class XR20Monitor:
         #   叩けないため、矩形の中心を座標クリック）
         # クリック前にスクロールを原点へ（中身スクロールで座標がズレてると誤クリックする）
         self._reset_scroll_if_enabled()
+        # 画面位置ズレの補正を更新してからクリック（テキストアンカー）
+        self._update_anchor_correction()
         self._activity = "再測定: 取込開始ボタンを押下"
         clicked = self._locator.click_at_rect(self.cfg.button_capture_rect, log=self.log)
         self.log(f"取込開始クリック: {'成功' if clicked else '失敗'}")
@@ -2547,6 +2679,11 @@ class MonitorGUI:
                                            log=self.monitor.log)
             if saved:
                 self.monitor.log(f"位置補正の目印テンプレを {saved} 個保存")
+            # テキストアンカー（型式/機番ラベルの基準位置）も同じキャプチャから自動登録
+            if full_image is not None:
+                n_anchor = self.monitor.register_text_anchors(full_image)
+                if n_anchor:
+                    self.monitor.log(f"テキストアンカー {n_anchor} 個登録（画面位置ズレの自動補正に使用）")
             save_config(self.config_path, self.monitor.cfg)
             self.monitor.log(f"設定保存: {self.config_path}")
 
