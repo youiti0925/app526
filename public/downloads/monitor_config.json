@@ -64,6 +64,8 @@
   "button_idle_color": [215, 200, 175],
   "button_active_color": [115, 125, 105],
   "color_tolerance": 55,
+  "scroll_reset_enabled": true,
+  "scroll_reset_wait_sec": 0.4,
   "use_template_anchor": true,
   "anchor_a_rect": [],
   "anchor_b_rect": [],

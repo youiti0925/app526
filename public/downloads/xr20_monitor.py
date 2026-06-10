@@ -147,6 +147,11 @@ class MonitorConfig:
     lamp_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_LAMP_RECTS.items()})
     tilt_rects: dict[str, list[float]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_TILT_RECTS.items()})
 
+    # スクロールリセット: 読取・クリック前に Ctrl+Home を送って
+    # LabVIEW フロントパネルのスクロールを左上原点へ戻す（位置ズレの根本対策）
+    scroll_reset_enabled: bool = True
+    scroll_reset_wait_sec: float = 0.4  # リセット後の再描画待ち
+
     # 位置自動補正（テンプレートマッチング）— 任意機能。OFF時は固定座標のまま
     use_template_anchor: bool = True
     anchor_a_rect: list[float] = field(default_factory=list)  # 目印A（例:「型式」ラベル）
@@ -290,6 +295,34 @@ class WindowLocator:
         finally:
             self._lock.release()
         return False
+
+    def reset_scroll(self, log: Callable[[str], None] | None = None) -> bool:
+        """LabVIEWフロントパネルのスクロールを左上原点に戻す（Ctrl+Home）。
+
+        中身がスクロールしているとウィンドウ相対座標が全部ズレるため、
+        読み取り・クリックの前に毎回原点へリセットして座標を安定させる。
+        対象ウィンドウへフォーカスを移してからキーを送る。"""
+        if self._fake_rect is not None:
+            return True  # テスト時は何もしない
+        if self._pwa_window is None:
+            if log:
+                log("[スクロール] 対象ウィンドウ未検出のためリセット不可")
+            return False
+        try:
+            self._pwa_window.set_focus()
+        except Exception as exc:
+            if log:
+                log(f"[スクロール] set_focus 例外: {exc!r}（続行してキー送信を試す）")
+        try:
+            from pywinauto.keyboard import send_keys
+            send_keys("^{HOME}")  # Ctrl+Home
+            if log:
+                log("[スクロール] Ctrl+Home 送信（スクロールを左上原点へリセット）")
+            return True
+        except Exception as exc:
+            if log:
+                log(f"[スクロール] キー送信例外: {exc!r}")
+            return False
 
     def rect(self) -> tuple[int, int, int, int] | None:
         return self._rect
@@ -990,6 +1023,8 @@ class XR20Monitor:
 
             elif self._state == State.JUDGING:
                 self._activity = "傾の数値を判定中"
+                # スクロール位置をリセットしてから読む（中身スクロールによる座標ズレ対策）
+                self._reset_scroll_if_enabled()
                 # 判定時はフル（位置補正＋傾OCR＋型式機番）
                 snap = self.take_snapshot(read_no=True, read_tilt=True,
                                           read_comment=False, read_meta=True, do_anchor=True)
@@ -1031,6 +1066,8 @@ class XR20Monitor:
 
             elif self._state == State.AUTO_CORRECTING:
                 self._activity = "自動補正を実行中"
+                # クリック前にスクロール原点リセット（座標ズレ対策）
+                self._reset_scroll_if_enabled()
                 # LabVIEW ボタンは pywinauto から叩けないので座標クリック
                 clicked = self._locator.click_at_rect(self.cfg.button_autocorrect_rect, log=self.log)
                 self.log(f"自動補正クリック: {'成功' if clicked else '失敗'}")
@@ -1039,6 +1076,7 @@ class XR20Monitor:
 
             elif self._state == State.PRECISION_JUDGING:
                 self._activity = "精度（コメント欄）を判定中"
+                self._reset_scroll_if_enabled()
                 snap = self.take_snapshot(read_no=False, read_tilt=False,
                                           read_comment=True, read_meta=False, do_anchor=True)
                 self._emit(snap)
@@ -1110,6 +1148,13 @@ class XR20Monitor:
             self.log(f"スクショ保存失敗: {exc}")
             return None
 
+    def _reset_scroll_if_enabled(self) -> None:
+        """設定ONなら対象ウィンドウのスクロールを原点リセットし、再描画を待つ。"""
+        if not self.cfg.scroll_reset_enabled:
+            return
+        if self._locator.reset_scroll(log=self.log):
+            self._wait(self.cfg.scroll_reset_wait_sec)
+
     def _trigger_recapture(self) -> None:
         """再測定の準備: 取込開始ボタンを押し、その後 SwitchBot を起動。
         各ステップ間に設定した待ち時間を挟む。"""
@@ -1119,6 +1164,8 @@ class XR20Monitor:
         self._wait(self.cfg.wait_before_capture_sec)
         # 2) 取込開始ボタンを押す（LabVIEWボタンは pywinauto から
         #   叩けないため、矩形の中心を座標クリック）
+        # クリック前にスクロールを原点へ（中身スクロールで座標がズレてると誤クリックする）
+        self._reset_scroll_if_enabled()
         self._activity = "再測定: 取込開始ボタンを押下"
         clicked = self._locator.click_at_rect(self.cfg.button_capture_rect, log=self.log)
         self.log(f"取込開始クリック: {'成功' if clicked else '失敗'}")
@@ -1901,6 +1948,7 @@ class MonitorGUI:
         self.auto_retry_var = tk.BooleanVar(value=c.auto_retry)
         self.auto_correct_var = tk.BooleanVar(value=c.auto_correction_enabled)
         self.anchor_var = tk.BooleanVar(value=c.use_template_anchor)
+        self.scroll_reset_var = tk.BooleanVar(value=c.scroll_reset_enabled)
         self.state_var = tk.StringVar(value="IDLE")
         self.values_var = tk.StringVar(value="(未取得)")
         self.lamps_var = tk.StringVar(value="(未取得)")
@@ -2116,6 +2164,8 @@ class MonitorGUI:
         flags2.grid(row=7, column=0, columnspan=3, sticky="w")
         ttk.Checkbutton(flags2, text="位置自動補正（テンプレート・保険機能 / 要 目印登録）",
                         variable=self.anchor_var, command=self._apply).pack(side="left", padx=4)
+        ttk.Checkbutton(flags2, text="読取前にスクロール原点リセット (Ctrl+Home)",
+                        variable=self.scroll_reset_var, command=self._apply).pack(side="left", padx=4)
 
         # 状態表示
         status = ttk.LabelFrame(frm, text="現在状態", padding=6)
@@ -2170,6 +2220,7 @@ class MonitorGUI:
         c.auto_retry = bool(self.auto_retry_var.get())
         c.auto_correction_enabled = bool(self.auto_correct_var.get())
         c.use_template_anchor = bool(self.anchor_var.get())
+        c.scroll_reset_enabled = bool(self.scroll_reset_var.get())
 
     def _open_settings(self) -> None:
         tk, ttk = self._tk, self._ttk
