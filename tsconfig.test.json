@@ -20,6 +20,7 @@
     "src/lib/hustle/payout.ts",
     "src/lib/hustle/diagnose.ts",
     "src/lib/hustle/templates.ts",
+    "src/lib/hustle/agent/worktypes.ts",
     "src/lib/hustle/agent/estimate.ts",
     "src/lib/hustle/agent/ingest.ts",
     "src/lib/hustle/agent/budget.ts",
@@ -31,6 +32,7 @@
     "src/lib/hustle/agent/probe.ts",
     "src/lib/hustle/agent/deliverability.ts",
     "src/lib/hustle/agent/competition.ts",
-    "src/lib/hustle/agent/engagement.ts"
+    "src/lib/hustle/agent/engagement.ts",
+    "src/lib/hustle/agent/renegotiate.ts"
   ]
 }

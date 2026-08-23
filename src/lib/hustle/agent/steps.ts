@@ -9,6 +9,8 @@ import { detectScopeRisks, estimateHours, type WorkEstimate } from "./estimate";
 import { judgeDeliverability } from "./deliverability";
 import { expectedHourly, readCompetition } from "./competition";
 import { checkCapacity, monthlyHourly, readEngagement } from "./engagement";
+import { buildRenegotiation } from "./renegotiate";
+import { estimateByWorkType } from "./worktypes";
 import { needsEscalation } from "./escalation";
 import { fetchFeed, leadFromParsed } from "./ingest";
 import { SOURCES, fetchSource } from "./sources";
@@ -273,6 +275,7 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
 
     let verdict: Lead["verdict"];
     let reason: string;
+    let renegotiation: ReturnType<typeof buildRenegotiation> = null;
 
     if (scam.verdict === "danger") {
       verdict = "reject";
@@ -290,6 +293,24 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     } else if (hourly && hourly.high < minHourly) {
       verdict = "reject";
       reason = `手数料を引いた実効時給が ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円で、基準の ${minHourly.toLocaleString()}円 を下回る`;
+      // 「安いから見送り」で終わらせない。いくらなら受けられるかを出す。
+      if (offered && estimate) {
+        const byType = estimateByWorkType(lead.rawText);
+        renegotiation = buildRenegotiation({
+          title: lead.title,
+          offeredJpy: offered,
+          hours: estimate.highHours,
+          minHourlyJpy: minHourly,
+          platform,
+          breakdown: byType,
+          marketRateJpy: byType?.workType.marketRateJpy ?? null,
+        });
+        if (renegotiation) {
+          reason += renegotiation.realistic
+            ? `。${renegotiation.askJpy.toLocaleString()}円（提示の${renegotiation.multiple}倍）なら受けられます。交渉文を承認キューに出しました`
+            : `。${renegotiation.giveUpReason}`;
+        }
+      }
     } else if (expected !== null && expected < minHourly) {
       // 受注できたときの時給は足りていても、競合が多すぎて期待値が出ないケース。
       verdict = "reject";
@@ -340,6 +361,13 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
           reason: capacity.reason,
         },
       },
+      renegotiation: renegotiation
+        ? {
+            askJpy: renegotiation.askJpy,
+            multiple: renegotiation.multiple,
+            realistic: renegotiation.realistic,
+          }
+        : null,
       competition: {
         applicants: competition.applicants,
         views: competition.views,
@@ -387,6 +415,26 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       hourly,
       scamScore: scam.score,
     });
+
+    // 単価が理由で落としたものは、交渉すれば取れることがある。黙って捨てない。
+    if (renegotiation?.realistic) {
+      pushInbox({
+        runId: ctx.runId,
+        kind: "outreach",
+        priority: 55,
+        title: `単価交渉: ${lead.title.slice(0, 40)}（${offered?.toLocaleString()}円 → ${renegotiation.askJpy.toLocaleString()}円）`,
+        body: renegotiation.message,
+        actionUrl: lead.url,
+        leadId: lead.id,
+        meta: {
+          kind: "renegotiate",
+          offeredJpy: offered,
+          askJpy: renegotiation.askJpy,
+          multiple: renegotiation.multiple,
+        },
+      });
+      queued++;
+    }
 
     // 危険なものは、落としたことを人にも見せる（黙って消さない）
     if (scam.verdict === "danger") {

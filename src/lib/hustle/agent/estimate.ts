@@ -1,3 +1,5 @@
+import { describeWorkType, estimateByWorkType } from "./worktypes";
+
 /**
  * 募集文から作業量を見積もる（AIなしで動く版）。
  *
@@ -19,8 +21,27 @@ const num = (s: string): number => Number(s.replace(/,/g, ""));
 /** 執筆の速度（文字/時）。調査・構成・推敲を含めた実測に近い値。 */
 const CHARS_PER_HOUR = 1200;
 
+
 export function estimateHours(text: string): WorkEstimate | null {
   const t = text.normalize("NFKC");
+
+  // 工程が分かっている仕事は、工程を積み上げて出す。
+  // 文字数だけで見ていたせいで、SDS・リスクアセスメント・作業標準書のような
+  // 「文字数が書かれていない仕事」が全部 判定不能で止まっていた。
+  const byType = estimateByWorkType(t);
+  if (byType) {
+    // 工程を積み上げた値には、やりとり・修正の工程がすでに入っている。
+    // 二重に乗せないよう、上乗せは控えめ（1.0〜1.4倍）にする。
+    const low = Math.max(0.5, Math.round(byType.aiHours * 10) / 10);
+    const high = Math.max(low, Math.round(byType.aiHours * 1.4 * 10) / 10);
+    return {
+      lowHours: low,
+      highHours: high,
+      basis: describeWorkType(byType),
+      // 数量が読めていれば medium、読めていなければ low
+      confidence: byType.unitsRead ? "medium" : "low",
+    };
+  }
 
   // 「3000文字 × 10本」のような書き方
   const chars = t.match(/([0-9,]{3,7})\s*文字/);

@@ -437,3 +437,149 @@ test("「〜1,500,000円/月」のような他案件の単価表記も金額と�
   assert.equal(readMonthlyRate("〜1,500,000円/月"), null, "円表記はラベルが要る");
   assert.equal(readMonthlyRate("115万円/月"), 1_150_000);
 });
+
+// ---------------------------------------------------------------------------
+// 工程分解による工数見積り
+// 文字数だけで見ていたので、市場調査で「実効時給が高い」と分かった
+// SDS・リスクアセスメント・作業標準書・ISO が全部「判定不能」で止まっていた。
+// ---------------------------------------------------------------------------
+
+const wt = await import("../dist-test/agent/worktypes.js");
+const est = await import("../dist-test/agent/estimate.js");
+const { estimateByWorkType, WORK_TYPES } = wt;
+const { estimateHours } = est;
+
+test("SDS・リスクアセスメント・作業標準書・ISO が判定不能にならない", () => {
+  const cases = [
+    "弊社製品5物質分のSDS作成をお願いします。",
+    "化学物質12物質のリスクアセスメントを実施してください。",
+    "組立ラインの作業標準書を8工程分、作成してください。",
+    "ISO9001の内部文書15文書の整備をお願いします。",
+  ];
+  for (const c of cases) {
+    const e = estimateHours(c);
+    assert.ok(e, `判定不能になった: ${c}`);
+    assert.ok(e.lowHours > 0 && e.highHours >= e.lowHours, JSON.stringify(e));
+  }
+});
+
+test("数量に比例して工数が増える", () => {
+  const one = estimateByWorkType("1物質分のSDS作成");
+  const ten = estimateByWorkType("10物質分のSDS作成");
+  // 表示用に小数第1位で丸めているので、比が厳密に10倍にはならない
+  assert.ok(Math.abs(ten.aiHours / one.aiHours - 10) < 0.2, `${one.aiHours} → ${ten.aiHours}`);
+  assert.ok(ten.humanHours > one.humanHours);
+});
+
+test("数量が読めなければ1単位として計算し、確信度を下げる", () => {
+  const e = estimateByWorkType("SDSの作成をお願いします。");
+  assert.equal(e.unitsRead, false);
+  assert.equal(e.units, 1);
+  assert.equal(estimateHours("SDSの作成をお願いします。").confidence, "low");
+});
+
+test("人がやらないと終わらない工程を別に出す", () => {
+  const e = estimateByWorkType("化学物質12物質のリスクアセスメント");
+  assert.ok(e.humanHours > 0, "人の工程がゼロになっていない");
+  assert.ok(e.humanHours < e.aiHours, "全部が人の工程ではない");
+  // 現場ヒアリングは人の工程として残っている
+  assert.ok(e.breakdown.some((s) => s.by === "human" && /ヒアリング/.test(s.name)));
+});
+
+test("AIによる短縮率が「9割」にならない（検証工程が残るため）", () => {
+  // 実測で、工程レベルの短縮率の中央値は約5割だった。
+  // ここが9割に振れていたら、工数を過小評価している。
+  for (const w of WORK_TYPES) {
+    const e = estimateByWorkType(w.patterns[0].source.replace(/[\\^$()?:|]/g, "").split("|")[0]);
+    if (!e) continue;
+    assert.ok(e.reduction <= 0.75, `${w.id} の短縮率が高すぎる: ${e.reduction}`);
+  }
+});
+
+test("GHS区分の確認は人の工程として残す（AIに任せない）", () => {
+  const e = estimateByWorkType("5物質分のSDS作成");
+  const ghs = e.breakdown.find((s) => /GHS/.test(s.name));
+  assert.ok(ghs, "GHSの工程がある");
+  assert.equal(ghs.by, "human");
+  assert.match(ghs.why, /一次情報/);
+});
+
+test("翻訳は後編集を人の工程として計上する", () => {
+  const e = estimateByWorkType("技術資料20,000文字を英訳してください。");
+  const post = e.breakdown.find((s) => /後編集/.test(s.name));
+  assert.equal(post.by, "human");
+  // 2万文字 = 20単位。機械翻訳より後編集のほうが長い
+  assert.ok(post.hours > 1, String(post.hours));
+});
+
+// ---------------------------------------------------------------------------
+// 単価交渉
+// 「安いから見送り」で終わらせると、聞けば動いたかもしれない案件を毎回捨てる。
+// ---------------------------------------------------------------------------
+
+const rn = await import("../dist-test/agent/renegotiate.js");
+const { requiredAsk, buildRenegotiation } = rn;
+const CW = { feeRate: 0.2, withdrawalFeeJpy: 500, name: "クラウドワークス" };
+
+test("手数料を戻して、基準を満たす請求額を逆算する", () => {
+  // 目標手取り 1,121円 × 10時間 = 11,210円。手数料20%と振込500円を戻す。
+  const ask = requiredAsk(1121, 10, CW);
+  // (11210 + 500) / 0.8 = 14,637.5 → 千円単位で切り上げ
+  assert.equal(ask, 15_000);
+  // 実際にその額で手取りが基準を満たすか、順方向で検算する
+  const net = ask - Math.floor(ask * CW.feeRate) - CW.withdrawalFeeJpy;
+  assert.ok(net / 10 >= 1121, `${net / 10} >= 1121`);
+});
+
+test("手数料ゼロの直接取引では、そのままの額になる", () => {
+  const direct = { feeRate: 0, withdrawalFeeJpy: 0, name: "直接" };
+  assert.equal(requiredAsk(2000, 5, direct), 10_000);
+});
+
+test("工数が読めなければ逆算しない", () => {
+  assert.equal(requiredAsk(1121, 0, CW), null);
+  assert.equal(requiredAsk(1121, NaN, CW), null);
+});
+
+test("3倍を超える交渉は、通らないものとして見送らせる", () => {
+  const r = buildRenegotiation({
+    title: "t",
+    offeredJpy: 3_000,
+    hours: 20,
+    minHourlyJpy: 1121,
+    platform: CW,
+  });
+  assert.equal(r.realistic, false);
+  assert.equal(r.message, "", "通らない交渉の文面は作らない");
+  assert.match(r.giveUpReason, /見送って/);
+});
+
+test("現実的な範囲なら、そのまま送れる文面を作る", () => {
+  const r = buildRenegotiation({
+    title: "SDS作成",
+    offeredJpy: 10_000,
+    hours: 10,
+    minHourlyJpy: 1121,
+    platform: CW,
+  });
+  assert.equal(r.realistic, true);
+  assert.ok(r.message.length > 100);
+  assert.match(r.message, /15,000円/);
+  // 送る前に人が確認すべきことを必ず添える
+  assert.match(r.message, /送る前に確認/);
+});
+
+test("工程の内訳があれば、根拠として文面に入れる", () => {
+  const byType = estimateByWorkType("5物質分のSDS作成");
+  const r = buildRenegotiation({
+    title: "SDS作成",
+    offeredJpy: 10_000,
+    hours: byType.aiHours,
+    minHourlyJpy: 1121,
+    platform: CW,
+    breakdown: byType,
+    marketRateJpy: byType.workType.marketRateJpy,
+  });
+  assert.match(r.message, /GHS区分の確認/);
+  assert.match(r.message, /15,000〜50,000円/, "相場を添える");
+});
