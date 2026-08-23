@@ -165,13 +165,15 @@ test("CSSの断片が本文に混ざらない", () => {
   assert.ok(!text.includes("all:unset"));
 });
 
-test("JSON-LD の description があればそれを優先する", () => {
+test("JSON-LD の description を先頭に置く。本文も捨てない（単価が本文側にあるため）", () => {
   const desc = "あ".repeat(200);
   const html = `<html><script type="application/ld+json">${JSON.stringify({
     "@type": "JobPosting",
     description: desc,
-  })}</script><body><p>ナビゲーションのゴミ</p></body></html>`;
-  assert.equal(extractText(html), desc);
+  })}</script><body><p>月額 90,000円</p></body></html>`;
+  const text = extractText(html);
+  assert.ok(text.startsWith(desc), "JSON-LD が先頭に来る");
+  assert.ok(text.includes("90,000円"), "本文の単価も残る");
 });
 
 // ---------------------------------------------------------------------------
@@ -303,4 +305,59 @@ test("key が無ければ URL、URLも無ければタイトルで代用する", 
     ],
   });
   assert.deepEqual(out.map((f) => f.key), ["https://example.com/x", "b", "明示"]);
+});
+
+// ---------------------------------------------------------------------------
+// 競合の読み取り
+// 実データで、応募44人・6万円の案件を「実効時給26,389〜39,583円の応募候補」として
+// 通してしまった。応募人数はページに書いてあったのに読んでいなかった。
+// ---------------------------------------------------------------------------
+
+const comp = await import("../dist-test/agent/competition.js");
+const { readCompetition, estimateWinRate, expectedHourly } = comp;
+
+test("応募人数と閲覧数を読む", () => {
+  const c = readCompetition("応募状況\n応募人数\n44\n契約人数\n閲覧数\n1,890\n業種");
+  assert.equal(c.applicants, 44);
+  assert.equal(c.views, 1890);
+});
+
+test("空欄をまたいで別のラベルの数字を拾わない", () => {
+  // 実データ: 応募人数と契約人数が空欄で、932 は閲覧数だった
+  const c = readCompetition("応募状況\n応募人数\n契約人数\n閲覧数\n932\n業種");
+  assert.equal(c.applicants, null, "応募人数は空欄なので null");
+  assert.equal(c.views, 932);
+});
+
+test("全角の数字も読む", () => {
+  assert.equal(readCompetition("応募人数\n１２").applicants, 12);
+});
+
+test("応募が多いほど受注確率を低く見る", () => {
+  const few = estimateWinRate(4, null);
+  const many = estimateWinRate(44, null);
+  assert.ok(few > many, `${few} > ${many}`);
+  // 実績ゼロぶんを割り引くので、単純な 1/(n+1) より低い
+  assert.ok(many < 1 / 45, `${many} < ${1 / 45}`);
+});
+
+test("募集枠が複数あれば確率は上がる", () => {
+  assert.ok(estimateWinRate(20, 5) > estimateWinRate(20, 1));
+});
+
+test("応募人数が読めなければ確率を出さない（推測で埋めない）", () => {
+  assert.equal(estimateWinRate(null, null), null);
+  assert.equal(expectedHourly(50_000, 10, 0.5, null), null);
+});
+
+test("提案文の時間を入れた期待時給を出す", () => {
+  // 手取り47,500円 / 作業10時間 / 提案0.5時間 / 受注確率1%
+  const e = expectedHourly(47_500, 10, 0.5, 0.01);
+  // 期待収入475円 ÷ 期待時間(0.5 + 0.1)時間 ≒ 792円
+  assert.equal(e, 792);
+});
+
+test("競合が少なければ期待時給は受注時の時給に近づく", () => {
+  const solo = expectedHourly(47_500, 10, 0.5, 0.9);
+  assert.ok(solo > 4000, String(solo));
 });

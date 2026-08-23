@@ -556,3 +556,45 @@ test("完了時刻がUTCでも、ローカルの今日として数える", () =>
   assert.doesNotThrow(() => summarizeTasks([broken]));
   assert.equal(summarizeTasks([broken]).doneToday, 0);
 });
+
+
+// ---------------------------------------------------------------------------
+// 実データで出た誤検知の回帰テスト
+// 実際にギークスジョブ／ココナラから取り込んだ案件で「詐欺スコア70〜85」が
+// 出てしまったもの。普通の案件を danger にすると、警告そのものが信用されなくなる。
+// ---------------------------------------------------------------------------
+
+test("requireAll は patterns に足す条件であって、単体では発火しない", () => {
+  // 「個別説明会」＋「安定稼働」の"稼"だけで高額バックエンド判定が出ていた
+  const text = [
+    "Go／プレイヤープラットフォームのバックエンド開発案件",
+    "安定稼働 長期プロジェクト 高単価",
+    "ギークスジョブの掲載案件はリモートワークでの参画がご相談可能です。",
+    "また、現在実施している個別説明会、各種イベントについてはこちら。",
+    "単価税抜 95 〜 115 万円/月",
+  ].join("\n");
+  const r = scoreScam(text);
+  assert.notEqual(r.verdict, "danger", JSON.stringify(r.signals));
+  assert.ok(!r.signals.some((s) => s.id === "high_ticket_backend"), "高額バックエンドは発火しない");
+});
+
+test("闇バイト隠語の「UD」が英単語の中で発火しない", () => {
+  // CLIP ST-UD-IO で発火していた
+  const r = scoreScam("CLIP STUDIO PAINTによるオリジナル人物イラスト制作をお願いします。");
+  assert.ok(!r.signals.some((s) => s.id === "dark_part_time"), JSON.stringify(r.signals));
+  // 隠語として単独で出てきたときは、これまでどおり拾う
+  const real = scoreScam("UDの仕事です。荷物を受け取って指定場所に運んでください。即日現金でお支払い。");
+  assert.ok(real.score > 0, "本物の隠語は拾う");
+});
+
+test("「組織の体制構築」を連鎖販売と誤判定しない", () => {
+  const r = scoreScam(
+    "受注状況が非常に好調である一方、CS担当者のリソースが逼迫しています。新設組織の体制構築には時間を要するため、短期的な支援をお願いします。"
+  );
+  assert.ok(!r.signals.some((s) => s.id === "mlm_recruiting"), JSON.stringify(r.signals));
+});
+
+test("本物の連鎖販売（ダウンライン構築）はこれまでどおり拾う", () => {
+  const r = scoreScam("ダウンラインを構築すれば、あなたは何もしなくても権利収入が入り続けます。");
+  assert.ok(r.score > 0, JSON.stringify(r));
+});

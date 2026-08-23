@@ -6,6 +6,8 @@ import { upsertTask } from "../repo";
 import { getTemplate } from "../templates";
 import { generateJson, hasApiKey, describeAiError } from "../ai";
 import { detectScopeRisks, estimateHours, type WorkEstimate } from "./estimate";
+import { judgeDeliverability } from "./deliverability";
+import { expectedHourly, readCompetition } from "./competition";
 import { needsEscalation } from "./escalation";
 import { fetchFeed, leadFromParsed } from "./ingest";
 import { SOURCES, fetchSource } from "./sources";
@@ -192,9 +194,17 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
 
   const sorted = [...pending].sort((a, b) => (b.budgetJpy ?? 0) - (a.budgetJpy ?? 0));
 
+  let notDeliverable = 0;
+
   for (const lead of sorted) {
     const scam = scoreScam(lead.rawText);
     const risks = detectScopeRisks(lead.rawText);
+    // 一番上の関門。私が納品物を作れない案件は、金額を見るまでもなく落とす。
+    // 経歴ではなく納品物で切る（このアプリはAIが作業する前提のため）。
+    const deliver = judgeDeliverability(lead.rawText);
+    // 応募人数はページに数字で書いてある。読まずに時給だけ見ると、
+    // 44人が応募している案件を「応募候補」として出してしまう。
+    const competition = readCompetition(lead.rawText);
 
     let estimate: WorkEstimate | null = estimateHours(lead.rawText);
     let offered = lead.budgetJpy;
@@ -202,7 +212,7 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     let estimatedBy: "rule" | "ai" = "rule";
 
     // 詐欺判定で落ちるものに AI を使わない（枠の無駄）
-    if (scam.verdict !== "danger" && aiUsed < aiQuota && ctx.budget.take()) {
+    if (scam.verdict !== "danger" && deliver.canDeliver && aiUsed < aiQuota && ctx.budget.take()) {
       try {
         const ai = await generateJson<AiEstimate>(TRIAGE_PROMPT(lead.rawText, background), {
           temperature: 0.2,
@@ -235,15 +245,38 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       };
     }
 
+    // 提案文を書く時間も原価。取れなければ丸ごと損になる。
+    const PROPOSAL_HOURS = 0.5;
+    let expected: number | null = null;
+    if (offered && offered > 0 && estimate) {
+      const payout = computePayout(offered, platform, estimate.highHours);
+      expected = expectedHourly(
+        payout.netJpy,
+        (estimate.lowHours + estimate.highHours) / 2,
+        PROPOSAL_HOURS,
+        competition.winRate
+      );
+    }
+
     let verdict: Lead["verdict"];
     let reason: string;
 
     if (scam.verdict === "danger") {
       verdict = "reject";
       reason = `詐欺・搾取のシグナルが強い（スコア ${scam.score}）`;
+    } else if (!deliver.canDeliver) {
+      verdict = "reject";
+      reason = deliver.note;
+      notDeliverable++;
     } else if (hourly && hourly.high < minHourly) {
       verdict = "reject";
       reason = `手数料を引いた実効時給が ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円で、基準の ${minHourly.toLocaleString()}円 を下回る`;
+    } else if (expected !== null && expected < minHourly) {
+      // 受注できたときの時給は足りていても、競合が多すぎて期待値が出ないケース。
+      verdict = "reject";
+      reason =
+        `${competition.note}提案文を書く時間まで入れた期待時給は ${expected.toLocaleString()}円で、` +
+        `基準の ${minHourly.toLocaleString()}円 を下回ります。ここに時間を使うより、応募の少ない案件を探すほうが早い`;
     } else if (!hourly) {
       verdict = "verify_first";
       reason = offered
@@ -275,11 +308,32 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       fitNotes,
       reason,
       minHourlyJpy: minHourly,
+      competition: {
+        applicants: competition.applicants,
+        views: competition.views,
+        winRate: competition.winRate,
+        expectedHourlyJpy: expected,
+        note: competition.note,
+      },
+      deliverable: {
+        canDeliver: deliver.canDeliver,
+        matched: deliver.matched,
+        routes: deliver.routes,
+        requires: deliver.requires,
+        blockers: deliver.blockers,
+        humanSteps: deliver.humanSteps,
+        commoditized: deliver.commoditized,
+        commodityReasons: deliver.commodityReasons,
+        note: deliver.note,
+      },
     };
 
     // ルールでも無料枠のAIでも判定しきれなかったものは、上位モデルに回す。
     // 詐欺で確実に落とせるものは回さない（回す価値がないため）。
-    const escalationReasons = verdict === "reject" && scam.verdict === "danger" ? [] : needsEscalation(triageData);
+    const escalationReasons =
+      (verdict === "reject" && scam.verdict === "danger") || !deliver.canDeliver
+        ? []
+        : needsEscalation(triageData);
 
     updateLead(lead.id, {
       status: verdict === "reject" && escalationReasons.length === 0 ? "rejected" : "triaged",
@@ -326,7 +380,19 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     }
   }
 
-  ctx.log("info", `${triaged}件を判定し、${rejected}件を除外しました（AI使用 ${aiUsed}回）`);
+  ctx.log(
+    "info",
+    `${triaged}件を判定し、${rejected}件を除外しました` +
+      `（うち ${notDeliverable}件は私が納品物を作れない案件 / AI使用 ${aiUsed}回）`,
+    { triaged, rejected, notDeliverable, aiUsed }
+  );
+  if (notDeliverable === triaged && triaged > 0) {
+    ctx.log(
+      "warn",
+      "取り込んだ案件が全部「私が作れないもの」でした。取り込み元がこのアプリに合っていません。/hustle/agent で取り込み先を見直してください",
+      { notDeliverable }
+    );
+  }
   if (escalated > 0) {
     ctx.log(
       "warn",

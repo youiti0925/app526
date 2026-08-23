@@ -25,6 +25,11 @@
     "src/lib/hustle/agent/budget.ts",
     "src/lib/hustle/agent/reconcile.ts",
     "src/lib/hustle/agent/sources.ts",
-    "src/lib/hustle/agent/discovery-core.ts"
+    "src/lib/hustle/agent/discovery-core.ts",
+    "src/lib/hustle/agent/robots.ts",
+    "src/lib/hustle/agent/site-registry.ts",
+    "src/lib/hustle/agent/probe.ts",
+    "src/lib/hustle/agent/deliverability.ts",
+    "src/lib/hustle/agent/competition.ts"
   ]
 }

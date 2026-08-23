@@ -22,6 +22,10 @@ export interface ScamRule {
    * 単独では普通の案件にも出る語（「面談」「シグナル」など）を、
    * 組み合わせで初めて危険と見なすために使う。
    */
+  /**
+   * 追加条件。指定した場合、patterns が当たったうえで**全部**当たったときだけ発火する。
+   * patterns が空のルールでは、これ単体が発火条件になる。
+   */
   requireAll?: RegExp[];
   /** 発火時に追加で出す具体的な行動指示 */
   action?: string;
@@ -51,7 +55,7 @@ export const SCAM_RULES: ScamRule[] = [
       /(荷物|品物|商品)\s*(の)?\s*(受け取り|受取|回収)[^。\n]{0,20}(高額|高収入|日給|即日)/,
       /(現金|お金)\s*(の)?\s*(回収|受け取り|受取|運搬)/,
       /ATM[^。\n]{0,15}(出金|引き出)/,
-      /(叩き|叩く|UD|受け子|出し子|かけ子)/,
+      /(叩き|叩く|(?<![A-Za-z])UD(?![A-Za-z])|受け子|出し子|かけ子)/,
       /ホワイト案件/,
     ],
   },
@@ -324,7 +328,7 @@ export const SCAM_RULES: ScamRule[] = [
     why: "友人を紹介すると報酬が増える仕組みは連鎖販売取引（MLM）で、特定商取引法の厳しい規制対象です。人間関係を消費して終わるのが典型的な結末です。",
     patterns: [
       /(紹介|勧誘|招待)[^。\n]{0,15}(報酬|ボーナス|マージン|還元)/,
-      /(ダウン|アップライン|組織)[^。\n]{0,10}(構築|作)/,
+      /((ダウン|アップ)ライン|傘下|系列)[^。\n]{0,10}(構築|作|増や|広げ)/,
       /(権利収入|不労所得)[^。\n]{0,15}(仕組み|構築)/,
     ],
   },
@@ -431,19 +435,28 @@ export function scoreScam(text: string): ScamScoreResult {
   for (const rule of SCAM_RULES) {
     let match: RegExpMatchArray | null = null;
 
-    if (rule.requireAll && rule.requireAll.length > 0) {
-      const matches = rule.requireAll.map((pattern) => normalized.match(pattern));
-      if (matches.every((m) => m !== null && m.index !== undefined)) {
-        match = matches[0];
-      }
-    }
+    // requireAll は「patterns に加えて全部当たること」を求める追加条件。
+    // ここを OR にしていたせいで、patterns が1つも当たっていない普通のIT案件が
+    // 「詐欺スコア70」で落ちていた（「個別説明会」と「安定稼働」の"稼"だけで発火）。
+    const gateOk =
+      !rule.requireAll ||
+      rule.requireAll.length === 0 ||
+      rule.requireAll.every((pattern) => {
+        const m = normalized.match(pattern);
+        return m !== null && m.index !== undefined;
+      });
 
-    if (!match) {
-      for (const pattern of rule.patterns) {
-        const found = normalized.match(pattern);
-        if (found && found.index !== undefined) {
-          match = found; // 同一ルールは1回だけ数える
-          break;
+    if (gateOk) {
+      if (rule.patterns.length === 0) {
+        // patterns を持たないルールは、requireAll 自体が発火条件
+        match = rule.requireAll ? normalized.match(rule.requireAll[0]) : null;
+      } else {
+        for (const pattern of rule.patterns) {
+          const found = normalized.match(pattern);
+          if (found && found.index !== undefined) {
+            match = found; // 同一ルールは1回だけ数える
+            break;
+          }
         }
       }
     }

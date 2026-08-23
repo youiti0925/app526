@@ -29,18 +29,36 @@ export interface SourceDefinition {
   note: string;
   /** 既定で有効にするか。規約が灰色のものは既定オフ。 */
   defaultEnabled: boolean;
+  /**
+   * 差分の取り方。
+   * lastmod: サイトマップの更新日時で絞る（軽い）
+   * seen:    更新日時が無いサイト向け。取り込み済みIDで絞る（サイトマップは毎回全部読む）
+   */
+  trackBy: "lastmod" | "seen";
 }
 
 export const SOURCES: SourceDefinition[] = [
   {
-    id: "levtech",
-    name: "レバテックフリーランス",
-    sitemapUrl: "https://freelance.levtech.jp/project-1.xml",
+    id: "geechs",
+    name: "ギークスジョブ",
+    sitemapUrl: "https://geechs-job.com/sitemap.xml",
     isIndex: false,
-    detailPattern: /\/project\/detail\/\d+\/?$/,
+    detailPattern: /\/project\/details\/\d+$/,
+    trackBy: "lastmod",
     note:
-      "IT・開発系のフリーランス案件。サイトマップに更新日が入っているので、新着だけを拾えます。robots.txt の禁止対象ではありません。",
-    defaultEnabled: false,
+      "フリーランスのIT案件が約10,100件。全件に更新日時が入っているので新着だけを拾えます。robots.txt は取得を禁止していません。本文はJSON-LDで取れます。",
+    defaultEnabled: true,
+  },
+  {
+    id: "itpropartners",
+    name: "ITプロパートナーズ",
+    sitemapUrl: "https://itpropartners.com/sitemap.xml",
+    isIndex: false,
+    detailPattern: /\/job\/detail\/\d+$/,
+    trackBy: "seen",
+    note:
+      "週2日から入れる業務委託案件が約3,000件。エンジニア以外（マーケター・ディレクター）もあります。更新日時がサイトマップに無いので、取り込み済みかどうかで差分を取ります。",
+    defaultEnabled: true,
   },
   {
     id: "coconala",
@@ -48,13 +66,45 @@ export const SOURCES: SourceDefinition[] = [
     sitemapUrl: "https://coconala.com/sitemaps/category-requests-index.xml",
     isIndex: true,
     detailPattern: /\/requests\/\d+$/,
+    trackBy: "lastmod",
     note:
-      "公開依頼。全体で200件強と少ないので、全部に目を通せます。規約は「出品者のサービスに自動応答する装置」を禁じており、応募の自動化はできません（このアプリもしません）。閲覧の取得も低頻度に留めています。",
+      "公開依頼が約230件。実際に取り込んでみたところ、イラスト・動画編集・作曲といった「AIでは納品物を作れない」案件が大半でした。数は少ないので有効にしても負荷は小さいですが、期待はしないでください。",
     defaultEnabled: false,
   },
 ];
 
-export interface SitemapEntry {
+/**
+ * 調べたが使えなかったサイト。同じ検証を繰り返さないために残す。
+ * ここに書いてあるものは、コネクタとして実装しない。
+ */
+export const REJECTED_SOURCES: { name: string; why: string }[] = [
+  {
+    name: "レバテックフリーランス",
+    why: "curl では取れるのに、プログラム（Node の fetch）からは全ページ HTTP 403。WAF がクライアントを見て弾いています。ブラウザのふりをすれば通る可能性はありますが、それは回避なのでしません。",
+  },
+  {
+    name: "クラウドワークス",
+    why: "robots.txt が ClaudeBot / GPTBot を名指しで Disallow: / にしています。このアプリはAIで動かす前提なので、名前を変えて通らず、使いません。",
+  },
+  {
+    name: "ランサーズ",
+    why: "robots.txt からして HTTP 405。AWS WAF がプログラムからのアクセスを弾いています。",
+  },
+  {
+    name: "SKIMA / ストアカ / Green",
+    why: "robots.txt で AI クローラを名指し拒否。",
+  },
+  {
+    name: "クラウディア",
+    why: "サイトマップは取れますが、中身の8,233件が出品者プロフィールで、案件ページはほぼありません。",
+  },
+  {
+    name: "Indeed / スタンバイ / Workship / Midworks / PE-BANK / フリエン / シュフティ",
+    why: "robots.txt は禁止していませんが、機械が読める入口（サイトマップ・RSS・API）が見つかりません。1ページずつ辿るのは相手の負荷になるのでしません。",
+  },
+];
+
+interface SitemapEntry {
   url: string;
   lastmod: string;
 }
@@ -104,16 +154,17 @@ export function selectNew(
   entries: SitemapEntry[],
   detailPattern: RegExp,
   since: string,
-  isKnown: (url: string) => boolean = () => false
+  isKnown: (url: string) => boolean = () => false,
+  allowUndated = false
 ): { candidates: SitemapEntry[]; undated: number } {
   const details = entries.filter((e) => detailPattern.test(e.url));
-  const dated = details.filter((e) => Boolean(e.lastmod));
+  const usable = allowUndated ? details : details.filter((e) => Boolean(e.lastmod));
   return {
-    candidates: dated
-      .filter((e) => !since || e.lastmod >= since)
+    candidates: usable
+      .filter((e) => !since || (Boolean(e.lastmod) && e.lastmod >= since))
       .filter((e) => !isKnown(e.url))
       .sort((a, b) => a.lastmod.localeCompare(b.lastmod)),
-    undated: details.length - dated.length,
+    undated: allowUndated ? 0 : details.length - usable.length,
   };
 }
 
@@ -139,14 +190,19 @@ export function nextSince(attempted: SitemapEntry[], since: string): string {
  * そこで、CSSの断片と、何度も出てくる短い行（＝メニュー項目）を落としてから返す。
  */
 export function extractText(html: string, maxChars = 6000): string {
-  // JSON-LD の description が一番きれい
+  // JSON-LD の description が一番きれい。ただし単価や期間は本文側にしか無いことが
+  // あるので、これだけで返さず、剥がした本文の前に置く。
+  let jsonLd = "";
   for (const m of html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
     try {
       const data = JSON.parse(m[1].trim());
       const nodes = Array.isArray(data) ? data : [data];
       for (const node of nodes) {
         const desc = node?.description;
-        if (typeof desc === "string" && desc.length > 80) return desc.slice(0, maxChars);
+        if (typeof desc === "string" && desc.length > 80) {
+          jsonLd = desc;
+          break;
+        }
       }
     } catch {
       // 次へ
@@ -172,7 +228,30 @@ export function extractText(html: string, maxChars = 6000): string {
     // 閉じ忘れたスタイルブロックの残骸
     .filter((l) => !/[{};]\s*[\w-]+\s*:/.test(l));
 
-  return dropRepeatedShortLines(lines).join("\n").replace(/\n{3,}/g, "\n\n").slice(0, maxChars);
+  const body = cutAfterBody(dropRepeatedShortLines(lines)).join("\n").replace(/\n{3,}/g, "\n\n");
+  return (jsonLd ? `${jsonLd}\n\n${body}` : body).slice(0, maxChars);
+}
+
+/**
+ * 募集内容の後ろに付く、質問欄・関連案件・おすすめを切り落とす。
+ *
+ * ここを残すと、質問した人のハンドル名まで募集文として読まれる。
+ * 実際、「採用サービスのアンケート担当者募集」が、質問欄にいた
+ * 「nachuho_イラスト・動画・広報」というユーザー名のせいで
+ * 「イラスト制作の案件」と誤判定された。
+ */
+const BODY_END_MARKERS = [
+  /^募集内容についての質問/,
+  /^(この|関連する)(募集|依頼|案件|サービス)/,
+  /^(おすすめ|似た|その他)の(募集|依頼|案件|サービス|出品)/,
+  /^(コメント|質問)(一覧|する)?$/,
+  /^(よくある質問|FAQ)$/,
+];
+
+export function cutAfterBody(lines: string[]): string[] {
+  const at = lines.findIndex((l) => BODY_END_MARKERS.some((m) => m.test(l)));
+  // 先頭近くで当たったら、それは本文ではなくページの飾り。切らない。
+  return at > 5 ? lines.slice(0, at) : lines;
 }
 
 /**
@@ -253,11 +332,14 @@ export async function fetchSource(source: SourceDefinition, options: FetchOption
       entries = parseSitemap(await get(source.sitemapUrl));
     }
 
+    // 更新日時が無いサイトは、位置ではなく「取り込み済みか」だけで差分を取る
+    const since = source.trackBy === "seen" ? "" : options.since;
     const { candidates, undated } = selectNew(
       entries,
       source.detailPattern,
-      options.since,
-      options.isKnown
+      since,
+      options.isKnown,
+      source.trackBy === "seen"
     );
     result.found = candidates.length;
     result.undated = undated;
