@@ -77,6 +77,21 @@ export interface ProbeResult {
 
 const TIMEOUT_MS = 15_000;
 
+/**
+ * robots.txt の判定に使う、そのサイトの案件ページらしいパス。
+ * detailPattern は正規表現なので、そのままではパスにならない。
+ * メタ文字を落として、実在しそうな形に戻す。
+ */
+export function samplePath(site: SiteCandidate): string {
+  if (!site.detailPattern) return "/";
+  const path = site.detailPattern
+    .replace(/\\d\+/g, "123456")
+    .replace(/\\d\{[0-9,]+\}/g, "123456")
+    .replace(/[\\^$?+*()\[\]]/g, "")
+    .replace(/\{[0-9,]+\}/g, "");
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
 interface Fetched {
   status: number | null;
   body: string;
@@ -184,7 +199,9 @@ export async function probeSite(site: SiteCandidate): Promise<ProbeResult> {
     result.allowed = true;
     result.rule = "robots.txt がありません（禁止指定なし）";
   } else if (robots) {
-    const verdict = isAllowed(robots, site.detailPattern ? "/" : "/", PROBE_UA);
+    // 案件ページのパスで判定する。常に "/" を見ていたので、
+    // トップは許可だが案件ページは Disallow、というサイトを「使える」と誤判定していた。
+    const verdict = isAllowed(robots, samplePath(site), PROBE_UA);
     result.allowed = verdict.allowed;
     result.rule = verdict.rule;
     result.crawlDelaySec = verdict.crawlDelaySec;

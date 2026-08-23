@@ -303,10 +303,34 @@ export interface DeliverabilityResult {
 
 const byId = new Map(CAPABILITIES.map((c) => [c.id, c]));
 
+/**
+ * 「〜は含みません」「〜はありません」のように、否定されている言及。
+ * これを blocker として数えると、こちらに都合のよい案件まで落とす。
+ * 実データで「イラスト制作は業務範囲に含まれず、こちらで用意します」という
+ * 動画編集の案件を「イラストは作れない」で落としていた。
+ */
+const NEGATED =
+  /^[^。、\n]{0,12}(含みません|含まず|含まれず|含まれません|ありません|不要|不問|発生しません|お願いしません|ございません|除きます|対象外|こちらで(用意|対応))/;
+
+function isNegated(text: string, pattern: RegExp): boolean {
+  const re = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+  let sawAny = false;
+  for (const m of text.matchAll(re)) {
+    if (m.index === undefined) continue;
+    sawAny = true;
+    const after = text.slice(m.index + m[0].length, m.index + m[0].length + 25);
+    // 1箇所でも否定されていない言及があれば、それは本当に求められている
+    if (!NEGATED.test(after)) return false;
+  }
+  return sawAny;
+}
+
 /** 案件本文から、納品物と出せるかどうかを判定する。 */
 export function judgeDeliverability(text: string): DeliverabilityResult {
   const t = text.slice(0, 8000);
-  const matched = CAPABILITIES.filter((c) => c.patterns.some((p) => p.test(t)));
+  const matched = CAPABILITIES.filter((c) =>
+    c.patterns.some((p) => p.test(t) && !isNegated(t, p))
+  );
 
   const blockers = matched.filter((c) => c.route === "taste" || c.route === "physical");
   const paid = matched.filter((c) => c.needsPaid);

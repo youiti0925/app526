@@ -1008,3 +1008,87 @@ test("なぜ確認が要るのかを毎回書く（形骸化させない）", ()
   assert.match(c.markdown, /そのまま納品できたものはゼロ/);
   assert.match(c.markdown, /黙って出すのが一番まずい/);
 });
+
+// ---------------------------------------------------------------------------
+// robots.txt の解析（緩く解釈すると規約違反になる）
+// ---------------------------------------------------------------------------
+
+const rb = await import("../dist-test/agent/robots.js");
+const { parseRobots, isAllowed } = rb;
+
+test("同じUAを名指しするグループが複数あれば、全部をまとめて見る", () => {
+  // 最初の1つだけ見ていたせいで、後ろのグループの Disallow を読み落としていた。
+  // google.com/robots.txt が実際にこの形をしている（RFC 9309 はマージを求めている）。
+  const r = parseRobots("User-agent: *\nDisallow: /p/\n\nUser-agent: mybot\nDisallow: /a/\n\nUser-agent: mybot\nDisallow: /b/\n");
+  assert.equal(isAllowed(r, "/a/x", "mybot").allowed, false);
+  assert.equal(isAllowed(r, "/b/x", "mybot").allowed, false, "2つ目のグループも効く");
+});
+
+test("空の User-agent 行が全UAを乗っ取らない", () => {
+  // ua.includes("") は常に true。放置すると `*` の Disallow を潰す。
+  const r = parseRobots("User-agent:\nDisallow:\n\nUser-agent: *\nDisallow: /secret/\n");
+  assert.equal(isAllowed(r, "/secret/x", "anybot").allowed, false);
+});
+
+test("robots.txt が読めなければ許可しない", () => {
+  assert.equal(isAllowed(null, "/", "bot").allowed, false);
+});
+
+test("調査は案件ページのパスで判定する（トップだけ見ない）", async () => {
+  const pr = await import("../dist-test/agent/probe.js");
+  const sr = await import("../dist-test/agent/site-registry.js");
+  const coconala = sr.SITE_CANDIDATES.find((s) => s.id === "coconala");
+  assert.equal(pr.samplePath(coconala), "/requests/123456");
+});
+
+// ---------------------------------------------------------------------------
+// 否定を「作れない」と読まない
+// ---------------------------------------------------------------------------
+
+test("「イラストは含みません」を、イラスト案件と読まない", () => {
+  const cases = [
+    "動画のカット編集とテロップ挿入をお願いします。イラスト制作は業務範囲に含まれず、こちらで用意します。",
+    "記事執筆のみで、電話対応はありません。",
+    "資料作成をお願いします。現地訪問は不要です。",
+  ];
+  for (const t of cases) {
+    assert.equal(judgeDeliverability(t).canDeliver, true, t);
+  }
+});
+
+test("本当に求められているものは、これまでどおり落とす", () => {
+  for (const t of [
+    "オリジナルキャラクターのイラストを制作してください。",
+    "電話でのお問い合わせ対応をお願いします。",
+    "動画編集とイラスト制作の両方をお願いします。",
+  ]) {
+    assert.equal(judgeDeliverability(t).canDeliver, false, t);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 数量・種別の読み間違い
+// ---------------------------------------------------------------------------
+
+test("規格番号を数量として読まない", () => {
+  const e = estimateByWorkType("ISO14001 文書の整備をお願いします。");
+  assert.equal(e.units, 1, "14,001文書 と読んでいた");
+  assert.ok(e.aiHours < 20, String(e.aiHours));
+});
+
+test("背景説明の言及で仕事の種類を決めない", () => {
+  // 「確実な手順書が整備されているため」だけで作業標準書の案件と判定していた
+  const t =
+    "大手企業のSAPシステム運用保守です。マスタデータの投入・管理を担当いただきます。確実な手順書が整備されているため、まずは着実に業務を遂行いただくことからスタート。1ヶ月の引継ぎ期間があります。";
+  assert.equal(estimateByWorkType(t), null, JSON.stringify(estimateByWorkType(t)));
+});
+
+test("依頼の形なら拾う（助詞なしの複合語も）", () => {
+  for (const [t, id] of [
+    ["5物質分のSDS作成をお願いします。", "sds"],
+    ["作業標準書を8工程分、作成してください。", "work_standard"],
+    ["技術資料20,000文字を英訳してください。", "translation"],
+  ]) {
+    assert.equal(estimateByWorkType(t)?.workType.id, id, t);
+  }
+});

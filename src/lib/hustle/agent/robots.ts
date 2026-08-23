@@ -53,7 +53,10 @@ export function parseRobots(text: string): Robots {
         current = { agents: [], allow: [], disallow: [], crawlDelaySec: null };
         groups.push(current);
       }
-      current.agents.push(value.toLowerCase());
+      // 空の値（"User-agent:" だけの行）は無視する。
+      // ua.includes("") は常に true なので、放置すると全UAに一致して
+      // `*` グループを乗っ取り、禁止されているものを許可と判定する。
+      if (value) current.agents.push(value.toLowerCase());
       lastWasAgent = true;
       continue;
     }
@@ -78,21 +81,43 @@ export function parseRobots(text: string): Robots {
  */
 export function groupFor(robots: Robots, userAgent: string): RobotsGroup | null {
   const ua = userAgent.toLowerCase();
-  let best: RobotsGroup | null = null;
+
+  // 同じ User-agent を名指しするグループが複数あるときは、全部を1つにまとめる
+  // （RFC 9309 が求めている挙動）。最初の1つだけを見ていたせいで、
+  // 後ろのグループにある Disallow を読み落とし、禁止されているものを
+  // 許可と判定していた。google.com/robots.txt が実際にこの形をしている。
   let bestLen = -1;
+  const matched: RobotsGroup[] = [];
 
   for (const group of robots.groups) {
     for (const agent of group.agents) {
       if (agent === "*") continue;
-      if (ua.includes(agent) && agent.length > bestLen) {
-        best = group;
+      if (!ua.includes(agent)) continue;
+      if (agent.length > bestLen) {
         bestLen = agent.length;
+        matched.length = 0;
+        matched.push(group);
+      } else if (agent.length === bestLen) {
+        matched.push(group);
       }
+      break;
     }
   }
-  if (best) return best;
 
-  return robots.groups.find((g) => g.agents.includes("*")) ?? null;
+  const groups = matched.length > 0 ? matched : robots.groups.filter((g) => g.agents.includes("*"));
+  if (groups.length === 0) return null;
+  if (groups.length === 1) return groups[0];
+
+  return {
+    agents: [...new Set(groups.flatMap((g) => g.agents))],
+    allow: groups.flatMap((g) => g.allow),
+    disallow: groups.flatMap((g) => g.disallow),
+    // 間隔は一番長いものに合わせる（相手に優しい側）
+    crawlDelaySec: groups.reduce<number | null>(
+      (max, g) => (g.crawlDelaySec === null ? max : Math.max(max ?? 0, g.crawlDelaySec)),
+      null
+    ),
+  };
 }
 
 /** robots.txt のパターンを正規表現にする。`*` は任意、`$` は終端。 */
