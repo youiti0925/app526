@@ -1,4 +1,5 @@
 import { CAPABILITIES, judgeDeliverability, type Capability } from "./deliverability";
+import { readEngagement } from "./engagement";
 import type { Lead } from "./types";
 
 /**
@@ -45,6 +46,13 @@ export interface Grade {
   humanHoursNeeded: number;
   /** 事実の裏取りが必要な箇所 */
   needsFactCheck: string[];
+  /**
+   * 成果物が募集と別物だったか。
+   * これが true のときは、能力の問題ではなく**試作の対象選びの問題**なので、
+   * そのジャンルの検証結果としては数えない。
+   * （準委任の要員募集に「成果物を作れ」と指示してしまった実例が4件あった）
+   */
+  targetMismatch: boolean;
   verdict: DryRunVerdict;
   reason: string;
 }
@@ -258,6 +266,7 @@ export function parseGrades(raw: unknown): (Grade & { dryRunId: string })[] {
       gaps: arr(o.gaps),
       humanHoursNeeded: numOr(o.humanHoursNeeded, 0),
       needsFactCheck: arr(o.needsFactCheck),
+      targetMismatch: o.targetMismatch === true,
       verdict:
         verdict === "pass" || verdict === "needs_work" || verdict === "fail" || verdict === "cannot_produce"
           ? verdict
@@ -317,12 +326,18 @@ export const EVIDENCE_LABELS: Record<Evidence, string> = {
  * 主張ではなく結果で決める。
  */
 export function evidenceFor(runs: DryRun[]): Evidence {
-  const graded = runs.filter((r) => r.grade !== null);
+  // 成果物が募集と別物だったものは、能力の検証になっていないので除く。
+  // ここを数えると「案件選びを間違えた」を「作れない」と誤って結論づける。
+  const graded = runs.filter((r) => r.grade !== null && !r.grade.targetMismatch);
   if (graded.length === 0) return "untested";
   if (graded.some((r) => r.grade!.verdict === "pass")) return "proven";
   if (graded.some((r) => r.grade!.verdict === "needs_work")) return "needs_human";
   return "disproven";
 }
+
+/** 対象選びを間違えた試作。ハーネス側の問題として別に数える。 */
+export const mismatchedRuns = (runs: DryRun[]): DryRun[] =>
+  runs.filter((r) => r.grade?.targetMismatch === true);
 
 /** 主張と結果が食い違っているジャンルを洗い出す。ここが直すべきところ。 */
 export function findContradictions(
@@ -392,6 +407,12 @@ export function pickTargets(
 
   for (const lead of sorted) {
     if (lead.rawText.length < 300) continue;
+
+    // 準委任の要員募集は「成果物を納品する案件」ではないので、試作の対象にしない。
+    // ここを外していたせいで、月140時間の常駐案件に「成果物を作れ」と指示し、
+    // 出てきたものが募集と別物になって4件が無駄になった。
+    if (readEngagement(lead.rawText, lead.budgetJpy).kind === "monthly") continue;
+
     const judged = judgeDeliverability(lead.rawText);
     for (const genre of judged.matched) {
       if (skip.has(genre)) continue;

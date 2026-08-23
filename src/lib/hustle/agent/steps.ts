@@ -11,6 +11,7 @@ import { expectedHourly, readCompetition } from "./competition";
 import { checkCapacity, monthlyHourly, readEngagement } from "./engagement";
 import { checkDeadline, readDeadline } from "./deadline";
 import { checkGates, renderGateQuestions } from "./gates";
+import { buildChecklist } from "./coverage";
 import { buildRenegotiation } from "./renegotiate";
 import { buildListing, listableWorkTypes, renderListing } from "./listing";
 import { reviewListing, summarizeListings } from "./listing-tracker";
@@ -618,15 +619,26 @@ export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
       .filter(Boolean)
       .join("\n");
 
+    const checklist = buildChecklist(lead.rawText, lead.title);
     pushInbox({
       runId: ctx.runId,
       kind: "proposal",
       priority: Math.min(90, 40 + lead.score / 2),
       title: lead.title.slice(0, 80) || "提案文",
-      body: `${header}\n\n---\n\n${body}`,
+      // 募集が求めている項目を並べて添える。
+      // 実案件9件の試作で、そのまま納品できたものはゼロで、失敗の型は全件同じだった
+      // ——募集に書いてある項目を黙って飛ばす。並べないと気づけない。
+      body: `${header}\n\n---\n\n${body}\n\n---\n\n${checklist.markdown}`,
       actionUrl: lead.url,
       leadId: lead.id,
-      meta: { angle, usedAi, score: lead.score, verdict: lead.verdict },
+      meta: {
+        angle,
+        usedAi,
+        score: lead.score,
+        verdict: lead.verdict,
+        requirements: checklist.requirements.length,
+        requiredCount: checklist.requiredCount,
+      },
     });
 
     updateLead(lead.id, { status: "drafted" });

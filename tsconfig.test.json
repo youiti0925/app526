@@ -41,6 +41,7 @@
     "src/lib/hustle/agent/gates.ts",
     "src/lib/hustle/agent/listing-tracker.ts",
     "src/lib/hustle/next-action.ts",
-    "src/lib/hustle/tax.ts"
+    "src/lib/hustle/tax.ts",
+    "src/lib/hustle/agent/coverage.ts"
   ]
 }

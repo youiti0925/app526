@@ -944,3 +944,67 @@ test("全部が様子見なら、いじらずに出品を増やさせる", () =>
   const s = summarizeListings(reviews);
   assert.match(s, /いま出品文をいじらないでください/);
 });
+
+// ---------------------------------------------------------------------------
+// 募集の要求項目を並べる
+// 実案件9件で成果物を作らせて採点した結果、そのまま納品できたものはゼロだった。
+// 失敗の型は全件同じで、募集に書いてある項目を黙って飛ばしていた。
+// ---------------------------------------------------------------------------
+
+const cov = await import("../dist-test/agent/coverage.js");
+const { extractRequirements, buildChecklist } = cov;
+
+const POSTING = `【動画制作の依頼】
+■ 業務内容
+・全般的な動画編集
+・テロップ（字幕）入れ
+・BGMの挿入
+・ナレーション
+
+■ 必須要件
+・Adobe Premiereが使える方
+・週2日以上稼働できる方
+
+希望予算：60,000円
+納期：2週間
+連絡方法：チャットワーク
+`;
+
+test("業務内容と必須要件を項目として抜き出す", () => {
+  const rs = extractRequirements(POSTING);
+  const texts = rs.map((r) => r.text);
+  assert.ok(texts.some((t) => /テロップ/.test(t)), JSON.stringify(texts));
+  assert.ok(texts.some((t) => /BGM/.test(t)));
+  assert.ok(texts.some((t) => /ナレーション/.test(t)));
+  assert.ok(texts.some((t) => /Premiere/.test(t)));
+});
+
+test("必須と書かれているものは required にする", () => {
+  const rs = extractRequirements(POSTING);
+  assert.ok(rs.filter((r) => r.required).length >= 4, JSON.stringify(rs));
+});
+
+test("予算・納期・連絡方法は「作るもの」ではないので混ぜない", () => {
+  const texts = extractRequirements(POSTING).map((r) => r.text);
+  assert.ok(!texts.some((t) => /希望予算|^納期|連絡方法/.test(t)), JSON.stringify(texts));
+});
+
+test("自動でチェックを入れない（人に突き合わせさせる）", () => {
+  const c = buildChecklist(POSTING, "動画制作");
+  // チェック済みの箱を作らない。作ると「機械が見たから大丈夫」になる。
+  assert.ok(!/\[x\]/i.test(c.markdown));
+  assert.ok(/- \[ \]/.test(c.markdown));
+});
+
+test("項目が抜き出せなくても、黙って通さない", () => {
+  const c = buildChecklist("よろしくお願いします。", "短い募集");
+  assert.equal(c.requirements.length, 0);
+  assert.match(c.markdown, /自分で読んで/);
+  assert.match(c.markdown, /黙って飛ばします/);
+});
+
+test("なぜ確認が要るのかを毎回書く（形骸化させない）", () => {
+  const c = buildChecklist(POSTING, "動画制作");
+  assert.match(c.markdown, /そのまま納品できたものはゼロ/);
+  assert.match(c.markdown, /黙って出すのが一番まずい/);
+});
