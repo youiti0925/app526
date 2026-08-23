@@ -65,10 +65,11 @@ test("空に近い入力でも例外にならない", () => {
 test("1000円の案件は手数料と振込手数料でほとんど残らない", () => {
   const cw = PLATFORM_FEES.find((p) => p.id === "crowdworks");
   const r = computePayout(1000, cw, 2);
-  // 20% 手数料 → 800円。最低出金額 1000円 に届かないので出金不可。
+  // 20% 手数料 → 800円。最低出金額 1000円 に届かないので単独では出金できない。
+  // 振込手数料は免除されるわけではなく、合算出金のときに引かれるので常に控除する。
   assert.equal(r.feeJpy, 200);
   assert.equal(r.canWithdraw, false);
-  assert.equal(r.withdrawalFeeJpy, 0);
+  assert.equal(r.netJpy, 300);
   assert.ok(r.warnings.some((w) => w.includes("最低出金額")));
 });
 
@@ -427,4 +428,131 @@ test("全テンプレートが必須項目とフォールバックを持つ", ()
     assert.doesNotThrow(() => t.fallback({}), `${t.id}: 空入力でフォールバックが落ちる`);
     assert.doesNotThrow(() => t.buildPrompt({}, 1), `${t.id}: 空入力でプロンプト生成が落ちる`);
   }
+});
+
+// --- 詐欺判定: 誤検知と見逃しの回帰 ------------------------------------------
+
+test("2桁以上の高額報酬も implausible_rate で拾う", () => {
+  for (const text of [
+    "日給10万円のかんたんなお仕事です。",
+    "日収15万円も可能。",
+    "月収50万円を目指せます。",
+    "副業で月100万円。",
+  ]) {
+    const r = scoreScam(text);
+    assert.ok(
+      r.signals.some((s) => s.id === "implausible_rate"),
+      `拾えていない: ${text} → ${JSON.stringify(r.signals.map((s) => s.id))}`
+    );
+  }
+});
+
+test("「月収50万円を保証」を収入の断定として拾う", () => {
+  const r = scoreScam("当社のシステムなら月収50万円を保証します。");
+  assert.ok(r.signals.some((s) => s.id === "guaranteed_income"));
+  assert.equal(r.verdict, "danger");
+});
+
+test("「Zoomで面談」だけの普通の求人を danger にしない", () => {
+  const r = scoreScam(
+    "【経理事務】freeeへの仕訳入力をお願いします。時給1,200円、週10時間。選考はZoomで面談を行います。お支払いはクラウドワークスの仮払いを通します。"
+  );
+  assert.notEqual(r.verdict, "danger", JSON.stringify(r.signals.map((s) => s.label)));
+});
+
+test("「売買シグナル」の記事案件を danger にしない", () => {
+  const r = scoreScam(
+    "【記事作成】株式投資の売買シグナルの読み方を解説する記事を3本お願いします。1本5,000円、クラウドワークスの仮払いを通します。修正は2回まで。"
+  );
+  assert.notEqual(r.verdict, "danger", JSON.stringify(r.signals.map((s) => s.label)));
+});
+
+test("「オンライン登録」をLINE誘導と誤検知しない", () => {
+  const r = scoreScam(
+    "オンライン登録をしていただき、指定のフォームから作業を進めてください。業務は在宅で完結します。報酬は月末締め翌月払いです。"
+  );
+  assert.ok(
+    !r.signals.some((s) => s.id === "line_only_contact"),
+    JSON.stringify(r.signals.map((s) => s.label))
+  );
+  assert.equal(r.verdict, "safe");
+});
+
+test("Telegram誘導と身分証の先出しがそろうと danger", () => {
+  const both = scoreScam(
+    "詳細はテレグラムでご連絡します。まずは身分証の写真を送ってください。高額報酬をお約束します。"
+  );
+  assert.equal(both.verdict, "danger");
+  assert.ok(both.signals.some((s) => s.id === "telegram_signal_secrecy"));
+
+  // 身分証の提出だけなら、単独では danger にしない（正規の本人確認と区別できないため）
+  const idOnly = scoreScam("ご登録の際に本人確認書類として免許証の画像を提出いただきます。");
+  assert.notEqual(idOnly.verdict, "danger", JSON.stringify(idOnly.signals.map((s) => s.label)));
+});
+
+test("公式LINE誘導＋前払い要求は従来どおり danger", () => {
+  const r = scoreScam(
+    "まずは公式LINEにご登録ください。初期費用として教材費19,800円が必要です。本日限定 残り3名。"
+  );
+  assert.equal(r.verdict, "danger");
+  assert.ok(r.signals.some((s) => s.id === "line_only_contact"));
+  assert.ok(r.signals.some((s) => s.id === "upfront_payment"));
+});
+
+// --- レビュー指摘の回帰 ------------------------------------------------------
+
+test("目標の達成判定は経費を引いた額で行う", () => {
+  const paths = [path("p1", "受託")];
+  const entries = [
+    entry({ pathId: "p1", kind: "income", amountJpy: 30000, settled: true }),
+    entry({ pathId: "p1", kind: "expense", amountJpy: 20000 }),
+    entry({ pathId: "p1", kind: "time", minutes: 600 }),
+  ];
+  const s = computeStats(entries, paths);
+  assert.equal(s.monthSettledJpy, 30000);
+  assert.equal(s.monthExpenseJpy, 20000);
+  assert.equal(s.monthNetJpy, 10000);
+
+  const g = projectGoal(s, 30000, "");
+  assert.equal(g.achievedJpy, 10000, "入金額ではなく手元に残った額で判定する");
+  assert.equal(g.remainingJpy, 20000);
+  assert.ok(!/達成しています/.test(g.message));
+});
+
+test("日付が空の記録があっても撤退判定が暴走しない", () => {
+  const paths = [path("p1", "受託")];
+  const entries = [
+    entry({ pathId: "p1", kind: "time", minutes: 900, date: "" }),
+    entry({ pathId: "p1", kind: "time", minutes: 900, date: shiftDays(today, -1) }),
+  ];
+  const s = computeStats(entries, paths);
+  assert.equal(s.channels[0].verdict, "too_early", s.channels[0].verdictReason);
+  assert.ok(Number.isFinite(s.channels[0].ageDays));
+});
+
+test("最低出金額に届かなくても振込手数料は手取りから引く", () => {
+  const cw = PLATFORM_FEES.find((p) => p.id === "crowdworks");
+  const r = computePayout(1000, cw, 2);
+  assert.equal(r.feeJpy, 200);
+  assert.equal(r.canWithdraw, false);
+  assert.equal(r.withdrawalFeeJpy, 500);
+  assert.equal(r.netJpy, 300, "1000円 − 手数料200円 − 振込500円 = 300円");
+  assert.ok(r.retentionRate < 0.5);
+  assert.ok(r.warnings.some((w) => w.includes("最低出金額")));
+  assert.ok(r.warnings.some((w) => w.includes("手元に残りません")));
+});
+
+test("完了時刻がUTCでも、ローカルの今日として数える", () => {
+  const now = new Date();
+  const t = {
+    id: "1", pathId: null, title: "済", detail: "", kind: "produce",
+    status: "done", dueDate: todayLocal(), estMinutes: 30, actualMinutes: 0,
+    orderIndex: 0, doneAt: now.toISOString(), createdAt: "",
+  };
+  assert.equal(summarizeTasks([t]).doneToday, 1);
+
+  // 壊れた値でも落ちない
+  const broken = { ...t, id: "2", doneAt: "not-a-date" };
+  assert.doesNotThrow(() => summarizeTasks([broken]));
+  assert.equal(summarizeTasks([broken]).doneToday, 0);
 });

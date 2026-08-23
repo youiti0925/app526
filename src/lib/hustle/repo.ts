@@ -21,6 +21,20 @@ import type {
 const now = () => new Date().toISOString();
 const newId = () => randomUUID();
 
+/**
+ * サーバー側の既定日付。クライアントが date を送ってこなかったときのみ使う。
+ * toISOString().slice(0,10) は UTC 日付になるので、ローカル日付で組み立てる。
+ */
+const todayDate = (): string => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** 空文字や壊れた日付が DB に入ると、経過日数の計算が NaN になって撤退判定が暴走する。 */
+const safeDate = (value: unknown): string =>
+  typeof value === "string" && DATE_RE.test(value) ? value : todayDate();
+
 // --- profile ---------------------------------------------------------------
 
 export function saveProfile(profile: HustleProfile): HustleProfile {
@@ -44,7 +58,7 @@ export function createPath(input: Partial<HustlePath> & { pathKey: HustlePath["p
     status: input.status ?? "active",
     targetJpy: input.targetJpy ?? 0,
     notes: input.notes ?? "",
-    startedAt: input.startedAt ?? now().slice(0, 10),
+    startedAt: safeDate(input.startedAt),
     createdAt: input.createdAt ?? now(),
     updatedAt: now(),
   };
@@ -126,7 +140,7 @@ export function upsertEntry(input: Partial<HustleEntry> & { kind: HustleEntry["k
   const entry: HustleEntry = {
     id: input.id ?? newId(),
     pathId: input.pathId ?? null,
-    date: input.date ?? now().slice(0, 10),
+    date: safeDate(input.date),
     kind: input.kind,
     amountJpy: Math.round(input.amountJpy ?? 0),
     minutes: Math.round(input.minutes ?? 0),
@@ -221,37 +235,50 @@ export function readAll(): HustleBackup {
  * ブラウザ側に退避してあったデータでサーバーを復元する。
  * サーバーが空のとき（Vercel等で /tmp が飛んだとき）だけ呼ばれる想定。
  */
-export function restoreAll(backup: Partial<HustleBackup>): { restored: number } {
+export function restoreAll(backup: Partial<HustleBackup> | Record<string, unknown>): {
+  restored: number;
+  skipped: number;
+} {
   const db = getHustleDb();
   let count = 0;
+  let skipped = 0;
+
+  // 外から来たデータなので形を信用しない。1件壊れていても全体を巻き戻さず、
+  // 通せるものだけ通して、落とした件数を返す。
+  const list = (value: unknown): Record<string, unknown>[] =>
+    Array.isArray(value)
+      ? (value.filter((v) => v && typeof v === "object" && !Array.isArray(v)) as Record<string, unknown>[])
+      : [];
+
+  const source = backup as Partial<HustleBackup>;
+  const each = <T>(items: Record<string, unknown>[], apply: (item: T) => void) => {
+    for (const item of items) {
+      try {
+        apply(item as T);
+        count++;
+      } catch {
+        skipped++;
+      }
+    }
+  };
+
   const tx = db.transaction(() => {
-    if (backup.profile) {
-      saveProfile(backup.profile);
-      count++;
+    if (source.profile && typeof source.profile === "object") {
+      try {
+        saveProfile(source.profile);
+        count++;
+      } catch {
+        skipped++;
+      }
     }
-    for (const p of backup.paths ?? []) {
-      createPath(p);
-      count++;
-    }
-    for (const t of backup.tasks ?? []) {
-      upsertTask(t);
-      count++;
-    }
-    for (const e of backup.entries ?? []) {
-      upsertEntry(e);
-      count++;
-    }
-    for (const a of backup.assets ?? []) {
-      upsertAsset(a);
-      count++;
-    }
-    for (const s of backup.scamChecks ?? []) {
-      insertScamCheck(s);
-      count++;
-    }
+    each<HustlePath>(list(source.paths).filter((p) => typeof p.name === "string" && typeof p.pathKey === "string"), createPath);
+    each<HustleTask>(list(source.tasks).filter((t) => typeof t.title === "string"), upsertTask);
+    each<HustleEntry>(list(source.entries).filter((e) => typeof e.kind === "string"), upsertEntry);
+    each<HustleAsset>(list(source.assets).filter((a) => typeof a.title === "string"), upsertAsset);
+    each<ScamCheck>(list(source.scamChecks).filter((s) => typeof s.text === "string"), insertScamCheck);
   });
   tx();
-  return { restored: count };
+  return { restored: count, skipped };
 }
 
 export function isServerEmpty(): boolean {

@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { combineSignals, scoreScam } from "@/lib/hustle/scam-rules";
 import { generateJson, hasApiKey, describeAiError } from "@/lib/hustle/ai";
 import { insertScamCheck } from "@/lib/hustle/repo";
+import { readJsonObject } from "@/lib/hustle/http";
 import type { ScamSignalHit } from "@/lib/hustle/types";
 
 interface AiVerdict {
@@ -35,9 +36,15 @@ ${text.slice(0, 6000)}
 
 export async function POST(request: NextRequest) {
   try {
-    const { text, source = "", useAi = true } = await request.json();
+    const parsed = await readJsonObject(request);
+    if (!parsed.ok) return parsed.response;
+    const rawText = parsed.data.text;
+    // 極端に長い本文をそのまま保存すると DB とミラーが膨らむので上限を設ける
+    const text = typeof rawText === "string" ? rawText.slice(0, 20000) : "";
+    const source = typeof parsed.data.source === "string" ? parsed.data.source.slice(0, 200) : "";
+    const useAi = parsed.data.useAi !== false;
 
-    if (typeof text !== "string" || text.trim().length < 10) {
+    if (text.trim().length < 10) {
       return NextResponse.json({ error: "判定する本文を10文字以上入力してください" }, { status: 400 });
     }
 

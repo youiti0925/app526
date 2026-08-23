@@ -25,8 +25,10 @@ export const todayLocal = (): string => formatLocalDate(new Date());
 
 const todayStr = todayLocal;
 
-function daysBetween(a: string, b: string): number {
+/** 日付が壊れている場合は null。NaN を下流に流すと判定が全部すり抜ける。 */
+function daysBetween(a: string, b: string): number | null {
   const diff = toDate(b).getTime() - toDate(a).getTime();
+  if (!Number.isFinite(diff)) return null;
   return Math.round(diff / 86_400_000);
 }
 
@@ -70,6 +72,9 @@ export interface OverallStats {
   firstYenDate: string | null;
   /** 今月分 */
   monthSettledJpy: number;
+  monthExpenseJpy: number;
+  /** 今月の入金 − 今月の経費。目標の達成判定はこちらで行う。 */
+  monthNetJpy: number;
   monthMinutes: number;
   monthHourlyJpy: number | null;
   /** 直近28日の実績から見た月次ペース */
@@ -113,11 +118,19 @@ function hourly(netJpy: number, minutes: number): number | null {
 function judgeChannel(
   netJpy: number,
   minutes: number,
-  ageDays: number,
+  ageDays: number | null,
   daysSinceLastIncome: number | null,
   minWage: number
 ): { verdict: ChannelStats["verdict"]; reason: string } {
   const rate = hourly(netJpy, minutes);
+
+  // 経過日数が分からない状態で撤退を勧めるのは危険なので、判断を保留する
+  if (ageDays === null) {
+    return {
+      verdict: "too_early",
+      reason: "記録の日付が読み取れないため、まだ判定できません。",
+    };
+  }
 
   // 立ち上げ期に時給で判断すると、伸びる前に全部やめてしまう。
   if (ageDays < 30 || minutes < 600) {
@@ -185,12 +198,15 @@ export function computeStats(
 
   const monthEntries = entries.filter((e) => e.date.startsWith(monthPrefix));
   const monthSettledJpy = incomeOf(monthEntries, true);
+  const monthExpenseJpy = expenseOf(monthEntries);
+  const monthNetJpy = monthSettledJpy - monthExpenseJpy;
   const monthMinutes = minutesOf(monthEntries);
 
+  // 直近28日のペースも、経費を引いた純額で見る。
+  // 経費を無視すると「稼いでいるのに手元に残っていない」状態を見落とす。
   const since = shiftDays(today, -28);
-  const recentIncome = entries
-    .filter((e) => e.kind === "income" && e.settled && e.date >= since)
-    .reduce((sum, e) => sum + e.amountJpy, 0);
+  const recentEntries = entries.filter((e) => e.date >= since);
+  const recentNet = incomeOf(recentEntries, true) - expenseOf(recentEntries);
 
   const channels: ChannelStats[] = paths.map((path) => {
     const own = entries.filter((e) => e.pathId === path.id);
@@ -200,13 +216,16 @@ export function computeStats(
     const min = minutesOf(own);
     const net = s - exp;
 
-    const dates = own.map((e) => e.date).sort();
-    const firstDate = dates[0] ?? path.startedAt ?? today;
-    const ageDays = Math.max(0, daysBetween(firstDate, today));
+    // 空文字が混ざると Invalid Date になるので、?? ではなく truthy で落とす
+    const dates = own.map((e) => e.date).filter(Boolean).sort();
+    const firstDate = dates[0] || path.startedAt || today;
+    const rawAge = daysBetween(firstDate, today);
+    const ageDays = rawAge === null ? null : Math.max(0, rawAge);
 
     const lastIncomeDate = own
       .filter((e) => e.kind === "income" && e.settled && e.amountJpy > 0)
       .map((e) => e.date)
+      .filter(Boolean)
       .sort()
       .pop();
     const daysSinceLastIncome = lastIncomeDate ? daysBetween(lastIncomeDate, today) : null;
@@ -222,7 +241,7 @@ export function computeStats(
       netJpy: net,
       minutes: min,
       hourlyJpy: hourly(net, min),
-      ageDays,
+      ageDays: ageDays ?? 0,
       daysSinceLastIncome,
       verdict: judged.verdict,
       verdictReason: judged.reason,
@@ -239,15 +258,19 @@ export function computeStats(
     firstYenReached: incomeEntries.length > 0,
     firstYenDate: incomeEntries[0]?.date ?? null,
     monthSettledJpy,
+    monthExpenseJpy,
+    monthNetJpy,
     monthMinutes,
-    monthHourlyJpy: hourly(monthSettledJpy, monthMinutes),
-    runRateJpyPerMonth: Math.round((recentIncome / 28) * 30),
+    monthHourlyJpy: hourly(monthNetJpy, monthMinutes),
+    runRateJpyPerMonth: Math.round((recentNet / 28) * 30),
     channels,
   };
 }
 
 export function projectGoal(stats: OverallStats, goalJpy: number, deadline: string): GoalProjection {
-  const achievedJpy = stats.monthSettledJpy;
+  // 目標は「手元に残った額」で見る。入金額だけを見ると、経費で消えていても
+  // 達成扱いになってしまい、同じ画面の実効時給と矛盾する。
+  const achievedJpy = stats.monthNetJpy;
   const remainingJpy = Math.max(0, goalJpy - achievedJpy);
   const pace = stats.runRateJpyPerMonth;
 
@@ -257,7 +280,7 @@ export function projectGoal(stats: OverallStats, goalJpy: number, deadline: stri
   let requiredJpyPerMonth: number | null = null;
 
   if (deadline) {
-    const daysLeft = daysBetween(todayStr(), deadline);
+    const daysLeft = daysBetween(todayStr(), deadline) ?? 0;
     if (daysLeft > 0) {
       requiredJpyPerMonth = Math.ceil((remainingJpy / daysLeft) * 30);
       onTrack = pace >= requiredJpyPerMonth;
@@ -297,7 +320,13 @@ export function summarizeTasks(tasks: HustleTask[]): TaskSummary {
 
   const todayTasks = open.filter((t) => t.dueDate === today || t.dueDate === "");
   const overdue = open.filter((t) => t.dueDate !== "" && t.dueDate < today);
-  const doneToday = tasks.filter((t) => t.status === "done" && (t.doneAt ?? "").startsWith(today));
+  // doneAt は ISO（UTC）で保存されるので、文字列の前方一致では日本時間の
+  // 午前0〜9時にずれる。ローカル日付に直してから比べる。
+  const doneToday = tasks.filter((t) => {
+    if (t.status !== "done" || !t.doneAt) return false;
+    const at = new Date(t.doneAt);
+    return Number.isFinite(at.getTime()) && formatLocalDate(at) === today;
+  });
 
   const nextUp = [...overdue, ...todayTasks]
     .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999") || a.orderIndex - b.orderIndex)

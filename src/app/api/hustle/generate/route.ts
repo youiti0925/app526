@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTemplate } from "@/lib/hustle/templates";
 import { generateJson, hasApiKey, describeAiError } from "@/lib/hustle/ai";
+import { readJsonObject } from "@/lib/hustle/http";
 
 interface Variant {
   angle: string;
@@ -15,7 +16,19 @@ interface Variant {
  */
 export async function POST(request: NextRequest) {
   try {
-    const { templateId, values = {}, count = 3 } = await request.json();
+    const parsed = await readJsonObject(request);
+    if (!parsed.ok) return parsed.response;
+    const templateId = typeof parsed.data.templateId === "string" ? parsed.data.templateId : "";
+    const rawValues = parsed.data.values;
+    // 値は文字列のみ、各項目20,000文字までに切り詰めてからプロンプトに載せる
+    const values: Record<string, string> = {};
+    if (rawValues && typeof rawValues === "object" && !Array.isArray(rawValues)) {
+      for (const [key, value] of Object.entries(rawValues as Record<string, unknown>)) {
+        if (typeof value === "string") values[key] = value.slice(0, 20000);
+        else if (typeof value === "number" && Number.isFinite(value)) values[key] = String(value);
+      }
+    }
+    const count = Number(parsed.data.count);
 
     const template = getTemplate(templateId);
     if (!template) {
@@ -29,7 +42,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: `必須項目が未入力です: ${missing.join(" / ")}` }, { status: 400 });
     }
 
-    const variantCount = Math.max(1, Math.min(3, Number(count) || 1));
+    const variantCount = Math.max(1, Math.min(3, Number.isFinite(count) ? Math.round(count) : 3));
 
     if (!hasApiKey()) {
       return NextResponse.json({

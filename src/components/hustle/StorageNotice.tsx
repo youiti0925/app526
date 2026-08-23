@@ -1,15 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AlertTriangle, Download, Upload } from "lucide-react";
+import { AlertTriangle, Download, Upload, X } from "lucide-react";
 import { useHustleStore } from "@/store/useHustleStore";
 
 /**
- * サーバー側ストレージが揮発する環境（Vercel 等）で、
- * データがブラウザ側に退避されていることを説明し、手動バックアップも促す。
+ * データの置き場所についての状態表示。
+ *
+ * このアプリは金の記録を扱うので、「保存されているつもりで消えていた」が
+ * 最悪の事故になる。サーバーが揮発性か、ブラウザへの複製ができているか、
+ * サーバーに書けていない記録があるか、をそれぞれ別に伝える。
  */
 export default function StorageNotice() {
-  const { meta, exportBackup, importBackup, error } = useHustleStore();
+  const { meta, exportBackup, importBackup, error, clearError, mirrorHealthy, unsyncedCount } =
+    useHustleStore();
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
@@ -35,69 +39,135 @@ export default function StorageNotice() {
       try {
         void importBackup(JSON.parse(String(reader.result)));
       } catch {
-        alert("バックアップファイルを読み込めませんでした");
+        alert("バックアップファイルを読み込めませんでした（JSONとして壊れています）");
       }
     };
     reader.readAsText(file);
     event.target.value = "";
   }
 
+  const buttons = (variant: "plain" | "onBanner") => (
+    <div className="flex flex-wrap gap-2">
+      <button
+        onClick={handleExport}
+        className={
+          variant === "plain"
+            ? "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs text-slate-600 hover:bg-slate-50"
+            : "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border text-xs font-medium hover:bg-slate-50"
+        }
+        style={{ borderColor: "var(--card-border)" }}
+      >
+        <Download className="w-3.5 h-3.5" />
+        バックアップ書き出し
+      </button>
+      <label
+        className={
+          variant === "plain"
+            ? "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs text-slate-600 hover:bg-slate-50 cursor-pointer"
+            : "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border text-xs font-medium hover:bg-slate-50 cursor-pointer"
+        }
+        style={{ borderColor: "var(--card-border)" }}
+      >
+        <Upload className="w-3.5 h-3.5" />
+        読み込み
+        <input type="file" accept="application/json" className="hidden" onChange={handleImport} />
+      </label>
+    </div>
+  );
+
+  // 最も重い問題から順に、ひとつだけ出す
+  if (!mirrorHealthy) {
+    return (
+      <Banner tone="danger" title="このブラウザに記録を保存できていません">
+        <p className="text-xs leading-relaxed">
+          プライベートモードか、サイトデータがブロックされている可能性があります。
+          サーバー側の保存だけが頼りの状態なので、
+          <strong>いま必ずファイルに書き出してください。</strong>
+        </p>
+        <div className="mt-2">{buttons("onBanner")}</div>
+      </Banner>
+    );
+  }
+
+  if (unsyncedCount > 0) {
+    return (
+      <Banner tone="warning" title={`サーバーに保存できていない記録が ${unsyncedCount} 件あります`}>
+        <p className="text-xs leading-relaxed">
+          入力はこのブラウザに残してあり、次にこのページを開いたときに自動で書き戻します。
+          別の端末では見えないので、心配ならファイルに書き出しておいてください。
+        </p>
+        <div className="mt-2">{buttons("onBanner")}</div>
+      </Banner>
+    );
+  }
+
   if (error) {
     return (
-      <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 flex items-start gap-2">
-        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-        <span>{error}</span>
-      </div>
+      <Banner tone="warning" title="注意" onClose={clearError}>
+        <p className="text-xs leading-relaxed">{error}</p>
+      </Banner>
     );
   }
 
-  if (!meta.ephemeralStorage || dismissed) {
+  if (meta.ephemeralStorage && !dismissed) {
     return (
-      <div className="mb-4 flex justify-end gap-2 text-xs">
-        <button onClick={handleExport} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-slate-600 hover:bg-slate-50" style={{ borderColor: "var(--card-border)" }}>
-          <Download className="w-3.5 h-3.5" />
-          バックアップ書き出し
-        </button>
-        <label className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-slate-600 hover:bg-slate-50 cursor-pointer" style={{ borderColor: "var(--card-border)" }}>
-          <Upload className="w-3.5 h-3.5" />
-          読み込み
-          <input type="file" accept="application/json" className="hidden" onChange={handleImport} />
-        </label>
-      </div>
+      <Banner tone="info" title="この環境ではサーバー側の保存が一時的です">
+        <p className="text-xs leading-relaxed">
+          記録はこのブラウザにも自動で複製され、サーバーが初期化されたら自動で書き戻します。
+          ただしブラウザのデータを消すと失われるので、ときどきファイルに書き出してください。
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {buttons("onBanner")}
+          <button
+            onClick={() => {
+              sessionStorage.setItem("hustle-storage-notice", "1");
+              setDismissed(true);
+            }}
+            className="px-2.5 py-1.5 text-xs text-slate-600 hover:underline"
+          >
+            閉じる
+          </button>
+        </div>
+      </Banner>
     );
   }
+
+  return <div className="mb-4 flex justify-end">{buttons("plain")}</div>;
+}
+
+function Banner({
+  tone,
+  title,
+  children,
+  onClose,
+}: {
+  tone: "danger" | "warning" | "info";
+  title: string;
+  children: React.ReactNode;
+  onClose?: () => void;
+}) {
+  const style = {
+    danger: { bg: "#fef2f2", border: "#fecaca", text: "#7f1d1d" },
+    warning: { bg: "#fffbeb", border: "#fde68a", text: "#78350f" },
+    info: { bg: "#eff6ff", border: "#bfdbfe", text: "#1e3a8a" },
+  }[tone];
 
   return (
-    <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+    <div
+      className="mb-4 rounded-lg border px-4 py-3"
+      style={{ background: style.bg, borderColor: style.border, color: style.text }}
+    >
       <div className="flex items-start gap-2">
         <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-        <div className="flex-1">
-          <p className="font-semibold mb-1">この環境ではサーバー側の保存が一時的です</p>
-          <p className="text-xs leading-relaxed">
-            記録はこのブラウザにも自動で複製され、サーバーが初期化されたら自動で書き戻します。
-            ただしブラウザのデータを消すと失われるので、ときどきファイルに書き出してください。
-          </p>
-          <div className="flex gap-2 mt-2">
-            <button onClick={handleExport} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-blue-300 text-xs font-medium hover:bg-blue-100">
-              <Download className="w-3.5 h-3.5" />
-              いま書き出す
-            </button>
-            <label className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-blue-300 text-xs font-medium hover:bg-blue-100 cursor-pointer">
-              <Upload className="w-3.5 h-3.5" />
-              読み込む
-              <input type="file" accept="application/json" className="hidden" onChange={handleImport} />
-            </label>
-            <button
-              onClick={() => {
-                sessionStorage.setItem("hustle-storage-notice", "1");
-                setDismissed(true);
-              }}
-              className="px-2.5 py-1.5 text-xs text-blue-700 hover:underline"
-            >
-              閉じる
-            </button>
-          </div>
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold text-sm mb-1">{title}</p>
+          {children}
         </div>
+        {onClose && (
+          <button onClick={onClose} className="shrink-0 opacity-60 hover:opacity-100" aria-label="閉じる">
+            <X className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </div>
   );

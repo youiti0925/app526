@@ -101,7 +101,11 @@ export function computePayout(
   const feeJpy = Math.floor(grossJpy * platform.feeRate);
   const afterFee = grossJpy - feeJpy;
   const canWithdraw = afterFee >= platform.minPayoutJpy;
-  const withdrawalFeeJpy = canWithdraw ? platform.withdrawalFeeJpy : 0;
+
+  // 最低出金額に届かない場合でも、振込手数料は免除されるわけではなく
+  // 「他の報酬と合算して出金するときに引かれる」だけ。ここで0扱いにすると
+  // 手取りと残存率が実態より高く出るので、常に控除する。
+  const withdrawalFeeJpy = platform.withdrawalFeeJpy;
   const netJpy = Math.max(0, afterFee - withdrawalFeeJpy - otherCostJpy);
 
   const hourlyJpy = hours > 0 ? Math.round(netJpy / hours) : null;
@@ -111,7 +115,7 @@ export function computePayout(
 
   if (!canWithdraw) {
     warnings.push(
-      `手数料を引いた ${afterFee.toLocaleString()}円 は、${platform.name} の最低出金額 ${platform.minPayoutJpy.toLocaleString()}円 に届きません。合計が超えるまで、この報酬は口座に入りません。`
+      `手数料を引いた ${afterFee.toLocaleString()}円 は、${platform.name} の最低出金額 ${platform.minPayoutJpy.toLocaleString()}円 に届きません。他の報酬と合算して超えるまで、この分は口座に入りません（合算して出金する際に振込手数料 ${platform.withdrawalFeeJpy.toLocaleString()}円 が引かれます）。`
     );
   }
   if (retentionRate > 0 && retentionRate < 0.5) {

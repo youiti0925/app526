@@ -71,11 +71,16 @@ export default function MoneyPage() {
           <div className="progress-bar mb-2">
             <div
               className="progress-bar-fill"
-              style={{ width: `${Math.min(100, (goal.achievedJpy / Math.max(1, goal.goalJpy)) * 100)}%` }}
+              style={{ width: `${Math.min(100, Math.max(0, (goal.achievedJpy / Math.max(1, goal.goalJpy)) * 100))}%` }}
             />
           </div>
           <p className="text-sm text-slate-600">
-            今月 {yen(goal.achievedJpy)} / 残り {yen(goal.remainingJpy)}
+            今月の手元に残った額 {yen(goal.achievedJpy)} / 残り {yen(goal.remainingJpy)}
+            {stats.monthExpenseJpy > 0 && (
+              <span className="text-xs text-slate-500">
+                （入金 {yen(stats.monthSettledJpy)} − 経費 {yen(stats.monthExpenseJpy)}）
+              </span>
+            )}
           </p>
           {goal.message && <p className="text-sm mt-2 leading-relaxed">{goal.message}</p>}
         </div>

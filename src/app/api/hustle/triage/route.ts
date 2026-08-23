@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { scoreScam } from "@/lib/hustle/scam-rules";
 import { generateJson, hasApiKey, describeAiError } from "@/lib/hustle/ai";
 import { DEFAULT_MIN_WAGE_JPY } from "@/lib/hustle/analytics";
+import { PLATFORM_FEES, computePayout } from "@/lib/hustle/payout";
+import { readJsonObject } from "@/lib/hustle/http";
 
 interface AiTriage {
   summary?: string;
@@ -48,9 +50,13 @@ ${background.slice(0, 2000) || "（未入力）"}`;
 
 export async function POST(request: NextRequest) {
   try {
-    const { jobText, background = "" } = await request.json();
+    const parsed = await readJsonObject(request);
+    if (!parsed.ok) return parsed.response;
+    const jobText = typeof parsed.data.jobText === "string" ? parsed.data.jobText.slice(0, 20000) : "";
+    const background = typeof parsed.data.background === "string" ? parsed.data.background.slice(0, 5000) : "";
+    const platformId = typeof parsed.data.platformId === "string" ? parsed.data.platformId : "crowdworks";
 
-    if (typeof jobText !== "string" || jobText.trim().length < 20) {
+    if (jobText.trim().length < 20) {
       return NextResponse.json({ error: "案件の本文を20文字以上入力してください" }, { status: 400 });
     }
 
@@ -71,16 +77,34 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 実効時給の見積もり。ここが最低賃金を割るなら、受けても消耗するだけ。
+    // 実効時給の見積もり。
+    // 提示額をそのまま時間で割ると、同じアプリが手取り計算で引いている
+    // システム手数料と振込手数料を無視することになり、2〜3割高く出てしまう。
+    // ここは必ず手数料を引いた後の額で判定する。
+    const platform =
+      PLATFORM_FEES.find((f) => f.id === platformId) ??
+      PLATFORM_FEES.find((f) => f.id === "crowdworks")!;
+
     let hourly: { low: number; high: number } | null = null;
+    let grossHourly: { low: number; high: number } | null = null;
+    let netJpy: number | null = null;
     let rateVerdict: "unknown" | "below_minimum" | "thin" | "acceptable" = "unknown";
 
-    const offered = ai?.offeredJpy ?? null;
-    const hours = ai?.estimatedHours;
-    if (offered && hours && hours.high > 0) {
+    const offered = Number.isFinite(ai?.offeredJpy) ? (ai!.offeredJpy as number) : null;
+    const lowHours = Number(ai?.estimatedHours?.low);
+    const highHours = Number(ai?.estimatedHours?.high);
+    const hoursValid = Number.isFinite(lowHours) && Number.isFinite(highHours) && highHours > 0 && lowHours > 0;
+
+    if (offered !== null && offered > 0 && hoursValid) {
+      const payout = computePayout(offered, platform, highHours);
+      netJpy = payout.netJpy;
       hourly = {
-        low: Math.round(offered / hours.high),
-        high: Math.round(offered / Math.max(0.5, hours.low)),
+        low: Math.round(netJpy / highHours),
+        high: Math.round(netJpy / Math.max(0.5, lowHours)),
+      };
+      grossHourly = {
+        low: Math.round(offered / highHours),
+        high: Math.round(offered / Math.max(0.5, lowHours)),
       };
       if (hourly.high < DEFAULT_MIN_WAGE_JPY) rateVerdict = "below_minimum";
       else if (hourly.low < DEFAULT_MIN_WAGE_JPY) rateVerdict = "thin";
@@ -88,6 +112,8 @@ export async function POST(request: NextRequest) {
     }
 
     // 総合判定: 詐欺スコアが最優先。次に単価。
+    // 単価を検証できていない状態を「問題なし」と読ませてはいけないので、
+    // rateVerdict が unknown のときは proceed に落とさない。
     let recommendation: "reject" | "verify_first" | "proceed";
     let recommendationReason: string;
 
@@ -96,14 +122,19 @@ export async function POST(request: NextRequest) {
       recommendationReason = "詐欺・搾取のシグナルが強く出ています。提案文を書く段階ではありません。";
     } else if (rateVerdict === "below_minimum") {
       recommendation = "reject";
-      recommendationReason = `想定作業時間から計算した実効時給が ${hourly?.low.toLocaleString()}〜${hourly?.high.toLocaleString()}円で、最低賃金（${DEFAULT_MIN_WAGE_JPY.toLocaleString()}円）を下回ります。受けるほど時間を失います。単価交渉が通らなければ見送りです。`;
+      recommendationReason = `手数料を引いた実効時給が ${hourly?.low.toLocaleString()}〜${hourly?.high.toLocaleString()}円で、最低賃金（${DEFAULT_MIN_WAGE_JPY.toLocaleString()}円）を下回ります。受けるほど時間を失います。単価交渉が通らなければ見送りです。`;
+    } else if (rateVerdict === "unknown") {
+      recommendation = "verify_first";
+      recommendationReason = hasApiKey()
+        ? "募集文から報酬額または作業量を読み取れなかったため、単価の妥当性を判定できていません。詐欺シグナルが出ていないことは「割に合う」という意味ではありません。「収支と実効時給」の手取り計算に、報酬額と自分の想定時間を入れて確認してください。"
+        : "APIキーが未設定のため、単価の妥当性は判定していません（詐欺判定のみ実行しました）。「収支と実効時給」の手取り計算に、報酬額と自分の想定時間を入れてから応募を決めてください。";
     } else if (scam.verdict === "caution" || rateVerdict === "thin" || (ai?.missingTerms?.length ?? 0) > 0) {
       recommendation = "verify_first";
       recommendationReason =
         "条件を詰めれば受けられます。下の確認質問を先に送り、回答が返ってから着手してください。";
     } else {
       recommendation = "proceed";
-      recommendationReason = "大きな地雷は見当たりません。提案文を作って応募してください。";
+      recommendationReason = `手数料を引いた実効時給は ${hourly?.low.toLocaleString()}〜${hourly?.high.toLocaleString()}円 の見込みで、大きな地雷も見当たりません。提案文を作って応募してください。`;
     }
 
     return NextResponse.json({
@@ -111,6 +142,9 @@ export async function POST(request: NextRequest) {
       ai,
       aiError,
       hourly,
+      grossHourly,
+      netJpy,
+      platform: { id: platform.id, name: platform.name, feeRate: platform.feeRate },
       rateVerdict,
       recommendation,
       recommendationReason,

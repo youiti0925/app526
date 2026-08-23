@@ -51,6 +51,14 @@ function daysUntil(deadline: string): number | null {
 function assessUrgency(profile: HustleProfile): { urgent: boolean; note: string; daysLeft: number | null } {
   const daysLeft = daysUntil(profile.deadline);
 
+  if (daysLeft !== null && daysLeft <= 0) {
+    return {
+      urgent: true,
+      note: "設定した期限をすでに過ぎています。副業で間に合わせる段階ではないので、「現実と相談窓口」にある公的支援を先に使ってください。そのうえで、入金の速い順に並べています。",
+      daysLeft,
+    };
+  }
+
   if (daysLeft !== null && daysLeft <= 45) {
     return {
       urgent: true,
@@ -220,26 +228,39 @@ export function diagnose(profile: HustleProfile, definitions: PathDefinition[]):
  */
 function findBridge(ranked: Ranked[], daysLeft: number | null): DiagnosisResult["bridge"] {
   const top = ranked[0];
-  if (!top || daysLeft === null || daysLeft <= 0) return null;
-  if (top.outlook.daysToFirstYen <= daysLeft) return null;
+  if (!top) return null;
 
+  if (daysLeft !== null && daysLeft <= 0) {
+    return {
+      key: top.key,
+      name: top.name,
+      note: "期限を過ぎているため、間に合う副業はありません。「現実と相談窓口」にある公的支援に先に当たってください。副業はそのあとです。",
+    };
+  }
+  if (daysLeft === null) return null;
+  if (top.definition.daysToFirstYen.p90 <= daysLeft) return null;
+
+  // 「間に合う」は中央値ではなく遅い側（p90）で判定する。
+  // 中央値で判定すると、半数の人が間に合わない案内を「間に合う」と出してしまう。
   const faster = ranked
     .slice(1)
-    .filter((r) => r.outlook.daysToFirstYen <= daysLeft)
-    .sort((a, b) => a.outlook.daysToFirstYen - b.outlook.daysToFirstYen)[0];
+    .filter((r) => r.definition.daysToFirstYen.p90 <= daysLeft)
+    .sort((a, b) => a.definition.daysToFirstYen.p50 - b.definition.daysToFirstYen.p50)[0];
 
   if (!faster) {
     return {
       key: top.key,
       name: top.name,
-      note: `期限まで${daysLeft}日ですが、どのチャネルもそれまでに入金が間に合いません。副業で間に合わせようとせず、「現実と相談窓口」にある公的支援を先に使ってください。`,
+      note: `期限まで${daysLeft}日ですが、遅い側まで見るとどのチャネルも確実には間に合いません。副業だけで間に合わせようとせず、「現実と相談窓口」にある公的支援を必ず並行して当たってください。`,
     };
   }
 
+  const t = top.definition.daysToFirstYen;
+  const f = faster.definition.daysToFirstYen;
   return {
     key: faster.key,
     name: faster.name,
-    note: `1位の「${top.name}」は最初の入金まで約${top.outlook.daysToFirstYen}日かかり、期限（残り${daysLeft}日）に間に合いません。本命は1位のまま進めつつ、つなぎとして「${faster.name}」（約${faster.outlook.daysToFirstYen}日）を並行してください。`,
+    note: `1位の「${top.name}」は最初の入金まで中央値${t.p50}日・遅いと${t.p90}日かかり、期限（残り${daysLeft}日）に間に合いません。本命は1位のまま進めつつ、つなぎとして「${faster.name}」（中央値${f.p50}日・遅いと${f.p90}日）を並行してください。なお、つなぎで作れる金額は月${faster.outlook.month3Jpy[1].toLocaleString()}円程度が上限です。これだけで目標を埋めようとしないでください。`,
   };
 }
 

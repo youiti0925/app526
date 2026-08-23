@@ -17,6 +17,12 @@ export interface ScamRule {
   why: string;
   /** 本文にマッチさせる正規表現。ひとつでも当たれば発火。 */
   patterns: RegExp[];
+  /**
+   * 全部にマッチしたときだけ発火する条件。
+   * 単独では普通の案件にも出る語（「面談」「シグナル」など）を、
+   * 組み合わせで初めて危険と見なすために使う。
+   */
+  requireAll?: RegExp[];
   /** 発火時に追加で出す具体的な行動指示 */
   action?: string;
 }
@@ -51,14 +57,33 @@ export const SCAM_RULES: ScamRule[] = [
   },
   {
     id: "telegram_signal_secrecy",
-    label: "秘匿性の高いアプリへの誘導＋身分証の先出し",
-    weight: 9,
-    why: "Telegram・Signal など消えるメッセージのアプリに誘導し、先に身分証を送らせるのは闇バイト勧誘の定番手順です。身分証は脅迫材料に使われます。",
-    action: "身分証の画像は絶対に送らないでください。",
-    patterns: [
-      /(テレグラム|Telegram|シグナル|Signal)/i,
+    label: "秘匿アプリへの誘導と、身分証の先出しの組み合わせ",
+    weight: 10,
+    why: "消えるメッセージのアプリに誘導し、先に身分証を送らせるのは闇バイト勧誘の定番手順です。身分証は脅迫材料に使われます。",
+    action: "身分証の画像は絶対に送らないでください。すでに送ってしまった場合は #9110 に相談してください。",
+    patterns: [],
+    // 片方だけなら普通の案件にもあるので、両方そろったときだけ発火させる
+    requireAll: [
+      /(テレグラム|Telegram|シグナル(アプリ)?|Signal(アプリ)?)/i,
       /(身分証|免許証|マイナンバーカード|保険証)[^。\n]{0,20}(送っ|送信|画像|写真|提出)/,
     ],
+  },
+  {
+    id: "telegram_contact",
+    label: "連絡手段が Telegram など秘匿性の高いアプリ",
+    weight: 7,
+    why: "やり取りが消えるアプリを連絡手段に指定するのは、記録を残さないためです。まっとうな発注者がそこに閉じ込める理由はありません。",
+    patterns: [
+      /(テレグラム|Telegram)[^。\n]{0,20}(で|に|へ|の)?[^。\n]{0,10}(連絡|登録|ID|移行|やり取り|ご案内)/i,
+      /Signal\s*(アプリ|で連絡|に移)/i,
+    ],
+  },
+  {
+    id: "id_photo_request",
+    label: "作業内容が決まる前に身分証の画像を求める",
+    weight: 5,
+    why: "本人確認はプラットフォーム側が行うものです。個人が画像で受け取る形は、名簿化や脅迫の材料に使われます。",
+    patterns: [/(身分証|免許証|マイナンバーカード|保険証)[^。\n]{0,20}(送っ|送信|画像|写真|提出)/],
   },
 
   // ---- 金銭要求（情報商材・高額コンサル） ----
@@ -83,7 +108,11 @@ export const SCAM_RULES: ScamRule[] = [
     patterns: [
       /(コンサル|サロン|スクール|塾|講座)[^。\n]{0,30}(\d{2,3}\s*万円|\d{6,7}\s*円)/,
       /(分割|クレジット|ローン|リボ)[^。\n]{0,15}(可能|できます|OK|対応)/,
-      /(個別|zoom|ズーム|無料)[^。\n]{0,10}(面談|相談会|説明会)/i,
+    ],
+    // 「Zoomで面談」は普通の選考にもあるので、稼ぐ話とセットのときだけ数える
+    requireAll: [
+      /(個別|zoom|ズーム|オンライン)[^。\n]{0,10}(面談|相談会|説明会)/i,
+      /(稼|収入|副収入|ビジネス|成功者?|自由|権利収入|物販|投資)/,
     ],
   },
   {
@@ -119,7 +148,9 @@ export const SCAM_RULES: ScamRule[] = [
     why: "収入を断定的に保証する広告は景品表示法・特定商取引法上の不当表示にあたる可能性が高く、まっとうな事業者は書けません。",
     patterns: [
       /(必ず|絶対に?|確実に|100%|誰でも)[^。\n]{0,15}(稼げ|儲か|収入|稼働)/,
-      /(収入|報酬)[^。\n]{0,10}(保証|確約)/,
+      // 「月収50万円を保証」のように、収入の種類が先に来る形も拾う
+      /(月収|月給|日給|日収|年収|収入|報酬|利益)[^。\n]{0,12}(保証|確約|約束)/,
+      /(稼げなかった|稼げない場合)[^。\n]{0,15}(全額|返金)/,
       /元本保証/,
     ],
   },
@@ -153,9 +184,12 @@ export const SCAM_RULES: ScamRule[] = [
     weight: 8,
     why: "単純作業で日給数万円・月収数十万円という条件は、市場の相場から乖離しています。相場から外れた高単価には必ず理由があります。",
     patterns: [
-      /(日給|日収)\s*[3-9]\s*万/,
-      /(単純|簡単|カンタン|かんたん)[^。\n]{0,15}(作業|入力)[^。\n]{0,25}(月収?|月)\s*(\d{2,3})\s*万/,
-      /(月収|月)\s*[1-9]\d{2,}\s*万/,
+      // [3-9] だけだと1桁しか当たらず、「日給10万円」を取り逃していた
+      /(日給|日収)\s*(?:[3-9]|[1-9]\d+)\s*万/,
+      /(単純|簡単|カンタン|かんたん)[^。\n]{0,15}(作業|入力)[^。\n]{0,25}(月収?|月)\s*[1-9]\d*\s*万/,
+      // 副業単体で月30万以上を掲げるものは、作業内容にかかわらず相場から外れている
+      /(月収|月給|月)\s*(?:[3-9]\d|[1-9]\d{2,})\s*万/,
+      /(時給|時間給)\s*[1-9]\d{4,}\s*円/,
     ],
   },
   {
@@ -187,7 +221,8 @@ export const SCAM_RULES: ScamRule[] = [
     weight: 6,
     why: "会社の実体を確認できない連絡経路に閉じ込めるのは、トラブル時に追跡されないための設計です。",
     patterns: [
-      /(LINE|ライン)[^。\n]{0,15}(登録|追加|友だち|友達|@)/i,
+      // 「オンライン登録」「deadline」などに当たらないよう、直前の文字を見る
+      /((?<![A-Za-z])LINE|(?<!オン)ライン)[^。\n]{0,15}(登録|追加|友だち|友達|@)/i,
       /(オープンチャット|オプチャ)/,
       /(DM|ディーエム)[^。\n]{0,10}(ください|お願い|下さい)/i,
     ],
@@ -237,7 +272,7 @@ export const SCAM_RULES: ScamRule[] = [
     id: "stealth_marketing",
     label: "ステマ（広告と明示しない口コミ投稿）の依頼",
     weight: 7,
-    why: "2023年10月から、広告であることを隠した口コミ投稿は景品表示法違反（ステルスマーケティング規制）です。依頼した事業者だけでなく、案件として受ける側もリスクを負います。",
+    why: "2023年10月から、広告であることを隠した表示は景品表示法違反（ステルスマーケティング規制）です。法令上の名宛人は広告主である事業者で、投稿を受託した側は景表法の規制対象にはなりません。ただし受ける側も、プラットフォームの規約違反によるアカウント停止と、身元が割れたときの信用毀損を負います。",
     patterns: [
       /(サクラ|やらせ)[^。\n]{0,10}(レビュー|口コミ|投稿)/,
       /(広告|PR)[^。\n]{0,10}(と)?[^。\n]{0,10}(書かない|伏せ|明記しない)/,
@@ -334,18 +369,33 @@ export function scoreScam(text: string): ScamScoreResult {
   const signals: ScamSignalHit[] = [];
 
   for (const rule of SCAM_RULES) {
-    for (const pattern of rule.patterns) {
-      const match = normalized.match(pattern);
-      if (match && match.index !== undefined) {
-        signals.push({
-          id: rule.id,
-          label: rule.label,
-          weight: rule.weight,
-          why: rule.action ? `${rule.why}\n→ ${rule.action}` : rule.why,
-          excerpt: excerptAround(normalized, match.index, match[0].length),
-        });
-        break; // 同一ルールは1回だけ数える
+    let match: RegExpMatchArray | null = null;
+
+    if (rule.requireAll && rule.requireAll.length > 0) {
+      const matches = rule.requireAll.map((pattern) => normalized.match(pattern));
+      if (matches.every((m) => m !== null && m.index !== undefined)) {
+        match = matches[0];
       }
+    }
+
+    if (!match) {
+      for (const pattern of rule.patterns) {
+        const found = normalized.match(pattern);
+        if (found && found.index !== undefined) {
+          match = found; // 同一ルールは1回だけ数える
+          break;
+        }
+      }
+    }
+
+    if (match && match.index !== undefined) {
+      signals.push({
+        id: rule.id,
+        label: rule.label,
+        weight: rule.weight,
+        why: rule.action ? `${rule.why}\n→ ${rule.action}` : rule.why,
+        excerpt: excerptAround(normalized, match.index, match[0].length),
+      });
     }
   }
 

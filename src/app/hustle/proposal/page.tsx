@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useHustleStore } from "@/store/useHustleStore";
 import StorageNotice from "@/components/hustle/StorageNotice";
+import { PLATFORM_FEES } from "@/lib/hustle/payout";
 import type { ScamScoreResult } from "@/lib/hustle/scam-rules";
 
 interface TriageResponse {
@@ -31,6 +32,9 @@ interface TriageResponse {
   } | null;
   aiError: string | null;
   hourly: { low: number; high: number } | null;
+  grossHourly: { low: number; high: number } | null;
+  netJpy: number | null;
+  platform: { id: string; name: string; feeRate: number };
   rateVerdict: "unknown" | "below_minimum" | "thin" | "acceptable";
   recommendation: "reject" | "verify_first" | "proceed";
   recommendationReason: string;
@@ -50,6 +54,7 @@ export default function ProposalPage() {
   const [background, setBackground] = useState("");
   const [portfolio, setPortfolio] = useState("");
   const [pathId, setPathId] = useState("");
+  const [platformId, setPlatformId] = useState("crowdworks");
 
   const [triage, setTriage] = useState<TriageResponse | null>(null);
   const [variants, setVariants] = useState<Variant[]>([]);
@@ -83,7 +88,7 @@ export default function ProposalPage() {
       const res = await fetch("/api/hustle/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobText, background }),
+        body: JSON.stringify({ jobText, background, platformId }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "分析に失敗しました");
@@ -159,6 +164,21 @@ export default function ProposalPage() {
         <p className="text-xs text-slate-500 mt-1">この内容はこのブラウザに保存され、次回も引き継がれます。</p>
 
         <div className="flex flex-wrap items-center gap-3 mt-4">
+          <label className="text-sm flex items-center gap-2">
+            発注元
+            <select
+              value={platformId}
+              onChange={(e) => setPlatformId(e.target.value)}
+              className="rounded-lg border px-3 py-2 text-sm"
+              style={{ borderColor: "var(--card-border)" }}
+            >
+              {PLATFORM_FEES.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          </label>
           <button onClick={analyze} disabled={analyzing} className="btn-primary flex items-center gap-2 disabled:opacity-60">
             {analyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Handshake className="w-4 h-4" />}
             この案件を判定する
@@ -271,9 +291,13 @@ function TriageResult({
           sub={ai?.estimatedHours ? "修正・やりとり込み" : "AI分析なし"}
         />
         <Metric
-          label="実効時給の見込み"
-          value={triage.hourly ? `${triage.hourly.low.toLocaleString()}〜${triage.hourly.high.toLocaleString()}円` : "—"}
-          sub={`最低賃金 ${triage.minWage.toLocaleString()}円`}
+          label={`実効時給（${triage.platform.name}の手数料 ${Math.round(triage.platform.feeRate * 100)}% 控除後）`}
+          value={triage.hourly ? `${triage.hourly.low.toLocaleString()}〜${triage.hourly.high.toLocaleString()}円` : "判定できず"}
+          sub={
+            triage.hourly && triage.grossHourly
+              ? `手数料込みなら ${triage.grossHourly.low.toLocaleString()}〜${triage.grossHourly.high.toLocaleString()}円 / 最低賃金 ${triage.minWage.toLocaleString()}円`
+              : `最低賃金 ${triage.minWage.toLocaleString()}円`
+          }
           warn={triage.rateVerdict === "below_minimum" || triage.rateVerdict === "thin"}
         />
       </div>
