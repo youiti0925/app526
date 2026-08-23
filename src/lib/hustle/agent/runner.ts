@@ -10,10 +10,10 @@ import {
   reapStaleRuns,
 } from "./db";
 import { STEP_IMPL, type StepContext } from "./steps";
-import { STEP_LABELS, type AgentRun, type RunResult, type RunTrigger, type StepId } from "./types";
+import { STEP_LABELS, STEP_ORDER, type AgentRun, type RunResult, type RunTrigger, type StepId } from "./types";
 
 /** 工程を回す順番。前の工程の結果を次が使うので固定。 */
-const ORDER: StepId[] = ["ingest", "triage", "listing", "draft", "plan", "review", "learn"];
+const ORDER = STEP_ORDER;
 
 export interface RunOptions {
   trigger: RunTrigger;

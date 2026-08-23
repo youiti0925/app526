@@ -60,7 +60,10 @@ export interface RenegotiateInput {
   platform: Pick<PlatformFee, "feeRate" | "withdrawalFeeJpy" | "name">;
   /** 工程の内訳があれば、根拠として文面に入れる */
   breakdown?: WorkTypeEstimate | null;
-  /** 相場が分かっていれば入れる */
+  /**
+   * 相場が分かっていれば入れる。**1単位あたり**の金額。
+   * 案件全体の相場は units 倍したもので、そのまま出すと桁が一つ違う。
+   */
   marketRateJpy?: { low: number; high: number } | null;
 }
 
@@ -115,9 +118,30 @@ function buildMessage(input: RenegotiateInput, ask: number): string {
   );
 
   if (input.marketRateJpy) {
-    lines.push(
-      `同種の依頼ですと ${input.marketRateJpy.low.toLocaleString()}〜${input.marketRateJpy.high.toLocaleString()}円 の範囲が多いように見受けられます。`
-    );
+    // 相場は「1単位あたり」で持っている。数量を掛けずにそのまま書くと、
+    // 20物質のSDSに「15,000〜50,000円が相場」と自分から言うことになり、
+    // 交渉のために出した文面で逆に足元を見られる。
+    const units = input.breakdown?.units ?? 1;
+    const unitLabel = input.breakdown?.workType.unit ?? "件";
+    const per = input.marketRateJpy;
+    const total = { low: per.low * units, high: per.high * units };
+    const read = input.breakdown?.unitsRead ?? false;
+
+    if (units > 1 && read) {
+      lines.push(
+        `同種の依頼ですと1${unitLabel}あたり ${per.low.toLocaleString()}〜${per.high.toLocaleString()}円 が目安で、` +
+          `今回の${units}${unitLabel}ですと ${total.low.toLocaleString()}〜${total.high.toLocaleString()}円 の範囲になります。`
+      );
+    } else if (units > 1) {
+      lines.push(
+        `同種の依頼ですと1${unitLabel}あたり ${per.low.toLocaleString()}〜${per.high.toLocaleString()}円 が目安です。` +
+          `対象の${unitLabel}数によって総額が変わりますので、件数をお知らせいただければ改めてお見積もりします。`
+      );
+    } else {
+      lines.push(
+        `同種の依頼ですと1${unitLabel}あたり ${per.low.toLocaleString()}〜${per.high.toLocaleString()}円 が目安です。`
+      );
+    }
   }
 
   lines.push("");

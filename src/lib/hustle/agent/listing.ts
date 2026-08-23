@@ -1,6 +1,6 @@
 import { PLATFORM_FEES, type PlatformFee } from "../payout";
 import { requiredAsk } from "./renegotiate";
-import { WORK_TYPES, estimateByWorkType, type WorkType } from "./worktypes";
+import { WORK_TYPES, estimateUnits, type WorkType } from "./worktypes";
 
 /**
  * 出品型のパイプライン。
@@ -79,10 +79,12 @@ function volumeDiscount(units: number): number {
 
 function buildTiers(workType: WorkType, minHourlyJpy: number, platform: PlatformFee): PriceTier[] {
   const target = targetHourly(minHourlyJpy);
-  const perUnit = estimateByWorkType(sampleText(workType));
 
   return TIER_SHAPES.map((shape) => {
-    const hours = perUnit ? Math.round(perUnit.aiHours * shape.units * 10) / 10 : shape.units * 4;
+    // 工程表から直接数える。以前は「1◯◯の△△」という文を組み立てて
+    // 判定器に通していたが、その合成文が別の仕事に当たったり、
+    // どれにも当たらず1単位4時間という根拠の無い数字に落ちていた。
+    const hours = estimateUnits(workType, shape.units).aiHours;
     const raw = requiredAsk(target * volumeDiscount(shape.units), hours, platform) ?? 0;
 
     // 相場から外れすぎないように寄せる。
@@ -121,10 +123,6 @@ function buildIncludes(workType: WorkType, units: number, note: string): string[
 }
 
 /** 工程分解の数量を読ませるための、その仕事の代表的な言い回し。 */
-function sampleText(workType: WorkType): string {
-  return `1${workType.unit}の${workType.label}`;
-}
-
 // ---------------------------------------------------------------------------
 // 出品文
 // ---------------------------------------------------------------------------

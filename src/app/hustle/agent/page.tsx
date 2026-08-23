@@ -22,6 +22,7 @@ import StorageNotice from "@/components/hustle/StorageNotice";
 import { SOURCES } from "@/lib/hustle/agent/sources";
 import {
   STEP_LABELS,
+  STEP_ORDER,
   defaultSourceState,
   type AgentConfig,
   type AgentEvent,
@@ -46,7 +47,7 @@ interface AgentState {
   aiEnabled: boolean;
 }
 
-const STEP_ORDER: StepId[] = ["ingest", "triage", "listing", "draft", "plan", "review", "learn"];
+
 
 export default function AgentPage() {
   const [state, setState] = useState<AgentState | null>(null);

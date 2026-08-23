@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { decideInbox, logEvent, readInbox, updateInboxBody, updateLead } from "@/lib/hustle/agent/db";
+import { decideInbox, logEvent, readInboxItem, updateInboxBody, updateLead } from "@/lib/hustle/agent/db";
 import { updatePath } from "@/lib/hustle/repo";
 import { readPaths } from "@/lib/hustle/db";
 import { generateJson, describeAiError, hasApiKey } from "@/lib/hustle/ai";
@@ -21,7 +21,7 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
     if (!parsed.ok) return parsed.response;
     const body = parsed.data;
 
-    const item = readInbox().find((i) => i.id === id);
+    const item = readInboxItem(id);
     if (!item) return NextResponse.json({ error: "見つかりません" }, { status: 404 });
 
     // 修正指示: AIに直させる（決定はまだしない）

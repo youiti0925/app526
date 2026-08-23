@@ -287,6 +287,41 @@ function matchesAsRequest(text: string, workType: WorkType): boolean {
 }
 
 /** 本文がどの仕事に当たるかを判定し、工程を積み上げて時間を出す。 */
+/**
+ * 仕事の種類が分かっているときに、そこから直接見積もる。
+ *
+ * 出品の料金表は「1単位の◯◯」という文を組み立てて estimateByWorkType に
+ * 通していたが、その合成文が別の仕事の判定に当たったり、どれにも当たらず
+ * null になったりしていた。null のときは1単位4時間という根拠の無い数字に
+ * 落ちて、そのまま価格になっていた。
+ * 種類が手元にあるなら、文を経由しないで数える。
+ */
+export function estimateUnits(workType: WorkType, units: number): WorkTypeEstimate {
+  const n = Math.max(1, Math.round(units));
+  const sum = (pick: (s: WorkStep) => number) =>
+    workType.steps.reduce((acc, s) => acc + pick(s), 0);
+
+  const aiMinutes = sum((s) => s.minutes) * n;
+  const manualMinutes = sum((s) => s.manualMinutes) * n;
+  const humanMinutes = sum((s) => (s.by === "human" ? s.minutes : 0)) * n;
+
+  return {
+    workType,
+    units: n,
+    unitsRead: true,
+    aiHours: round(aiMinutes / 60),
+    manualHours: round(manualMinutes / 60),
+    humanHours: round(humanMinutes / 60),
+    reduction: manualMinutes > 0 ? round(1 - aiMinutes / manualMinutes) : 0,
+    breakdown: workType.steps.map((s) => ({
+      name: s.name,
+      by: s.by,
+      hours: round((s.minutes * n) / 60),
+      why: s.why,
+    })),
+  };
+}
+
 export function estimateByWorkType(text: string): WorkTypeEstimate | null {
   const normalized = text.normalize("NFKC");
   // 仕事の種類の判定には規格番号が要る（ISO9001 で ISO 案件と分かる）ので元のまま。

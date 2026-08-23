@@ -89,8 +89,13 @@ export function reconcileDiscovery(
   minHourlyJpy: number
 ): { hourlyJpy: { low: number; high: number } | null; meetsBar: boolean; note: string } {
   const platform = PLATFORM_FEES.find((p) => p.id === finding.platformId);
-  const feeRate = platform?.feeRate ?? 0;
-  const withdrawalFeeJpy = platform?.withdrawalFeeJpy ?? 0;
+  // 知らないプラットフォーム名が返ってきたときに手数料0%で計算すると、
+  // 実効時給が最大で2割強も高く出て、基準を満たさない市場が
+  // 「満たす」に化ける。知らないときは一番高い手数料で見積もる。
+  const worst = PLATFORM_FEES.reduce((a, b) => (b.feeRate > a.feeRate ? b : a));
+  const feeRate = platform ? platform.feeRate : worst.feeRate;
+  const withdrawalFeeJpy = platform ? platform.withdrawalFeeJpy : worst.withdrawalFeeJpy;
+  const unknownPlatform = !platform;
 
   const { low: priceLow, high: priceHigh } = finding.priceJpy ?? { low: 0, high: 0 };
   const { low: hoursLow, high: hoursHigh } = finding.estimatedHours ?? { low: 0, high: 0 };
@@ -118,11 +123,15 @@ export function reconcileDiscovery(
     high: Math.round(net(priceHigh) / Math.max(0.5, hoursLow)),
   };
 
+  const caveat = unknownPlatform
+    ? `（「${finding.platformId}」の手数料が分からないので、既知の中で一番高い${Math.round(worst.feeRate * 100)}%で計算しています。実際の手数料を確認してください）`
+    : "";
+
   if (hourly.high < minHourlyJpy) {
     return {
       hourlyJpy: hourly,
       meetsBar: false,
-      note: `手数料を引いた実効時給が ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円で、上限側でも基準の ${minHourlyJpy.toLocaleString()}円 に届きません。この市場は追わないでください。`,
+      note: `手数料を引いた実効時給が ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円で、上限側でも基準の ${minHourlyJpy.toLocaleString()}円 に届きません。この市場は追わないでください。${caveat}`,
     };
   }
 
@@ -130,14 +139,14 @@ export function reconcileDiscovery(
     return {
       hourlyJpy: hourly,
       meetsBar: true,
-      note: `実効時給 ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円。下限側は基準を割るので、安い側の条件では受けないでください。`,
+      note: `実効時給 ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円。下限側は基準を割るので、安い側の条件では受けないでください。${caveat}`,
     };
   }
 
   return {
     hourlyJpy: hourly,
     meetsBar: true,
-    note: `実効時給 ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円。基準を満たします。`,
+    note: `実効時給 ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円。基準を満たします。${caveat}`,
   };
 }
 

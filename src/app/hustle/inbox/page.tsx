@@ -33,6 +33,7 @@ const KIND_META: Record<InboxKind, { label: string; Icon: typeof FileText; cls: 
 
 export default function InboxPage() {
   const [items, setItems] = useState<InboxItem[]>([]);
+  const [hidden, setHidden] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +44,7 @@ export default function InboxPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "読み込みに失敗しました");
       setItems(data.inbox ?? []);
+      setHidden(typeof data.hidden === "number" ? data.hidden : 0);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "読み込みに失敗しました");
@@ -92,6 +94,12 @@ export default function InboxPage() {
       </header>
 
       {error && <p className="text-sm text-rose-600 mb-4">{error}</p>}
+      {hidden > 0 && (
+        <p className="text-sm text-amber-700 mb-4">
+          未処理があと{hidden}件ありますが、この画面には表示していません。
+          溜めると古いものから埋もれます。先に処理してください。
+        </p>
+      )}
 
       {loading && items.length === 0 ? (
         <div className="card text-sm text-slate-500">読み込み中…</div>

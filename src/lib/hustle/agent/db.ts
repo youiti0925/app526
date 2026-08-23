@@ -290,13 +290,27 @@ export function readRuns(limit = 20): AgentRun[] {
   ).map(toRun);
 }
 
+/**
+ * 今日の始まりと終わりを、UTC の ISO 文字列で返す。
+ *
+ * started_at は `new Date().toISOString()`（UTC）で入る。
+ * 一方「今日」は使う人の時計で決まる。日本時間の朝9時は前日の UTC なので、
+ * ローカルの年月日をそのまま前方一致に使うと、朝のうちに回した分が
+ * 「今日」に数えられず、1日の上限がすり抜けていた。
+ * ローカルの1日を UTC の範囲に変換してから数える。
+ */
+export function localDayRangeUtc(at: Date = new Date()): { from: string; to: string } {
+  const start = new Date(at.getFullYear(), at.getMonth(), at.getDate());
+  const end = new Date(at.getFullYear(), at.getMonth(), at.getDate() + 1);
+  return { from: start.toISOString(), to: end.toISOString() };
+}
+
 /** 今日すでに何回回したか。1日の上限を守るために使う。 */
-export function countRunsToday(): number {
-  const d = new Date();
-  const prefix = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+export function countRunsToday(at: Date = new Date()): number {
+  const { from, to } = localDayRangeUtc(at);
   const row = getAgentDb()
-    .prepare("SELECT COUNT(*) AS n FROM hustle_agent_runs WHERE started_at LIKE ? || '%'")
-    .get(prefix) as { n: number };
+    .prepare("SELECT COUNT(*) AS n FROM hustle_agent_runs WHERE started_at >= ? AND started_at < ?")
+    .get(from, to) as { n: number };
   return row.n;
 }
 
@@ -554,6 +568,31 @@ export function readInbox(status?: InboxItem["status"], limit = 100): InboxItem[
         .prepare("SELECT * FROM hustle_agent_inbox ORDER BY created_at DESC LIMIT ?")
         .all(limit) as InboxRow[]);
   return rows.map(toInbox);
+}
+
+/**
+ * 1件だけ読む。
+ *
+ * 以前は readInbox()（既定100件）から find していたので、
+ * 承認待ちが100件を超えると古いものが 404 になり、
+ * 承認も却下もできないまま溜まり続けていた。
+ */
+export function readInboxItem(id: string): InboxItem | null {
+  const row = getAgentDb()
+    .prepare("SELECT * FROM hustle_agent_inbox WHERE id = ?")
+    .get(id) as InboxRow | undefined;
+  return row ? toInbox(row) : null;
+}
+
+/** 未処理が何件あるか（一覧の上限で隠れているぶんも含む）。 */
+export function countInbox(status?: InboxItem["status"]): number {
+  const db = getAgentDb();
+  const row = (
+    status
+      ? db.prepare("SELECT COUNT(*) AS n FROM hustle_agent_inbox WHERE status = ?").get(status)
+      : db.prepare("SELECT COUNT(*) AS n FROM hustle_agent_inbox").get()
+  ) as { n: number };
+  return row.n;
 }
 
 export function decideInbox(

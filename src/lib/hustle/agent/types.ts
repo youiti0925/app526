@@ -15,6 +15,24 @@ export const STEP_LABELS: Record<StepId, string> = {
   learn: "自己調整",
 };
 
+/**
+ * 実行する順番。ここが唯一の定義。
+ *
+ * 以前は runner・APIルート・画面がそれぞれ同じ配列を持っていて、
+ * `listing` を足したときに run のAPIルートだけ更新し忘れた。
+ * その結果 `only: ["listing"]` が「該当なし」となり、
+ * 絞り込みが無かったことにされて全工程が走っていた。
+ */
+export const STEP_ORDER: StepId[] = [
+  "ingest",
+  "triage",
+  "listing",
+  "draft",
+  "plan",
+  "review",
+  "learn",
+];
+
 export type RunTrigger = "manual" | "auto_open" | "daemon" | "cron";
 export type RunStatus = "running" | "done" | "failed" | "skipped";
 

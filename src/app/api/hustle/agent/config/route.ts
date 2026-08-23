@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { readAgentConfig, writeAgentConfig } from "@/lib/hustle/agent/db";
 import { guard, num, readJsonObject } from "@/lib/hustle/http";
 import { SOURCES } from "@/lib/hustle/agent/sources";
+import { STEP_ORDER } from "@/lib/hustle/agent/types";
 import type { SourceState, StepId } from "@/lib/hustle/agent/types";
 
-const STEPS: StepId[] = ["ingest", "triage", "listing", "draft", "plan", "review", "learn"];
+const STEPS = STEP_ORDER;
 
 export async function GET() {
   return guard(async () => NextResponse.json({ config: readAgentConfig() }));
