@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Wallet, Plus, Trash2, Calculator, TrendingUp, TrendingDown, AlertTriangle } from "lucide-react";
 import { useHustleStore } from "@/store/useHustleStore";
 import StorageNotice from "@/components/hustle/StorageNotice";
-import { computeStats, projectGoal, DEFAULT_MIN_WAGE_JPY } from "@/lib/hustle/analytics";
+import { computeStats, projectGoal, todayLocal, DEFAULT_MIN_WAGE_JPY } from "@/lib/hustle/analytics";
 import { PLATFORM_FEES, computePayout } from "@/lib/hustle/payout";
 import type { ChannelStats } from "@/lib/hustle/analytics";
 
@@ -345,7 +345,7 @@ function EntryForm({
 }) {
   const [kind, setKind] = useState<"income" | "expense" | "time">("time");
   const [pathId, setPathId] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayLocal());
   const [amount, setAmount] = useState("");
   const [minutes, setMinutes] = useState("");
   const [memo, setMemo] = useState("");

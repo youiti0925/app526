@@ -70,9 +70,9 @@ export const PLATFORM_FEES: PlatformFee[] = [
     feeRate: 0.1,
     feeNote: "販売手数料 10%。これに加えて送料が自己負担のことが多い。",
     withdrawalFeeJpy: 200,
-    withdrawalNote: "振込申請1回につき手数料",
+    withdrawalNote: "振込申請1回につき手数料。本人確認が未完了だと1営業日あたりの申請額にも上限がかかる。",
     minPayoutJpy: 200,
-    payoutLagDays: "受取評価後、振込申請から2〜4営業日",
+    payoutLagDays: "購入→発送→受取評価→売上金確定→振込申請→入金で実質7〜14日",
   },
 ];
 

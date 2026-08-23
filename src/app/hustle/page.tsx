@@ -15,11 +15,11 @@ import {
 } from "lucide-react";
 import { useHustleStore } from "@/store/useHustleStore";
 import StorageNotice from "@/components/hustle/StorageNotice";
-import { computeStats, summarizeTasks, DEFAULT_MIN_WAGE_JPY } from "@/lib/hustle/analytics";
+import { computeStats, summarizeTasks, todayLocal, DEFAULT_MIN_WAGE_JPY } from "@/lib/hustle/analytics";
 import type { HustleTask } from "@/lib/hustle/types";
 
 const yen = (n: number) => `${n.toLocaleString()}円`;
-const today = () => new Date().toISOString().slice(0, 10);
+const today = todayLocal;
 
 export default function HustleDashboard() {
   const { load, loaded, tasks, entries, paths, profile, updateTask, addTask, removeTask, addEntry } =

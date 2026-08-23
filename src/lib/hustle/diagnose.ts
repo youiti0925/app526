@@ -1,5 +1,6 @@
 import type { HustleProfile, PathKey } from "./types";
 import type { PathDefinition, SkillTag } from "./paths-schema";
+import { formatLocalDate, todayLocal } from "./analytics";
 
 export interface Ranked {
   key: PathKey;
@@ -246,7 +247,7 @@ function findBridge(ranked: Ranked[], daysLeft: number | null): DiagnosisResult[
 export function planToTasks(
   def: PathDefinition,
   pathId: string,
-  startDate: string = new Date().toISOString().slice(0, 10)
+  startDate: string = todayLocal()
 ) {
   const base = new Date(`${startDate}T00:00:00`);
   return def.plan.map((item, index) => {
@@ -258,7 +259,7 @@ export function planToTasks(
       detail: item.detail,
       kind: item.kind,
       status: "todo" as const,
-      dueDate: due.toISOString().slice(0, 10),
+      dueDate: formatLocalDate(due),
       estMinutes: item.estMinutes,
       orderIndex: index,
     };

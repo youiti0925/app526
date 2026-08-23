@@ -5,13 +5,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { scoreScam, combineSignals } from "../dist-test/scam-rules.js";
-import { computeStats, projectGoal, summarizeTasks, shiftDays } from "../dist-test/analytics.js";
+import { computeStats, projectGoal, summarizeTasks, shiftDays, todayLocal } from "../dist-test/analytics.js";
 import { computePayout, PLATFORM_FEES } from "../dist-test/payout.js";
 import { diagnose, planToTasks } from "../dist-test/diagnose.js";
 import { PATH_DEFINITIONS } from "../dist-test/paths-data.js";
 import { emptyProfile } from "../dist-test/types.js";
 
-const today = new Date().toISOString().slice(0, 10);
+const today = todayLocal();
 
 // --- 詐欺スコアリング -------------------------------------------------------
 
@@ -336,4 +336,42 @@ test("パソコンが無いと、パソコン必須のチャネルは除外さ�
     assert.ok(!item.definition.equipment.includes("pc"), `${item.name} が除外されていない`);
   }
   assert.ok(r.excluded.some((e) => e.excludedReason.includes("パソコン")));
+});
+
+// --- 日付の扱い -------------------------------------------------------------
+// toISOString() は UTC に変換するため、日本時間の午前0〜9時に使うと日付が
+// 1日ずれる。このスイートは TZ=UTC と TZ=Asia/Tokyo の両方で実行される。
+
+test("shiftDays はローカル日付として正しく増減する", () => {
+  assert.equal(shiftDays("2026-03-01", -1), "2026-02-28");
+  assert.equal(shiftDays("2026-02-28", 1), "2026-03-01");
+  assert.equal(shiftDays("2026-12-31", 1), "2027-01-01");
+  assert.equal(shiftDays("2026-01-01", -1), "2025-12-31");
+  assert.equal(shiftDays("2026-08-23", 0), "2026-08-23");
+});
+
+test("todayLocal は端末のローカル日付を返す", () => {
+  const now = new Date();
+  const expected = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  assert.equal(todayLocal(), expected);
+});
+
+test("30日プランの期日がローカル日付でずれない", () => {
+  const def = PATH_DEFINITIONS.find((d) => d.plan.some((p) => p.day === 0));
+  const tasks = planToTasks(def, "p1", "2026-03-01");
+  const dayZero = def.plan.findIndex((p) => p.day === 0);
+  assert.equal(tasks[dayZero].dueDate, "2026-03-01");
+  const day7 = def.plan.findIndex((p) => p.day === 7);
+  if (day7 >= 0) assert.equal(tasks[day7].dueDate, "2026-03-08");
+});
+
+test("今日のタスクが「今日」として扱われる", () => {
+  const t = {
+    id: "1", pathId: null, title: "今日のタスク", detail: "", kind: "produce",
+    status: "todo", dueDate: todayLocal(), estMinutes: 30, actualMinutes: 0,
+    orderIndex: 0, doneAt: null, createdAt: "",
+  };
+  const s = summarizeTasks([t]);
+  assert.equal(s.todayCount, 1);
+  assert.equal(s.overdueCount, 0);
 });

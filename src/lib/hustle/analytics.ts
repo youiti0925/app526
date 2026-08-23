@@ -7,17 +7,33 @@ import type { HustleEntry, HustlePath, HustleTask } from "./types";
 export const DEFAULT_MIN_WAGE_JPY = 1121;
 
 const toDate = (s: string) => new Date(`${s}T00:00:00`);
-const todayStr = () => new Date().toISOString().slice(0, 10);
+
+/**
+ * ローカル時刻での YYYY-MM-DD。
+ *
+ * toISOString() は UTC に変換してしまうので、日本時間の午前0〜9時に使うと
+ * 前日の日付になる。タスクの期日と収支の日付が1日ずれるので使わない。
+ */
+export function formatLocalDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+export const todayLocal = (): string => formatLocalDate(new Date());
+
+const todayStr = todayLocal;
 
 function daysBetween(a: string, b: string): number {
   const diff = toDate(b).getTime() - toDate(a).getTime();
-  return Math.floor(diff / 86_400_000);
+  return Math.round(diff / 86_400_000);
 }
 
 export function shiftDays(dateStr: string, days: number): string {
   const d = toDate(dateStr);
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return formatLocalDate(d);
 }
 
 export interface ChannelStats {

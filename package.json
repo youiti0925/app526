@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsc -p tsconfig.test.json && node --test tests/*.test.mjs",
+    "test": "tsc -p tsconfig.test.json && TZ=UTC node --test tests/*.test.mjs && TZ=Asia/Tokyo node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "repository": {

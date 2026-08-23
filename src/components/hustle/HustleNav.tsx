@@ -60,7 +60,7 @@ export default function HustleNav() {
                   : "text-slate-300 hover:bg-slate-700 hover:text-white"
               }`}
             >
-              <Icon className="w-4.5 h-4.5" style={{ width: 18, height: 18 }} />
+              <Icon className="shrink-0" style={{ width: 18, height: 18 }} />
               {item.label}
             </Link>
           );
