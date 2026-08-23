@@ -1228,3 +1228,75 @@ test("取れたページがあれば allFailed は立たない", async () => {
     stub.restore();
   }
 });
+
+// --- 試作ハーネスの採点（能力表を書き換える土台なので、ここが緩むと全部緩む）---
+
+const dr = await import("../dist-test/agent/dryrun-core.js");
+
+const grade = (over = {}) => ({
+  meetsRequirement: 90,
+  deliverable: true,
+  gaps: [],
+  humanHoursNeeded: 0,
+  needsFactCheck: [],
+  targetMismatch: false,
+  verdict: "pass",
+  reason: "",
+  ...over,
+});
+
+test("pass と返ってきても、人の作業が残っていれば needs_work に落とす", () => {
+  const { grade: g, overridden } = dr.reconcileGrade(grade({ humanHoursNeeded: 3 }));
+  assert.equal(g.verdict, "needs_work");
+  assert.match(overridden, /3時間/);
+});
+
+test("pass と返ってきても、裏取りが要るなら needs_work に落とす", () => {
+  const { grade: g } = dr.reconcileGrade(grade({ needsFactCheck: ["法改正の年月"] }));
+  assert.equal(g.verdict, "needs_work");
+});
+
+test("要求充足度が60未満なら fail に落とす（それらしさで通さない）", () => {
+  const { grade: g, overridden } = dr.reconcileGrade(
+    grade({ meetsRequirement: 55, verdict: "needs_work" })
+  );
+  assert.equal(g.verdict, "fail");
+  assert.match(overridden, /55/);
+});
+
+test("問題が無ければ pass のまま通す", () => {
+  const { grade: g, overridden } = dr.reconcileGrade(grade());
+  assert.equal(g.verdict, "pass");
+  assert.equal(overridden, "");
+});
+
+test("対象選びを間違えた試作は、能力の検証として数えない", () => {
+  // 準委任の要員募集に「成果物を作れ」と指示した回。
+  // これを数えると「案件選びの失敗」が「作れない」に化ける。
+  const runs = [{ grade: grade({ verdict: "fail", targetMismatch: true }) }];
+  assert.equal(dr.evidenceFor(runs), "untested");
+  assert.equal(dr.mismatchedRuns(runs).length, 1);
+});
+
+test("1件でも pass があれば実証済み、無ければ結果に従う", () => {
+  assert.equal(dr.evidenceFor([{ grade: grade({ verdict: "fail" }) }, { grade: grade() }]), "proven");
+  assert.equal(
+    dr.evidenceFor([{ grade: grade({ verdict: "fail" }) }, { grade: grade({ verdict: "needs_work" }) }]),
+    "needs_human"
+  );
+  assert.equal(dr.evidenceFor([{ grade: grade({ verdict: "fail" }) }]), "disproven");
+  assert.equal(dr.evidenceFor([{ grade: null }]), "untested");
+});
+
+test("月額の要員募集を試作の対象にしない", () => {
+  // ここを外していたせいで、9件中4件が「成果物が募集と別物」で無駄になった。
+  const monthly = {
+    id: "m1",
+    title: "SAP運用保守",
+    url: "https://e.test/1",
+    budgetJpy: 1_500_000,
+    rawText:
+      "月額150万円／月160時間の常駐案件です。SAPの運用保守をご担当いただきます。".repeat(12),
+  };
+  assert.equal(dr.pickTargets([monthly]).length, 0);
+});
