@@ -361,3 +361,79 @@ test("競合が少なければ期待時給は受注時の時給に近づく", ()
   const solo = expectedHourly(47_500, 10, 0.5, 0.9);
   assert.ok(solo > 4000, String(solo));
 });
+
+// ---------------------------------------------------------------------------
+// 契約の形（月額 vs 請負）と稼働キャパ
+// 実データで、月額150万円・想定稼働80時間/月 の案件を「1案件の報酬150万円」
+// として割り、実効時給57,119〜85,679円 という数字を出していた。
+// ---------------------------------------------------------------------------
+
+const eng = await import("../dist-test/agent/engagement.js");
+const { readEngagement, checkCapacity, monthlyHourly, readMonthlyRate } = eng;
+
+test("ラベルと数字が離れていても月額を読む", () => {
+  // 実データのギークスジョブはこの並び
+  const text = "単価税抜\n95\n〜\n115\n万円/月\nポジション\n精算時間\n140時間〜180時間";
+  const e = readEngagement(text);
+  assert.equal(e.kind, "monthly");
+  assert.equal(e.monthlyJpy, 950_000, "範囲なら安いほうを取る");
+  assert.equal(e.monthlyHours, 140, "精算時間から月稼働を読む");
+  assert.equal(monthlyHourly(e), 6786);
+});
+
+test("月額契約を1案件の報酬として割らない", () => {
+  const e = readEngagement("月額 1,500,000円\n月80時間〜100時間の稼働");
+  assert.equal(e.kind, "monthly");
+  assert.equal(monthlyHourly(e), 18_750, "150万 ÷ 80時間");
+});
+
+test("稼働時間が書かれていなければ時給を出さない", () => {
+  // 月額4万円を140時間で割ると「時給286円」になるが、実際は1投稿5,000円の出来高
+  const e = readEngagement("■報酬\n月額40,000円（税込）前後を想定\n・1投稿納品：5,000円");
+  assert.equal(e.kind, "monthly");
+  assert.equal(e.monthlyJpy, 40_000);
+  assert.equal(e.monthlyHours, null);
+  assert.equal(monthlyHourly(e), null, "推測で時給を作らない");
+});
+
+test("時給表記があればそれを使う", () => {
+  const e = readEngagement("時給 2,000円 でお願いします。");
+  assert.equal(e.kind, "hourly");
+  assert.equal(e.hourlyJpy, 2000);
+});
+
+test("金額の単位が無いものは請負として扱う", () => {
+  assert.equal(readEngagement("記事を10本お願いします。予算は3万円です。").kind, "fixed");
+});
+
+test("常駐・一部出社・リモートを読み分ける", () => {
+  assert.equal(readEngagement("基本常駐での参画をお願いします").onsite, "required");
+  assert.equal(readEngagement("週1回出社以外は基本リモート勤務").onsite, "partial");
+  assert.equal(readEngagement("フルリモートで参画可能です").onsite, "remote");
+});
+
+test("週に出せる時間を超える稼働は、時給がいくら高くても落とす", () => {
+  const e = readEngagement("単価税抜\n95\n万円/月\n精算時間\n140時間");
+  const c = checkCapacity(e, 10); // 週10時間 = 月43時間
+  assert.equal(c.fits, false);
+  assert.equal(c.requiredHours, 140);
+  assert.match(c.reason, /引き受けられません/);
+});
+
+test("週の時間に収まるなら通す", () => {
+  const e = readEngagement("月額 200,000円\n稼働 40時間/月");
+  assert.equal(checkCapacity(e, 10).fits, true);
+});
+
+test("稼働時間が不明な月額契約は、落とさずに確認させる", () => {
+  const e = readEngagement("月額40,000円前後を想定");
+  const c = checkCapacity(e, 10);
+  assert.equal(c.fits, true);
+  assert.match(c.reason, /応募前に必ず確認/);
+});
+
+test("「〜1,500,000円/月」のような他案件の単価表記も金額として読める", () => {
+  // 読めること自体は正しい。混入は本文の切り出し側（cutAfterBody）で防ぐ。
+  assert.equal(readMonthlyRate("〜1,500,000円/月"), null, "円表記はラベルが要る");
+  assert.equal(readMonthlyRate("115万円/月"), 1_150_000);
+});

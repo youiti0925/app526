@@ -8,6 +8,7 @@ import { generateJson, hasApiKey, describeAiError } from "../ai";
 import { detectScopeRisks, estimateHours, type WorkEstimate } from "./estimate";
 import { judgeDeliverability } from "./deliverability";
 import { expectedHourly, readCompetition } from "./competition";
+import { checkCapacity, monthlyHourly, readEngagement } from "./engagement";
 import { needsEscalation } from "./escalation";
 import { fetchFeed, leadFromParsed } from "./ingest";
 import { SOURCES, fetchSource } from "./sources";
@@ -182,6 +183,7 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
   const profile = readProfile();
   const background = profile?.background ?? "";
   const minHourly = ctx.config.learned.minHourlyJpy;
+  const weeklyHours = profile?.weeklyHours ?? 10;
   const platform = PLATFORM_FEES.find((f) => f.id === "crowdworks")!;
 
   // AI は上位（報酬が読み取れているもの）から順に使う。枠を無駄にしないため。
@@ -205,6 +207,10 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     // 応募人数はページに数字で書いてある。読まずに時給だけ見ると、
     // 44人が応募している案件を「応募候補」として出してしまう。
     const competition = readCompetition(lead.rawText);
+    // 月額契約と1件いくらの請負は別物。混ぜると、月額150万円を
+    // 「1案件の報酬」として割ってしまい、実効時給8万円のような数字が出る。
+    const engagement = readEngagement(lead.rawText, lead.budgetJpy);
+    const capacity = checkCapacity(engagement, weeklyHours);
 
     let estimate: WorkEstimate | null = estimateHours(lead.rawText);
     let offered = lead.budgetJpy;
@@ -237,7 +243,11 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
 
     // 手数料を引いた実効時給で判定する
     let hourly: { low: number; high: number } | null = null;
-    if (offered && offered > 0 && estimate) {
+    const monthlyRate = monthlyHourly(engagement);
+    if (monthlyRate !== null) {
+      // 月額契約は、こちらの見積り工数ではなく先方が決めた稼働時間で割る
+      hourly = { low: monthlyRate, high: monthlyRate };
+    } else if (offered && offered > 0 && estimate) {
       const payout = computePayout(offered, platform, estimate.highHours);
       hourly = {
         low: Math.round(payout.netJpy / estimate.highHours),
@@ -248,7 +258,10 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     // 提案文を書く時間も原価。取れなければ丸ごと損になる。
     const PROPOSAL_HOURS = 0.5;
     let expected: number | null = null;
-    if (offered && offered > 0 && estimate) {
+    if (engagement.kind === "monthly") {
+      // 月額契約は応募人数が公開されないことが多く、期待値も出せない
+      expected = null;
+    } else if (offered && offered > 0 && estimate) {
       const payout = computePayout(offered, platform, estimate.highHours);
       expected = expectedHourly(
         payout.netJpy,
@@ -268,6 +281,12 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       verdict = "reject";
       reason = deliver.note;
       notDeliverable++;
+    } else if (!capacity.fits) {
+      verdict = "reject";
+      reason = capacity.reason;
+    } else if (engagement.onsite === "required") {
+      verdict = "reject";
+      reason = "常駐（出社）が条件です。リモートで完結しないので、私が代わりに作業できません";
     } else if (hourly && hourly.high < minHourly) {
       verdict = "reject";
       reason = `手数料を引いた実効時給が ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円で、基準の ${minHourly.toLocaleString()}円 を下回る`;
@@ -308,6 +327,19 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       fitNotes,
       reason,
       minHourlyJpy: minHourly,
+      engagement: {
+        kind: engagement.kind,
+        monthlyJpy: engagement.monthlyJpy,
+        monthlyHours: engagement.monthlyHours,
+        onsite: engagement.onsite,
+        basis: engagement.basis,
+        capacity: {
+          fits: capacity.fits,
+          requiredHours: capacity.requiredHours,
+          availableHours: capacity.availableHours,
+          reason: capacity.reason,
+        },
+      },
       competition: {
         applicants: competition.applicants,
         views: competition.views,

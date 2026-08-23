@@ -30,6 +30,7 @@
     "src/lib/hustle/agent/site-registry.ts",
     "src/lib/hustle/agent/probe.ts",
     "src/lib/hustle/agent/deliverability.ts",
-    "src/lib/hustle/agent/competition.ts"
+    "src/lib/hustle/agent/competition.ts",
+    "src/lib/hustle/agent/engagement.ts"
   ]
 }
