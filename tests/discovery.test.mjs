@@ -863,3 +863,77 @@ test("画風・キャラ指定のイラストは作れない側のまま", () =>
   assert.equal(r.canDeliver, false, r.note);
   assert.ok(r.matched.includes("art"));
 });
+
+// ---------------------------------------------------------------------------
+// 出品したあとの追跡
+// 出品型は初速が出ない。2週間で「売れないからやめる」と判断させてはいけないが、
+// 半年ゼロのものを「まだ早い」と言い続けるのも違う。境目を数字で決める。
+// ---------------------------------------------------------------------------
+
+const lt = await import("../dist-test/agent/listing-tracker.js");
+const { reviewListing, summarizeListings } = lt;
+
+const listing = (over = {}) => ({
+  id: "l1",
+  workTypeId: "sds",
+  title: "SDS作成を代行します",
+  platformId: "coconala",
+  url: "",
+  publishedAt: "2026-06-01",
+  priceJpy: 45_000,
+  views: 0,
+  inquiries: 0,
+  orders: 0,
+  lastCheckedAt: "",
+  status: "published",
+  ...over,
+});
+
+test("30日未満は触らせない（初速が出ないため）", () => {
+  const r = reviewListing(listing({ publishedAt: "2026-08-10" }), "2026-08-23");
+  assert.equal(r.verdict, "too_early");
+  assert.match(r.nextAction, /触らずに/);
+});
+
+test("受注があれば、まず実際にかかった時間を記録させる", () => {
+  const r = reviewListing(listing({ orders: 1 }), "2026-08-23");
+  assert.equal(r.verdict, "working");
+  assert.match(r.nextAction, /実際にかかった時間/);
+});
+
+test("見られていないのと、見られているが売れないのを区別する", () => {
+  const invisible = reviewListing(listing({ views: 10 }), "2026-08-23");
+  assert.equal(invisible.verdict, "invisible");
+  assert.match(invisible.nextAction, /タイトルとカテゴリ/);
+
+  const noConv = reviewListing(listing({ views: 500, inquiries: 0 }), "2026-08-23");
+  assert.equal(noConv.verdict, "no_conversion");
+  assert.match(noConv.nextAction, /価格か/);
+});
+
+test("問い合わせは来ているのに受注ゼロが続くなら畳ませる", () => {
+  const r = reviewListing(
+    listing({ publishedAt: "2026-03-01", views: 800, inquiries: 20, orders: 0 }),
+    "2026-08-23"
+  );
+  assert.equal(r.verdict, "stop");
+  assert.match(r.reason, /問い合わせの段階で断られ/);
+});
+
+test("直すところを1つに絞る（同時に変えると何が効いたか分からない）", () => {
+  const r = reviewListing(listing({ views: 500 }), "2026-08-23");
+  assert.match(r.nextAction, /1つだけ|一方だけ|1か所/);
+});
+
+test("出品ゼロなら、出すまでは何も起きないと言う", () => {
+  assert.match(summarizeListings([]), /出すまでは1円にもなりません/);
+});
+
+test("全部が様子見なら、いじらずに出品を増やさせる", () => {
+  const reviews = [
+    reviewListing(listing({ id: "a", publishedAt: "2026-08-15" }), "2026-08-23"),
+    reviewListing(listing({ id: "b", publishedAt: "2026-08-18" }), "2026-08-23"),
+  ];
+  const s = summarizeListings(reviews);
+  assert.match(s, /いま出品文をいじらないでください/);
+});

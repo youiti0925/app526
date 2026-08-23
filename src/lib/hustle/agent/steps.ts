@@ -13,6 +13,7 @@ import { checkDeadline, readDeadline } from "./deadline";
 import { checkGates, renderGateQuestions } from "./gates";
 import { buildRenegotiation } from "./renegotiate";
 import { buildListing, listableWorkTypes, renderListing } from "./listing";
+import { reviewListing, summarizeListings } from "./listing-tracker";
 import { estimateByWorkType } from "./worktypes";
 import { needsEscalation } from "./escalation";
 import { fetchFeed, leadFromParsed } from "./ingest";
@@ -25,6 +26,7 @@ import {
   pushInbox,
   readInbox,
   readLeads,
+  readPublishedListings,
   updateLead,
   writeLearned,
 } from "./db";
@@ -905,6 +907,39 @@ export async function stepLearn(ctx: StepContext): Promise<StepOutcome> {
  * 出品文・料金プラン・責任範囲まで作って、承認キューに出すところまで。
  */
 export async function stepListing(ctx: StepContext): Promise<StepOutcome> {
+  // まず、すでに出したものがどうなっているかを見る。
+  // ここを見ずに新しい出品案を積み続けると、売れない出品が増えるだけになる。
+  const published = readPublishedListings();
+  if (published.length > 0) {
+    const today = todayLocal();
+    const reviews = published.map((l) => reviewListing(l, today));
+    for (const r of reviews) {
+      if (r.verdict === "too_early") continue;
+      ctx.log("decision", `出品「${r.title.slice(0, 30)}」→ ${r.reason}`, {
+        listingId: r.listingId,
+        verdict: r.verdict,
+        nextAction: r.nextAction,
+      });
+    }
+    const summary = summarizeListings(reviews);
+    ctx.log("info", summary, { published: published.length });
+
+    // 手を入れるべきものがあれば、何を1つ変えるかを承認キューに出す
+    const needsChange = reviews.filter((r) => r.verdict === "invisible" || r.verdict === "no_conversion" || r.verdict === "stop");
+    for (const r of needsChange.slice(0, 2)) {
+      pushInbox({
+        runId: ctx.runId,
+        kind: "question",
+        priority: 60,
+        title: `出品の見直し: ${r.title.slice(0, 36)}（${r.verdict === "invisible" ? "見られていない" : r.verdict === "stop" ? "畳む判断" : "見られているが売れない"}）`,
+        body: [`# ${r.title}`, "", `出品から ${r.ageDays}日。`, "", r.reason, "", "## 次にやること", "", r.nextAction, "", "**1回に1か所だけ変えてください。** 同時に変えると、何が効いたのか分からなくなります。"].join("\n"),
+        actionUrl: "",
+        leadId: null,
+        meta: { kind: "listing_review", listingId: r.listingId, verdict: r.verdict },
+      });
+    }
+  }
+
   const ids = listableWorkTypes();
   const pending = readInbox("pending", 100);
   const approved = readInbox("approved", 100);

@@ -16,6 +16,7 @@ import {
 // 型だけ。discovery.ts はこのファイルの関数を呼ぶので、値を取り込むと循環する。
 import type { Discovery, DiscoveryChannel } from "./discovery-core";
 import type { DryRun, DryRunStatus, Grade } from "./dryrun-core";
+import type { PublishedListing, ListingStatus } from "./listing-tracker";
 import type { Capability } from "./deliverability";
 
 let initialized = false;
@@ -108,6 +109,22 @@ export function getAgentDb(): Database.Database {
       blocked_reason TEXT NOT NULL DEFAULT '',
       grade TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS hustle_published_listings (
+      id TEXT PRIMARY KEY,
+      work_type_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      platform_id TEXT NOT NULL DEFAULT '',
+      url TEXT NOT NULL DEFAULT '',
+      published_at TEXT NOT NULL,
+      price_jpy INTEGER NOT NULL DEFAULT 0,
+      views INTEGER NOT NULL DEFAULT 0,
+      inquiries INTEGER NOT NULL DEFAULT 0,
+      orders INTEGER NOT NULL DEFAULT 0,
+      last_checked_at TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'published',
       created_at TEXT NOT NULL
     );
 
@@ -780,4 +797,89 @@ export function saveGrade(id: string, grade: Grade): DryRun | null {
     .prepare("UPDATE hustle_dryruns SET grade = ?, status = 'graded' WHERE id = ?")
     .run(JSON.stringify(grade), id);
   return readDryRun(id);
+}
+
+
+// --- 出品した後の追跡 -------------------------------------------------------
+
+interface ListingRow {
+  id: string;
+  work_type_id: string;
+  title: string;
+  platform_id: string;
+  url: string;
+  published_at: string;
+  price_jpy: number;
+  views: number;
+  inquiries: number;
+  orders: number;
+  last_checked_at: string;
+  status: string;
+  created_at: string;
+}
+
+const toListing = (r: ListingRow): PublishedListing => ({
+  id: r.id,
+  workTypeId: r.work_type_id,
+  title: r.title,
+  platformId: r.platform_id,
+  url: r.url,
+  publishedAt: r.published_at,
+  priceJpy: r.price_jpy,
+  views: r.views,
+  inquiries: r.inquiries,
+  orders: r.orders,
+  lastCheckedAt: r.last_checked_at,
+  status: r.status as ListingStatus,
+  createdAt: r.created_at,
+});
+
+export function upsertPublishedListing(
+  input: Partial<PublishedListing> & { workTypeId: string; title: string; publishedAt: string }
+): PublishedListing {
+  const db = getAgentDb();
+  const id = input.id ?? newId();
+  const existing = db.prepare("SELECT * FROM hustle_published_listings WHERE id = ?").get(id) as
+    | ListingRow
+    | undefined;
+
+  const row: ListingRow = {
+    id,
+    work_type_id: input.workTypeId,
+    title: input.title,
+    platform_id: input.platformId ?? existing?.platform_id ?? "",
+    url: input.url ?? existing?.url ?? "",
+    published_at: input.publishedAt,
+    price_jpy: input.priceJpy ?? existing?.price_jpy ?? 0,
+    views: input.views ?? existing?.views ?? 0,
+    inquiries: input.inquiries ?? existing?.inquiries ?? 0,
+    orders: input.orders ?? existing?.orders ?? 0,
+    last_checked_at: input.lastCheckedAt ?? now(),
+    status: input.status ?? (existing?.status as ListingStatus) ?? "published",
+    created_at: existing?.created_at ?? now(),
+  };
+
+  db.prepare(
+    `INSERT INTO hustle_published_listings
+       (id, work_type_id, title, platform_id, url, published_at, price_jpy,
+        views, inquiries, orders, last_checked_at, status, created_at)
+     VALUES (@id, @work_type_id, @title, @platform_id, @url, @published_at, @price_jpy,
+        @views, @inquiries, @orders, @last_checked_at, @status, @created_at)
+     ON CONFLICT(id) DO UPDATE SET
+       title = excluded.title, platform_id = excluded.platform_id, url = excluded.url,
+       published_at = excluded.published_at, price_jpy = excluded.price_jpy,
+       views = excluded.views, inquiries = excluded.inquiries, orders = excluded.orders,
+       last_checked_at = excluded.last_checked_at, status = excluded.status`
+  ).run(row);
+
+  return toListing(row);
+}
+
+export function readPublishedListings(limit = 100): PublishedListing[] {
+  const rows = getAgentDb()
+    .prepare(
+      "SELECT * FROM hustle_published_listings WHERE status != 'closed' ORDER BY published_at DESC LIMIT ?"
+    )
+    .all(limit) as ListingRow[];
+  return rows.map(toListing);
 }
