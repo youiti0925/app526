@@ -17,6 +17,7 @@ import { useHustleStore } from "@/store/useHustleStore";
 import StorageNotice from "@/components/hustle/StorageNotice";
 import { PLATFORM_FEES } from "@/lib/hustle/payout";
 import type { ScamScoreResult } from "@/lib/hustle/scam-rules";
+import { emptyProfile } from "@/lib/hustle/types";
 
 interface TriageResponse {
   scam: ScamScoreResult;
@@ -49,7 +50,7 @@ interface Variant {
 }
 
 export default function ProposalPage() {
-  const { load, addAsset, paths, meta } = useHustleStore();
+  const { load, addAsset, paths, meta, profile, saveProfile } = useHustleStore();
   const [jobText, setJobText] = useState("");
   const [background, setBackground] = useState("");
   const [portfolio, setPortfolio] = useState("");
@@ -67,14 +68,19 @@ export default function ProposalPage() {
     void load();
   }, [load]);
 
+  // 経歴はプロフィールに保存する。エージェントがサーバー側で使うため。
   useEffect(() => {
-    const saved = localStorage.getItem("hustle-background");
-    if (saved) setBackground(saved);
-  }, []);
+    if (profile?.background) setBackground(profile.background);
+    else {
+      const legacy = localStorage.getItem("hustle-background");
+      if (legacy) setBackground(legacy);
+    }
+  }, [profile]);
 
-  useEffect(() => {
-    if (background) localStorage.setItem("hustle-background", background);
-  }, [background]);
+  function persistBackground() {
+    if (!background.trim() || background === profile?.background) return;
+    void saveProfile({ ...(profile ?? emptyProfile), background });
+  }
 
   async function analyze() {
     if (jobText.trim().length < 20) {
@@ -156,12 +162,15 @@ export default function ProposalPage() {
         <textarea
           value={background}
           onChange={(e) => setBackground(e.target.value)}
+          onBlur={persistBackground}
           rows={4}
           placeholder="例: 製造業で7年、品質管理。Excelでの集計と手順書作成が得意。文章を書くのは苦にならない。"
           className="w-full rounded-lg border p-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
           style={{ borderColor: "var(--card-border)" }}
         />
-        <p className="text-xs text-slate-500 mt-1">この内容はこのブラウザに保存され、次回も引き継がれます。</p>
+        <p className="text-xs text-slate-500 mt-1">
+          この内容はプロフィールに保存され、エージェントが提案文を自動生成するときにも使われます。
+        </p>
 
         <div className="flex flex-wrap items-center gap-3 mt-4">
           <label className="text-sm flex items-center gap-2">

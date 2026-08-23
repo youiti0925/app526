@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import HustleNav from "@/components/hustle/HustleNav";
+import AgentAutoRun from "@/components/hustle/AgentAutoRun";
 
 export const metadata: Metadata = {
   title: "副業パイプライン - 稼ぐための作業を自動化する",
@@ -10,6 +11,7 @@ export const metadata: Metadata = {
 export default function HustleLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen">
+      <AgentAutoRun />
       <HustleNav />
       <main className="flex-1 min-w-0 overflow-x-hidden">{children}</main>
     </div>

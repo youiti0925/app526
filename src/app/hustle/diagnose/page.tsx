@@ -169,6 +169,21 @@ export default function DiagnosePage() {
           </label>
         </div>
 
+        <label className="block mb-4">
+          <span className="text-sm font-medium">経歴・できること</span>
+          <textarea
+            rows={3}
+            value={form.background}
+            onChange={(e) => setForm({ ...form, background: e.target.value })}
+            placeholder="例: 製造業で7年、品質管理。Excelでの集計と手順書作成が得意。文章を書くのは苦にならない。"
+            className="w-full rounded-lg border p-2.5 text-sm mt-1"
+            style={{ borderColor: "var(--card-border)" }}
+          />
+          <span className="text-xs text-slate-500">
+            提案文や営業メールの生成に使います。ここが空だと【要確認】だらけの下書きになります。
+          </span>
+        </label>
+
         <fieldset className="mb-4">
           <legend className="text-sm font-medium mb-2">できること（当てはまるもの全部）</legend>
           <div className="flex flex-wrap gap-2">

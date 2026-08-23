@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "next lint",
     "test": "tsc -p tsconfig.test.json && TZ=UTC node --test tests/*.test.mjs && TZ=Asia/Tokyo node --test tests/*.test.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "agent": "node scripts/agent-daemon.mjs"
   },
   "repository": {
     "type": "git",

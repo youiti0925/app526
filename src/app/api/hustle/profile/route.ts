@@ -31,6 +31,7 @@ export async function PUT(request: NextRequest) {
       hasIdVerification: bool(body.hasIdVerification, true),
       needsAnonymity: bool(body.needsAnonymity, false),
       avoid: strings(body.avoid),
+      background: str(body.background, 4000) ?? "",
       updatedAt: str(body.updatedAt, 40) ?? "",
     });
     return NextResponse.json({ profile });

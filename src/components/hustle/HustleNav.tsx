@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -9,6 +10,8 @@ import {
   Factory,
   Handshake,
   Layers,
+  Bot,
+  Inbox,
   ShieldAlert,
   BookOpen,
   ArrowLeft,
@@ -17,6 +20,8 @@ import {
 
 const items = [
   { href: "/hustle", label: "今日やること", icon: ListChecks, exact: true },
+  { href: "/hustle/inbox", label: "承認キュー", icon: Inbox, badge: true },
+  { href: "/hustle/agent", label: "自律運転", icon: Bot },
   { href: "/hustle/diagnose", label: "副業を選ぶ", icon: Compass },
   { href: "/hustle/proposal", label: "案件を判定・提案", icon: Handshake },
   { href: "/hustle/batch", label: "案件をまとめて判定", icon: Layers },
@@ -28,6 +33,26 @@ const items = [
 
 export default function HustleNav() {
   const pathname = usePathname();
+  const [pending, setPending] = useState(0);
+
+  // 承認待ちの件数はナビに常に出す。溜まっていることに気づけないと、
+  // エージェントが作ったものが誰にも見られないまま腐る。
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch("/api/hustle/agent/state")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (alive && d) setPending(d.inboxCount ?? 0);
+        })
+        .catch(() => undefined);
+    void load();
+    const timer = setInterval(load, 30_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [pathname]);
 
   return (
     <aside
@@ -61,7 +86,12 @@ export default function HustleNav() {
               }`}
             >
               <Icon className="shrink-0" style={{ width: 18, height: 18 }} />
-              {item.label}
+              <span className="flex-1">{item.label}</span>
+              {"badge" in item && item.badge && pending > 0 && (
+                <span className="text-xs font-bold px-1.5 py-0.5 rounded-full bg-rose-500 text-white tabular-nums">
+                  {pending}
+                </span>
+              )}
             </Link>
           );
         })}

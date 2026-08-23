@@ -52,6 +52,11 @@ export interface HustleProfile {
   needsAnonymity: boolean;
   /** やりたくないこと */
   avoid: string[];
+  /**
+   * 経歴・できること。提案文と営業メールの生成に使う。
+   * エージェントはサーバー側で動くため、ブラウザではなくここに持つ必要がある。
+   */
+  background: string;
   updatedAt: string;
 }
 
@@ -66,6 +71,7 @@ export const emptyProfile: HustleProfile = {
   hasIdVerification: true,
   needsAnonymity: false,
   avoid: [],
+  background: "",
   updatedAt: "",
 };
 
