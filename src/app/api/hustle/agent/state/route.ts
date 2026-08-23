@@ -1,3 +1,4 @@
+import { SOURCES } from "@/lib/hustle/agent/sources";
 import { NextResponse } from "next/server";
 import {
   countRunsToday,
@@ -14,14 +15,19 @@ export async function GET() {
   return guard(async () => {
     const runs = readRuns(15);
     const pending = readInbox("pending", 100);
+    const config = readAgentConfig();
 
     return NextResponse.json({
-      config: readAgentConfig(),
+      config,
       runs,
       lastRun: runs[0] ?? null,
       events: runs[0] ? readEvents(runs[0].id, 200) : [],
       inbox: pending,
       inboxCount: pending.length,
+      // 「次にやること」を決めるのに使う。出品案が溜まっているのに
+      // 1つも出していない、という状態を検出するため。
+      listingDrafts: pending.filter((i) => i.kind === "listing").length,
+      hasSource: SOURCES.some((s) => config.sources[s.id]?.enabled) || config.feeds.length > 0,
       runsToday: countRunsToday(),
       leads: {
         new: readLeads("new", 200).length,

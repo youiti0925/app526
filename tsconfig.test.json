@@ -39,6 +39,7 @@
     "src/lib/hustle/agent/deadline.ts",
     "src/lib/hustle/cashflow.ts",
     "src/lib/hustle/agent/gates.ts",
-    "src/lib/hustle/agent/listing-tracker.ts"
+    "src/lib/hustle/agent/listing-tracker.ts",
+    "src/lib/hustle/next-action.ts"
   ]
 }

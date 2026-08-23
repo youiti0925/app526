@@ -680,3 +680,90 @@ test("足りるときは余計なことを言わない", () => {
   assert.equal(c.covers, true);
   assert.ok(!/公的支援|窓口/.test(c.advice), c.advice);
 });
+
+// ---------------------------------------------------------------------------
+// 次の1手
+// 機能が増えるほど、どこから手をつければいいか分からなくなる。
+// 選択肢を並べず、状態から1つだけ決める。順番は固定で、気分で変えない。
+// ---------------------------------------------------------------------------
+
+import { decideNextAction } from "../dist-test/next-action.js";
+
+const appState = (over = {}) => ({
+  pendingInbox: 0,
+  pendingListingDrafts: 0,
+  published: [],
+  newLeads: 0,
+  hasSource: true,
+  cashNeed: null,
+  wonJobs: [],
+  today: "2026-08-23",
+  ...over,
+});
+
+test("現金が期日に間に合わないときは、副業の話より先にそちらを出す", () => {
+  const a = decideNextAction(
+    appState({ cashNeed: { byDate: "2026-08-30", amountJpy: 80_000, label: "家賃" }, pendingInbox: 10 })
+  );
+  assert.equal(a.kind, "cash_emergency");
+  assert.equal(a.urgent, true);
+  assert.match(a.why, /公的支援|緊急小口資金|住居確保給付金/);
+});
+
+test("現金が足りているなら、その警告は出さない", () => {
+  const a = decideNextAction(
+    appState({
+      cashNeed: { byDate: "2026-12-31", amountJpy: 10_000, label: "目標" },
+      wonJobs: [{ label: "記事", amountJpy: 50_000, platformId: "coconala", wonAt: new Date(2026, 7, 23) }],
+      pendingInbox: 5,
+    })
+  );
+  assert.notEqual(a.kind, "cash_emergency");
+});
+
+test("出品案があるのに1つも出していないなら、出させる", () => {
+  const a = decideNextAction(appState({ pendingListingDrafts: 4 }));
+  assert.equal(a.kind, "publish_listing");
+  assert.match(a.why, /出すまでは1円にもなりません/);
+});
+
+test("出品済みで様子見の期間なら、いじらせずに種類を増やさせる", () => {
+  const a = decideNextAction(
+    appState({
+      published: [
+        {
+          id: "l1", workTypeId: "sds", title: "SDS作成", platformId: "coconala", url: "",
+          publishedAt: "2026-08-15", priceJpy: 45_000, views: 3, inquiries: 0, orders: 0,
+          lastCheckedAt: "", status: "published", createdAt: "",
+        },
+      ],
+    })
+  );
+  assert.equal(a.kind, "grow");
+  assert.match(a.why, /いま出品文をいじらないでください/);
+});
+
+test("出品を直す必要があれば、どこを直すかまで出す", () => {
+  const a = decideNextAction(
+    appState({
+      published: [
+        {
+          id: "l1", workTypeId: "sds", title: "SDS作成を代行します", platformId: "coconala", url: "",
+          publishedAt: "2026-06-01", priceJpy: 45_000, views: 8, inquiries: 0, orders: 0,
+          lastCheckedAt: "", status: "published", createdAt: "",
+        },
+      ],
+    })
+  );
+  assert.equal(a.kind, "fix_listing");
+  assert.match(a.why, /タイトルとカテゴリ/);
+});
+
+test("優先順位が固定されている（承認待ち > 判定待ち）", () => {
+  const a = decideNextAction(appState({ pendingInbox: 5, newLeads: 20 }));
+  assert.equal(a.kind, "clear_inbox");
+});
+
+test("何も無ければ、待たせずに入り口を増やさせる", () => {
+  assert.equal(decideNextAction(appState()).kind, "grow");
+});

@@ -13,10 +13,12 @@ import {
   AlertTriangle,
   Trash2,
   Sparkles,
+  Target,
 } from "lucide-react";
 import { useHustleStore } from "@/store/useHustleStore";
 import StorageNotice from "@/components/hustle/StorageNotice";
 import { computeStats, summarizeTasks, todayLocal, DEFAULT_MIN_WAGE_JPY } from "@/lib/hustle/analytics";
+import { decideNextAction, type NextAction } from "@/lib/hustle/next-action";
 import type { HustleTask } from "@/lib/hustle/types";
 
 const yen = (n: number) => `${n.toLocaleString()}円`;
@@ -33,6 +35,50 @@ export default function HustleDashboard() {
 
   const stats = useMemo(() => computeStats(entries, paths), [entries, paths]);
   const taskSummary = useMemo(() => summarizeTasks(tasks), [tasks]);
+  const [agentState, setAgentState] = useState<{
+    inboxCount: number;
+    listingDrafts: number;
+    newLeads: number;
+    hasSource: boolean;
+  } | null>(null);
+
+  // 次の1手はサーバー側の状態（承認待ち・出品案・判定待ち）から決まるので、別に取る
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/hustle/agent/state")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!alive || !d) return;
+        setAgentState({
+          inboxCount: d.inboxCount ?? 0,
+          listingDrafts: d.listingDrafts ?? 0,
+          newLeads: d.leads?.new ?? 0,
+          hasSource: d.hasSource ?? false,
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const nextAction = useMemo<NextAction | null>(() => {
+    if (!agentState) return null;
+    return decideNextAction({
+      pendingInbox: agentState.inboxCount,
+      pendingListingDrafts: agentState.listingDrafts,
+      published: [],
+      newLeads: agentState.newLeads,
+      hasSource: agentState.hasSource,
+      // 期日のある現金需要は、プロフィールの目標期限を使う
+      cashNeed:
+        profile?.deadline && profile.goalJpy > 0
+          ? { byDate: profile.deadline, amountJpy: profile.goalJpy, label: "目標" }
+          : null,
+      wonJobs: [],
+      today: today(),
+    });
+  }, [agentState, profile]);
 
   if (loaded && paths.length === 0) {
     return <FirstRun />;
@@ -67,6 +113,8 @@ export default function HustleDashboard() {
           考える時間をなくすために、やることは決めてあります。上から順に潰してください。
         </p>
       </header>
+
+      {nextAction && <NextActionCard action={nextAction} />}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         <Stat label="今日のタスク" value={`${taskSummary.todayCount}件`} sub={`完了 ${taskSummary.doneToday}件`} />
@@ -259,6 +307,34 @@ function FirstRun() {
           今日の生活費が足りない状況であれば、副業より先に使える制度があります。
           <Link href="/hustle/guide" className="text-emerald-700 hover:underline ml-1">
             相談窓口と公的支援を見る
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** いま何をすればいいかを1つだけ出す。選択肢を並べない。 */
+function NextActionCard({ action }: { action: NextAction }) {
+  return (
+    <div
+      className={`card mb-6 border-l-4 ${action.urgent ? "!border-l-rose-500 bg-rose-50" : "!border-l-emerald-500"}`}
+    >
+      <div className="flex items-start gap-2">
+        <Target className={`w-4 h-4 mt-0.5 shrink-0 ${action.urgent ? "text-rose-600" : "text-emerald-600"}`} />
+        <div className="min-w-0">
+          <h2 className={`font-semibold text-sm ${action.urgent ? "text-rose-900" : ""}`}>
+            {action.title}
+          </h2>
+          <p className={`text-sm mt-1.5 leading-relaxed ${action.urgent ? "text-rose-800" : "text-slate-600"}`}>
+            {action.why}
+          </p>
+          <Link
+            href={action.href}
+            className="text-sm text-emerald-700 hover:underline flex items-center gap-1 mt-2"
+          >
+            {action.linkLabel}
+            <ArrowRight className="w-3.5 h-3.5" />
           </Link>
         </div>
       </div>
