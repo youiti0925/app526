@@ -1,7 +1,7 @@
 "use client";
 
 import { BookOpen, Phone, AlertCircle, Scale, Lightbulb } from "lucide-react";
-import { EMERGENCY_RESOURCES, TAX_NOTES, REALITY_CHECKS } from "@/lib/hustle/guide-data";
+import { EMERGENCY_RESOURCES, TAX_NOTES, REALITY_CHECKS, COOLING_OFF } from "@/lib/hustle/guide-data";
 
 export default function GuidePage() {
   const now = EMERGENCY_RESOURCES.filter((r) => r.urgency === "now");
@@ -69,6 +69,37 @@ export default function GuidePage() {
       </section>
 
       <section className="mb-8">
+        <h2 className="font-semibold mb-1">もう契約してしまった場合に、取り消せるかどうか</h2>
+        <p className="text-sm text-slate-600 mb-3">
+          クーリング・オフができるかは、契約の類型で決まります。期間内なら理由を問わず一方的に解除できます。
+        </p>
+        <div className="card !p-0 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-xs text-slate-500">
+              <tr>
+                <th className="px-3 py-2">契約の類型</th>
+                <th className="px-3 py-2 whitespace-nowrap">期間</th>
+                <th className="px-3 py-2">どういう場合か</th>
+              </tr>
+            </thead>
+            <tbody>
+              {COOLING_OFF.map((c) => (
+                <tr key={c.type} className="border-t align-top" style={{ borderColor: "var(--card-border)" }}>
+                  <td className="px-3 py-2 font-medium whitespace-nowrap">{c.type}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{c.period}</td>
+                  <td className="px-3 py-2 text-slate-600 leading-relaxed">{c.note}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          期間を過ぎていても、うそを言われた・不利な事実を隠されたという場合は取消しを主張できる余地があります。
+          自己判断で締めずに、消費者ホットライン 188 で確認してください。
+        </p>
+      </section>
+
+      <section className="mb-8">
         <h2 className="font-semibold flex items-center gap-2 mb-3">
           <Scale className="w-5 h-5 text-slate-500" />
           税金と勤務先まわりで、後から効いてくること
@@ -96,6 +127,10 @@ export default function GuidePage() {
               ["AI記事の自動投稿", "Googleのスパムポリシーに直撃し、ブログサービス側の規約でも禁止されています。生成物は必ず人が確認する導線にしています。"],
               ["収益の予測グラフ", "予測が当たらないだけでなく、当たると信じさせること自体が有害です。実績のみを表示します。"],
               ["有料プラン・アフィリエイトリンク", "このアプリはあなたから1円も取りません。稼げない人から金を取る構造を作らないためです。"],
+              ["詐欺判定での「安全」表示", "行政処分が公表される事業者はごく一部で、判定に出ないことは安全を意味しません。緑の安心が被害を増やすので、「既知の手口には未該当」としか表示しません。"],
+              ["顧客の機密情報をAIに送る自動化", "生成AIの無料枠は、入力が学習や品質改善に使われ、人が読む場合があると規約に明記されています。顧客の会議音声・書類・個人情報を入れることは規約違反であり、同時に守秘義務違反です。"],
+              ["補助金・助成金の申請書類の作成代行", "報酬を得て官公署に出す書類を業として作成することは、行政書士でなければ行政書士法違反です。助言はできますが、書類作成そのものは機能に含めていません。"],
+              ["自動出品・自動値下げ・相場の自動取得", "フリマ各社は公開APIを提供しておらず、独自の手段でのアクセスを規約で禁止しています。実物写真のないAI画像だけの出品や、加工で傷を消す処理も禁止されています。"],
             ].map(([title, body]) => (
               <li key={title}>
                 <span className="font-medium">{title}</span>

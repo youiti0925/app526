@@ -174,7 +174,7 @@ function BatchRow({ item }: { item: BatchItem }) {
       ? { cls: "badge-danger", label: "受けない", Icon: ShieldX }
       : item.recommendation === "verify_first"
         ? { cls: "badge-warning", label: "要確認", Icon: ShieldAlert }
-        : { cls: "badge-success", label: "進めてよい", Icon: ShieldCheck };
+        : { cls: "badge-info", label: "止める理由なし", Icon: ShieldCheck };
 
   return (
     <div className="card !py-3">

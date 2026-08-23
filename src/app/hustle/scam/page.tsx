@@ -140,10 +140,12 @@ export default function ScamCheckPage() {
 }
 
 function VerdictBadge({ verdict, score }: { verdict: ScamCheck["verdict"]; score: number }) {
+  // 「安全」を緑で断定しない。行政処分が公表される事業者はごく一部で、
+  // 未知の手口はここでは検出できない。緑の安心が被害を増やす。
   const map = {
     danger: { cls: "badge-danger", label: "危険", Icon: ShieldX },
     caution: { cls: "badge-warning", label: "要注意", Icon: ShieldAlert },
-    safe: { cls: "badge-success", label: "明確な危険なし", Icon: ShieldCheck },
+    safe: { cls: "badge-info", label: "既知の手口には未該当", Icon: ShieldCheck },
   } as const;
   const { cls, label, Icon } = map[verdict];
   return (
@@ -160,7 +162,7 @@ function ResultCard({ check }: { check: ScamCheck }) {
       ? { bg: "#fef2f2", border: "#fecaca", bar: "#ef4444" }
       : check.verdict === "caution"
         ? { bg: "#fffbeb", border: "#fde68a", bar: "#f59e0b" }
-        : { bg: "#f0fdf4", border: "#bbf7d0", bar: "#10b981" };
+        : { bg: "#f8fafc", border: "#cbd5e1", bar: "#64748b" };
 
   const sorted = [...check.signals].sort((a, b) => b.weight - a.weight);
 
@@ -223,7 +225,7 @@ function ResultCard({ check }: { check: ScamCheck }) {
           迷ったら契約前に無料で相談できます —
           <strong className="text-slate-900"> 消費者ホットライン 188</strong>（局番なし） /
           <strong className="text-slate-900"> 警察相談専用電話 #9110</strong>。
-          この判定はあくまで補助であり、安全を保証するものではありません。
+          この判定は既知の手口との照合にすぎず、安全を保証するものではありません。
         </span>
       </div>
     </div>

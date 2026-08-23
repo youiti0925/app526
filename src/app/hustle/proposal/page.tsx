@@ -267,7 +267,7 @@ function TriageResult({
       ? { bg: "#fef2f2", border: "#fecaca", label: "受けない", Icon: ShieldX, color: "#dc2626" }
       : triage.recommendation === "verify_first"
         ? { bg: "#fffbeb", border: "#fde68a", label: "条件を確認してから", Icon: ShieldAlert, color: "#d97706" }
-        : { bg: "#f0fdf4", border: "#bbf7d0", label: "進めてよい", Icon: ShieldCheck, color: "#059669" };
+        : { bg: "#f8fafc", border: "#cbd5e1", label: "止める理由は見つからなかった", Icon: ShieldCheck, color: "#334155" };
 
   const { ai } = triage;
 
@@ -284,7 +284,7 @@ function TriageResult({
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-        <Metric label="詐欺スコア" value={`${triage.scam.score}/100`} sub={triage.scam.verdict === "danger" ? "危険" : triage.scam.verdict === "caution" ? "要注意" : "明確な危険なし"} />
+        <Metric label="詐欺スコア" value={`${triage.scam.score}/100`} sub={triage.scam.verdict === "danger" ? "危険" : triage.scam.verdict === "caution" ? "要注意" : "既知の手口には未該当"} />
         <Metric
           label="想定作業時間"
           value={ai?.estimatedHours ? `${ai.estimatedHours.low}〜${ai.estimatedHours.high}時間` : "—"}

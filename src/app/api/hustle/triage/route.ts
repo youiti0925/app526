@@ -134,7 +134,7 @@ export async function POST(request: NextRequest) {
         "条件を詰めれば受けられます。下の確認質問を先に送り、回答が返ってから着手してください。";
     } else {
       recommendation = "proceed";
-      recommendationReason = `手数料を引いた実効時給は ${hourly?.low.toLocaleString()}〜${hourly?.high.toLocaleString()}円 の見込みで、大きな地雷も見当たりません。提案文を作って応募してください。`;
+      recommendationReason = `手数料を引いた実効時給は ${hourly?.low.toLocaleString()}〜${hourly?.high.toLocaleString()}円 の見込みで、既知の危険シグナルにも該当しませんでした。ここで検査できたのは「詐欺の典型手口」と「単価の妥当性」だけです。発注者が信用できるかどうかは別問題なので、着手前に報酬額・納期・修正回数・支払日を文面で確定させてください。`;
     }
 
     return NextResponse.json({
