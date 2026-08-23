@@ -10,7 +10,11 @@ import {
   type InboxItem,
   type Lead,
   type LearnedParams,
+  type SourceState,
+  defaultSourceState,
 } from "./types";
+// 型だけ。discovery.ts はこのファイルの関数を呼ぶので、値を取り込むと循環する。
+import type { Discovery, DiscoveryChannel } from "./discovery-core";
 
 let initialized = false;
 
@@ -72,11 +76,29 @@ export function getAgentDb(): Database.Database {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS hustle_discoveries (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL DEFAULT '',
+      key TEXT NOT NULL,
+      channel TEXT NOT NULL DEFAULT 'apply',
+      title TEXT NOT NULL,
+      url TEXT NOT NULL DEFAULT '',
+      payload TEXT NOT NULL DEFAULT '{}',
+      hourly_low INTEGER,
+      hourly_high INTEGER,
+      meets_bar INTEGER NOT NULL DEFAULT 0,
+      note TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'new',
+      created_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_agent_events_run ON hustle_agent_events(run_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_leads_status ON hustle_leads(status, score DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_external ON hustle_leads(source, external_id)
       WHERE external_id != '';
     CREATE INDEX IF NOT EXISTS idx_inbox_status ON hustle_agent_inbox(status, priority DESC, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_discoveries_key ON hustle_discoveries(key);
+    CREATE INDEX IF NOT EXISTS idx_discoveries_status ON hustle_discoveries(status, meets_bar DESC, created_at DESC);
   `);
 
   initialized = true;
@@ -111,22 +133,63 @@ export function readAgentConfig(): AgentConfig {
     ...stored,
     steps: { ...defaultAgentConfig.steps, ...(stored.steps ?? {}) },
     feeds: Array.isArray(stored.feeds) ? stored.feeds : [],
+    sources: normalizeSources(stored.sources),
     learned: { ...defaultLearned, ...(stored.learned ?? {}) },
   };
 }
 
-export function writeAgentConfig(patch: Partial<AgentConfig>): AgentConfig {
+/** 保存されている値に欠けがあっても既定で埋める。 */
+function normalizeSources(stored: unknown): Record<string, SourceState> {
+  const out: Record<string, SourceState> = {};
+  if (!stored || typeof stored !== "object") return out;
+  for (const [id, value] of Object.entries(stored as Record<string, unknown>)) {
+    const v = (value ?? {}) as Partial<SourceState>;
+    out[id] = {
+      enabled: v.enabled === true,
+      since: typeof v.since === "string" ? v.since : "",
+      maxDetails:
+        typeof v.maxDetails === "number" && Number.isFinite(v.maxDetails)
+          ? Math.min(50, Math.max(1, Math.round(v.maxDetails)))
+          : defaultSourceState.maxDetails,
+      lastRunAt: typeof v.lastRunAt === "string" ? v.lastRunAt : "",
+      lastError: typeof v.lastError === "string" ? v.lastError : "",
+    };
+  }
+  return out;
+}
+
+/** ソースはキーごとに部分更新できる。1項目だけ触れるようにするため。 */
+export type AgentConfigPatch = Partial<Omit<AgentConfig, "sources">> & {
+  sources?: Record<string, Partial<SourceState>>;
+};
+
+export function writeAgentConfig(patch: AgentConfigPatch): AgentConfig {
   const db = getAgentDb();
+  const current = readAgentConfig();
+  const { sources: sourcePatch, steps: stepPatch, ...rest } = patch;
   const merged: AgentConfig = {
-    ...readAgentConfig(),
-    ...patch,
-    ...(patch.steps ? { steps: { ...readAgentConfig().steps, ...patch.steps } } : {}),
+    ...current,
+    ...rest,
+    steps: stepPatch ? { ...current.steps, ...stepPatch } : current.steps,
+    // ソースはキーごとに差分更新する。1つ触っただけで他が消えないように。
+    sources: sourcePatch ? mergeSources(current.sources, sourcePatch) : current.sources,
   };
   db.prepare(
     `INSERT INTO settings (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`
   ).run(CONFIG_KEY, JSON.stringify(merged));
   return merged;
+}
+
+function mergeSources(
+  current: Record<string, SourceState>,
+  patch: Record<string, Partial<SourceState>>
+): Record<string, SourceState> {
+  const out: Record<string, SourceState> = { ...current };
+  for (const [id, value] of Object.entries(patch)) {
+    out[id] = { ...defaultSourceState, ...(current[id] ?? {}), ...(value ?? {}) };
+  }
+  return out;
 }
 
 export function writeLearned(learned: LearnedParams): void {
@@ -305,6 +368,18 @@ const toLead = (r: LeadRow): Lead => ({
 });
 
 /** 取り込み。同じ source + externalId が既にあれば false を返して何もしない。 */
+/**
+ * すでに取り込んだ externalId の集合。
+ * サイトマップの lastmod が日付までしか無いと、同じ日の案件を
+ * 「前回より後」だけで絞れない。取り込み済みかどうかで弾くのが確実。
+ */
+export function readKnownExternalIds(source: Lead["source"]): Set<string> {
+  const rows = getAgentDb()
+    .prepare("SELECT external_id FROM hustle_leads WHERE source = ? AND external_id != ''")
+    .all(source) as { external_id: string }[];
+  return new Set(rows.map((r) => r.external_id));
+}
+
 export function insertLead(input: Partial<Lead> & { rawText: string }): { lead: Lead; created: boolean } {
   const db = getAgentDb();
   const externalId = input.externalId ?? "";
@@ -459,4 +534,111 @@ export function decideInbox(
 
 export function updateInboxBody(id: string, body: string): void {
   getAgentDb().prepare("UPDATE hustle_agent_inbox SET body = ? WHERE id = ?").run(body, id);
+}
+
+
+// --- 探索の結果 -------------------------------------------------------------
+
+interface DiscoveryRow {
+  id: string;
+  run_id: string;
+  key: string;
+  channel: string;
+  title: string;
+  url: string;
+  payload: string;
+  hourly_low: number | null;
+  hourly_high: number | null;
+  meets_bar: number;
+  note: string;
+  status: string;
+  created_at: string;
+}
+
+function toDiscovery(row: DiscoveryRow): Discovery {
+  const payload = parse<Record<string, unknown>>(row.payload, {});
+  return {
+    ...(payload as unknown as Discovery),
+    id: row.id,
+    runId: row.run_id,
+    key: row.key,
+    channel: row.channel as DiscoveryChannel,
+    title: row.title,
+    url: row.url,
+    hourlyJpy:
+      row.hourly_low === null || row.hourly_high === null
+        ? null
+        : { low: row.hourly_low, high: row.hourly_high },
+    meetsBar: row.meets_bar === 1,
+    note: row.note,
+    status: row.status as Discovery["status"],
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * 見つけた市場を保存する。
+ * 同じ key が既にあれば上書きせず、見つけた回数だけ増やす扱いにする
+ * （人が status を変えた結果を、次の探索で消さないため）。
+ */
+export function insertDiscovery(d: Omit<Discovery, "id" | "createdAt" | "status">): {
+  discovery: Discovery;
+  created: boolean;
+} {
+  const db = getAgentDb();
+  const existing = db.prepare("SELECT * FROM hustle_discoveries WHERE key = ?").get(d.key) as
+    | DiscoveryRow
+    | undefined;
+  if (existing) return { discovery: toDiscovery(existing), created: false };
+
+  const row: DiscoveryRow = {
+    id: newId(),
+    run_id: d.runId,
+    key: d.key,
+    channel: d.channel,
+    title: d.title,
+    url: d.url,
+    payload: JSON.stringify(d),
+    hourly_low: d.hourlyJpy?.low ?? null,
+    hourly_high: d.hourlyJpy?.high ?? null,
+    meets_bar: d.meetsBar ? 1 : 0,
+    note: d.note,
+    status: "new",
+    created_at: now(),
+  };
+  db.prepare(
+    `INSERT INTO hustle_discoveries
+       (id, run_id, key, channel, title, url, payload, hourly_low, hourly_high, meets_bar, note, status, created_at)
+     VALUES (@id, @run_id, @key, @channel, @title, @url, @payload, @hourly_low, @hourly_high, @meets_bar, @note, @status, @created_at)`
+  ).run(row);
+  return { discovery: toDiscovery(row), created: true };
+}
+
+export function readDiscoveries(limit = 50): Discovery[] {
+  const rows = getAgentDb()
+    .prepare(
+      `SELECT * FROM hustle_discoveries
+       WHERE status != 'dropped'
+       ORDER BY meets_bar DESC, created_at DESC
+       LIMIT ?`
+    )
+    .all(limit) as DiscoveryRow[];
+  return rows.map(toDiscovery);
+}
+
+/** 重複探索を避けるために、すでに見た市場の key を返す。 */
+export function readDiscoveryKeys(limit = 200): string[] {
+  const rows = getAgentDb()
+    .prepare("SELECT key FROM hustle_discoveries ORDER BY created_at DESC LIMIT ?")
+    .all(limit) as { key: string }[];
+  return rows.map((r) => r.key);
+}
+
+export function setDiscoveryStatus(id: string, status: Discovery["status"]): Discovery | null {
+  const db = getAgentDb();
+  db.prepare("UPDATE hustle_discoveries SET status = ? WHERE id = ?").run(status, id);
+  const row = db.prepare("SELECT * FROM hustle_discoveries WHERE id = ?").get(id) as
+    | DiscoveryRow
+    | undefined;
+  return row ? toDiscovery(row) : null;
 }

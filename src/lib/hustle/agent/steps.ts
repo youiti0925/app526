@@ -8,15 +8,19 @@ import { generateJson, hasApiKey, describeAiError } from "../ai";
 import { detectScopeRisks, estimateHours, type WorkEstimate } from "./estimate";
 import { needsEscalation } from "./escalation";
 import { fetchFeed, leadFromParsed } from "./ingest";
+import { SOURCES, fetchSource } from "./sources";
 import {
   insertLead,
   logEvent,
+  readKnownExternalIds,
+  writeAgentConfig,
   pushInbox,
   readInbox,
   readLeads,
   updateLead,
   writeLearned,
 } from "./db";
+import { defaultSourceState } from "./types";
 import type { AgentConfig, InboxItem, Lead, LearnedParams, StepId } from "./types";
 import type { CallBudget } from "./budget";
 
@@ -41,12 +45,18 @@ export interface StepOutcome {
 
 export async function stepIngest(ctx: StepContext): Promise<StepOutcome> {
   const feeds = ctx.config.feeds.filter((f) => /^https?:\/\//.test(f));
-  if (feeds.length === 0) {
-    ctx.log("info", "取り込み元のフィードが登録されていないので、手動で貼り付けた案件だけを扱います");
+  const activeSources = SOURCES.filter((s) => ctx.config.sources[s.id]?.enabled);
+
+  if (feeds.length === 0 && activeSources.length === 0) {
+    ctx.log(
+      "info",
+      "取り込み元が1つも有効になっていないので、手動で貼り付けた案件だけを扱います。/hustle/agent の「案件を取りに行く先」で有効にしてください"
+    );
     return { summary: "取り込み元なし", ingested: 0 };
   }
 
   let ingested = 0;
+
   for (const feed of feeds) {
     try {
       const parsed = await fetchFeed(feed);
@@ -69,7 +79,75 @@ export async function stepIngest(ctx: StepContext): Promise<StepOutcome> {
     await new Promise((r) => setTimeout(r, 1500));
   }
 
+  ingested += await ingestFromSources(ctx, activeSources);
+
   return { summary: `${ingested}件 取り込み`, ingested };
+}
+
+/**
+ * サイトマップ経由の収集。
+ * 前回の位置（since）以降だけを見て、1回の実行で取りに行く件数にも上限を置く。
+ * 取り込めたところまでで since を進めるので、途中で落ちても次回は続きから。
+ */
+async function ingestFromSources(
+  ctx: StepContext,
+  activeSources: typeof SOURCES
+): Promise<number> {
+  let ingested = 0;
+
+  for (const source of activeSources) {
+    const state = { ...defaultSourceState, ...(ctx.config.sources[source.id] ?? {}) };
+    const now = new Date().toISOString();
+
+    const known = readKnownExternalIds("site");
+    const result = await fetchSource(source, {
+      since: state.since,
+      maxDetails: state.maxDetails,
+      delayMs: 1500,
+      isKnown: (url) => known.has(`${source.id}:${url}`),
+    });
+
+    if (result.error) {
+      ctx.log("warn", `${source.name} の取得に失敗しました: ${result.error}`, {
+        sourceId: source.id,
+        error: result.error,
+      });
+      writeAgentConfig({ sources: { [source.id]: { lastRunAt: now, lastError: result.error } } });
+      continue;
+    }
+
+    let added = 0;
+    for (const lead of result.leads) {
+      const { created } = insertLead(lead);
+      if (created) added++;
+    }
+    ingested += added;
+
+    ctx.log(
+      "action",
+      `${source.name} から ${added}件 取り込みました（新着 ${result.found}件 / 本文取得 ${result.fetched}件` +
+        `${result.remaining > 0 ? ` / 残り ${result.remaining}件 は次回` : ""}` +
+        `${result.undated > 0 ? ` / 更新日時が無く対象外 ${result.undated}件` : ""}）`,
+      {
+        sourceId: source.id,
+        found: result.found,
+        fetched: result.fetched,
+        remaining: result.remaining,
+        undated: result.undated,
+        added,
+        since: state.since,
+        nextSince: result.newestLastmod,
+      }
+    );
+
+    writeAgentConfig({
+      sources: { [source.id]: { since: result.newestLastmod, lastRunAt: now, lastError: "" } },
+    });
+    // 次のソースに移る前にも間を空ける
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  return ingested;
 }
 
 // ---------------------------------------------------------------------------

@@ -9,6 +9,8 @@ import {
   Inbox,
   Plus,
   Rss,
+  Globe,
+  RotateCcw,
   Brain,
   ScrollText,
   AlertTriangle,
@@ -17,7 +19,21 @@ import {
   Zap,
 } from "lucide-react";
 import StorageNotice from "@/components/hustle/StorageNotice";
-import { STEP_LABELS, type AgentConfig, type AgentEvent, type AgentRun, type StepId } from "@/lib/hustle/agent/types";
+import { SOURCES } from "@/lib/hustle/agent/sources";
+import {
+  STEP_LABELS,
+  defaultSourceState,
+  type AgentConfig,
+  type AgentEvent,
+  type AgentRun,
+  type SourceState,
+  type StepId,
+} from "@/lib/hustle/agent/types";
+
+/** ソースはキーごとに部分更新する。 */
+type ConfigPatch = Partial<Omit<AgentConfig, "sources">> & {
+  sources?: Record<string, Partial<SourceState>>;
+};
 
 interface AgentState {
   config: AgentConfig;
@@ -53,7 +69,7 @@ export default function AgentPage() {
     void load();
   }, [load]);
 
-  async function patchConfig(patch: Partial<AgentConfig>) {
+  async function patchConfig(patch: ConfigPatch) {
     const res = await fetch("/api/hustle/agent/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -223,6 +239,8 @@ export default function AgentPage() {
           アプリを開いたときに自動で回す
         </label>
       </div>
+
+      <SourceToggles config={config} onPatch={(sources) => patchConfig({ sources })} />
 
       <FeedEditor config={config} onSave={(feeds) => patchConfig({ feeds })} />
 
@@ -423,6 +441,93 @@ function LeadInput({ onDone }: { onDone: () => void }) {
           取り込む
         </button>
         {result && <span className="text-sm text-slate-600">{result}</span>}
+      </div>
+    </div>
+  );
+}
+
+function SourceToggles({
+  config,
+  onPatch,
+}: {
+  config: AgentConfig;
+  onPatch: (sources: Record<string, Partial<SourceState>>) => void;
+}) {
+  return (
+    <div className="card mb-4">
+      <h2 className="font-semibold text-sm mb-1 flex items-center gap-2">
+        <Globe className="w-4 h-4 text-emerald-600" />
+        案件を取りに行く先
+      </h2>
+      <p className="text-xs text-slate-500 mb-3 leading-relaxed">
+        サイトマップを公開しているサイトから、<strong className="text-slate-700">前回以降に更新されたものだけ</strong>を
+        取りに行きます。1回の実行で開く件数に上限を置き、1件ごとに間隔を空けます。
+        応募や連絡の自動化はしません（規約違反になり、アカウントが飛びます）。
+      </p>
+
+      <div className="space-y-3">
+        {SOURCES.map((source) => {
+          const state = { ...defaultSourceState, ...(config.sources[source.id] ?? {}) };
+          return (
+            <div
+              key={source.id}
+              className="rounded-lg border p-3"
+              style={{ borderColor: "var(--card-border)" }}
+            >
+              <label className="flex items-start gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={state.enabled}
+                  onChange={(e) => onPatch({ [source.id]: { enabled: e.target.checked } })}
+                />
+                <span>{source.name}</span>
+              </label>
+              <p className="text-xs text-slate-500 mt-1.5 leading-relaxed pl-6">{source.note}</p>
+
+              {state.enabled && (
+                <div className="pl-6 mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-500">
+                  <label className="flex items-center gap-1.5">
+                    1回に開く上限
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={state.maxDetails}
+                      onChange={(e) =>
+                        onPatch({ [source.id]: { maxDetails: Number(e.target.value) } })
+                      }
+                      className="w-16 rounded border px-1.5 py-0.5"
+                      style={{ borderColor: "var(--card-border)" }}
+                    />
+                    件
+                  </label>
+                  <span>
+                    前回の位置: {state.since ? state.since.slice(0, 16).replace("T", " ") : "（未取得）"}
+                  </span>
+                  {state.since && (
+                    <button
+                      onClick={() => onPatch({ [source.id]: { since: "" } })}
+                      className="flex items-center gap-1 underline hover:text-slate-700"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      最初から取り直す
+                    </button>
+                  )}
+                  {state.lastRunAt && (
+                    <span>最終実行: {state.lastRunAt.slice(0, 16).replace("T", " ")}</span>
+                  )}
+                </div>
+              )}
+
+              {state.lastError && (
+                <p className="pl-6 mt-2 text-xs text-rose-600 leading-relaxed">
+                  前回の失敗: {state.lastError}
+                </p>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

@@ -47,7 +47,7 @@ export interface AgentEvent {
 
 // --- 案件（lead）のパイプライン --------------------------------------------
 
-export type LeadSource = "manual" | "paste" | "rss" | "email";
+export type LeadSource = "manual" | "paste" | "rss" | "email" | "site" | "discovery";
 export type LeadStatus =
   | "new" // 取り込んだだけ
   | "triaged" // 判定済み
@@ -115,6 +115,28 @@ export interface InboxItem {
 
 // --- 設定と学習パラメータ ---------------------------------------------------
 
+/**
+ * サイトマップ収集の状態。ソースごとに持つ。
+ * since を進めることで、次回は前回以降に更新されたものだけを見る。
+ */
+export interface SourceState {
+  enabled: boolean;
+  /** 前回取り込んだうちで一番新しい更新日時 */
+  since: string;
+  /** 1回の実行で詳細まで取りに行く上限 */
+  maxDetails: number;
+  lastRunAt: string;
+  lastError: string;
+}
+
+export const defaultSourceState: SourceState = {
+  enabled: false,
+  since: "",
+  maxDetails: 12,
+  lastRunAt: "",
+  lastError: "",
+};
+
 export interface AgentConfig {
   /** 自律運転を有効にするか */
   enabled: boolean;
@@ -130,6 +152,10 @@ export interface AgentConfig {
   maxDraftsPerRun: number;
   /** 案件を取り込むRSS/AtomのURL */
   feeds: string[];
+  /** サイトマップ収集の設定。キーは SOURCES の id。 */
+  sources: Record<string, SourceState>;
+  /** 上位モデルに市場を探させる（探索層）を使うか */
+  discoveryEnabled: boolean;
   /** 学習で更新されるパラメータ */
   learned: LearnedParams;
 }
@@ -169,6 +195,8 @@ export const defaultAgentConfig: AgentConfig = {
   steps: { ingest: true, triage: true, draft: true, plan: true, review: true, learn: true },
   maxDraftsPerRun: 3,
   feeds: [],
+  sources: {},
+  discoveryEnabled: false,
   learned: defaultLearned,
 };
 
