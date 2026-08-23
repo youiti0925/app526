@@ -767,3 +767,91 @@ test("優先順位が固定されている（承認待ち > 判定待ち）", ()
 test("何も無ければ、待たせずに入り口を増やさせる", () => {
   assert.equal(decideNextAction(appState()).kind, "grow");
 });
+
+// ---------------------------------------------------------------------------
+// 税金の目安
+// 副業で一番よくある事故が「20万円以下なら申告不要」の誤解。
+// これは所得税だけの話で、住民税の申告は金額に関係なく必要。
+// ---------------------------------------------------------------------------
+
+import { summarizeTax, INCOME_TAX_THRESHOLD_JPY } from "../dist-test/tax.js";
+
+test("20万円のラインは売上ではなく所得（売上 − 経費）で見る", () => {
+  const t = summarizeTax({
+    revenueJpy: 250_000,
+    expenseJpy: 80_000,
+    hasExpenseRecords: true,
+    isEmployee: true,
+  });
+  assert.equal(t.incomeJpy, 170_000);
+  // 売上25万でも、経費8万を引けば20万円を超えていない
+  assert.notEqual(t.flag, "over_threshold");
+  // 経費を入れなければ超えていた、という対比
+  const noExpense = summarizeTax({
+    revenueJpy: 250_000,
+    expenseJpy: 0,
+    hasExpenseRecords: true,
+    isEmployee: true,
+  });
+  assert.equal(noExpense.flag, "over_threshold");
+});
+
+test("住民税の申告は、金額に関係なく必ず出す", () => {
+  for (const revenue of [0, 50_000, 500_000]) {
+    const t = summarizeTax({ revenueJpy: revenue, expenseJpy: 0, hasExpenseRecords: true, isEmployee: true });
+    assert.ok(
+      t.warnings.some((w) => /住民税/.test(w)),
+      `売上${revenue}で住民税の注意が出ていない`
+    );
+    assert.ok(t.todo.some((x) => /住民税/.test(x)));
+  }
+});
+
+test("経費が記録されていなければ、そう警告する", () => {
+  const t = summarizeTax({ revenueJpy: 300_000, expenseJpy: 0, hasExpenseRecords: false, isEmployee: true });
+  assert.ok(t.warnings.some((w) => /経費が1件も記録されていません/.test(w)));
+});
+
+test("ラインに近づいたら、超える前に知らせる", () => {
+  const t = summarizeTax({
+    revenueJpy: 190_000,
+    expenseJpy: 0,
+    hasExpenseRecords: true,
+    isEmployee: true,
+  });
+  assert.equal(t.flag, "near_threshold");
+  assert.ok(t.todo.some((x) => /あと 10,000円/.test(x)), JSON.stringify(t.todo));
+});
+
+test("超えていれば確定申告が要ると言う", () => {
+  const t = summarizeTax({
+    revenueJpy: 500_000,
+    expenseJpy: 100_000,
+    hasExpenseRecords: true,
+    isEmployee: true,
+  });
+  assert.equal(t.flag, "over_threshold");
+  assert.ok(t.todo.some((x) => /確定申告が必要/.test(x)));
+});
+
+test("給与所得が無い人には、20万円の特例が使えないと言う", () => {
+  const t = summarizeTax({
+    revenueJpy: 100_000,
+    expenseJpy: 0,
+    hasExpenseRecords: true,
+    isEmployee: false,
+  });
+  assert.ok(t.todo.some((x) => /特例は使えません/.test(x)));
+});
+
+test("目安であることを必ず添える（断定しない）", () => {
+  const t = summarizeTax({ revenueJpy: 500_000, expenseJpy: 0, hasExpenseRecords: true, isEmployee: true });
+  assert.match(t.note, /目安/);
+  assert.match(t.note, /税務署|税理士/);
+});
+
+test("入金がゼロなら、余計なことを言わない", () => {
+  const t = summarizeTax({ revenueJpy: 0, expenseJpy: 0, hasExpenseRecords: false, isEmployee: true });
+  assert.equal(t.flag, "no_records");
+  assert.match(t.note, /最初の1円/);
+});
