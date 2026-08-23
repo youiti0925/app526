@@ -747,6 +747,13 @@ test("相対の納期を日数で読む", () => {
   assert.equal(readDeadline("1ヶ月以内", NOW).days, 30);
 });
 
+test("「か月」の表記ゆれを全部拾う", () => {
+  // 実データの「納期：2か月以内」を取りこぼしていた（ひらがなの「か月」が抜けていた）
+  for (const t of ["納期：2か月以内", "納期：2ヶ月以内", "納期：2カ月以内", "納期 2ケ月", "納期：2箇月"]) {
+    assert.equal(readDeadline(t, NOW).days, 60, t);
+  }
+});
+
 test("絶対の納期を日数で読む", () => {
   assert.equal(readDeadline("納品希望日 2026年9月10日", NOW).days, 18);
 });

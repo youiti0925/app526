@@ -54,8 +54,14 @@ export function readDeadline(text: string, now: Date = new Date()): Deadline {
   }
 
   // 相対: 2週間以内 / 1ヶ月 / 10日以内
-  const rel = t.match(/(?:納期|締切|締め切り|期限|納品|以内|まで).{0,8}?([0-9]{1,3})\s*(日|週間?|ヶ?月|カ月)/) ??
-    t.match(/([0-9]{1,3})\s*(日|週間?|ヶ?月|カ月)\s*(?:以内|程度|ほど|くらい|で)/);
+  // 月の表記ゆれ: ヶ月 / ケ月 / カ月 / か月 / 箇月 / 月
+  // 実データで「納期：2か月以内」を取りこぼしていた（ひらがなの「か月」が抜けていた）
+  const MONTH = "(?:[ヶケカか箇]?月)";
+  const UNIT = new RegExp(`(?:納期|締切|締め切り|期限|納品|以内|まで).{0,8}?([0-9]{1,3})\\s*(日|週間?|${MONTH})`);
+  const UNIT_TRAILING = new RegExp(
+    `([0-9]{1,3})\\s*(日|週間?|${MONTH})\\s*(?:以内|程度|ほど|くらい|で)`
+  );
+  const rel = t.match(UNIT) ?? t.match(UNIT_TRAILING);
   if (rel) {
     const n = num(rel[1]);
     const unit = rel[2];
