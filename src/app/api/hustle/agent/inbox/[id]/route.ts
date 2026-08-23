@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { decideInbox, logEvent, readInboxItem, updateInboxBody, updateLead } from "@/lib/hustle/agent/db";
+import {
+  decideInbox,
+  logEvent,
+  readInboxItem,
+  updateInboxBody,
+  updateLead,
+  upsertPublishedListing,
+} from "@/lib/hustle/agent/db";
 import { updatePath } from "@/lib/hustle/repo";
 import { readPaths } from "@/lib/hustle/db";
 import { generateJson, describeAiError, hasApiKey } from "@/lib/hustle/ai";
@@ -87,6 +94,33 @@ ${item.body.slice(0, 8000)}`,
     const advancesLead = ["proposal", "outreach", "listing", "deliverable"].includes(item.kind);
     if (item.leadId && advancesLead) {
       updateLead(item.leadId, { status: status === "approved" ? "applied" : "lost" });
+    }
+
+    // 出品案を承認したら、出品として記録する。
+    //
+    // ここが抜けていたので、出品の記録テーブルは**一度も書かれていませんでした**。
+    // 読む側（listing-tracker / next-action）は実装されていたのに、
+    // 中身が常に空なので「見られていない出品はありませんか」の確認が
+    // 永久に動かない状態でした。
+    //
+    // 承認は「この内容で出す」という意思表示であって、まだ出品はされていません。
+    // URL と閲覧数は、実際に出したあとに本人が入れます。
+    if (status === "approved" && item.kind === "listing") {
+      const meta = item.meta as { workTypeId?: string; priceJpy?: number };
+      if (typeof meta.workTypeId === "string" && meta.workTypeId) {
+        const listing = upsertPublishedListing({
+          workTypeId: meta.workTypeId,
+          title: item.title.replace(/^出品案:\s*/, "").replace(/（.*$/, ""),
+          platformId: "coconala",
+          priceJpy: typeof meta.priceJpy === "number" ? meta.priceJpy : 0,
+          publishedAt: new Date().toISOString().slice(0, 10),
+          status: "published",
+        });
+        logEvent(item.runId || "manual", "listing", "action", `出品として記録しました: ${listing.title}`, {
+          listingId: listing.id,
+          workTypeId: meta.workTypeId,
+        });
+      }
     }
 
     // 「撤退しますか」を承認したら、実際にチャネルを止める
