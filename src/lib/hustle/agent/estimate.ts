@@ -18,6 +18,8 @@ export interface WorkEstimate {
 
 const num = (s: string): number => Number(s.replace(/,/g, ""));
 
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** 執筆の速度（文字/時）。調査・構成・推敲を含めた実測に近い値。 */
 const CHARS_PER_HOUR = 1200;
 
@@ -54,9 +56,35 @@ export function estimateHours(text: string): WorkEstimate | null {
   const chars = t.match(/([0-9,]{3,7})\s*文字/);
   if (chars) {
     const perItem = num(chars[1]);
-    // 「1記事3000文字、10本」のように単位の目印と本数が両方出るので、
-    // 最初の一致ではなく最大値を本数とみなす（先頭の「1記事」を拾わないため）。
-    const counts = [...t.matchAll(/([0-9,]{1,5})\s*(?:本|記事|ページ|部|通|件|商品|点|枚|個|品|案件|問|コンテンツ)/g)]
+    // 「1記事3000文字、10本」のように、1件あたりの文字数と本数が両方出る。
+    //
+    // 以前はあらゆる単位の最大値を本数にしていたので、
+    // 「実績5件以上の方」「月100件の問い合わせ対応」のような、
+    // 納品数と無関係な数字を本数として拾っていた。
+    //
+    // 「1商品300文字」の直前にある単位（商品）が、その案件の数え方。
+    // それが分かるなら、同じ単位だけを数える。
+    const head = t.slice(Math.max(0, (chars.index ?? 0) - 14), chars.index);
+    const unitWord =
+      head.match(/(?:^|[^0-9])1\s*([^\s0-9、,。／/]{1,6})\s*$/)?.[1] ??
+      head.match(/([^\s0-9、,。／/]{1,6})\s*(?:あたり|当たり|につき)\s*$/)?.[1] ??
+      null;
+
+    // 数え方の単位（商品）と、本数の単位（本）が違うこともある
+    // 「1記事3000文字、10本」。両方を候補にする。
+    const unitRe = new RegExp(
+      `([0-9,]{1,5})\\s*(?:本|記事|ページ|部|通|件|商品|点|枚|個|品|案件|問|コンテンツ${
+        unitWord ? `|${escapeRe(unitWord)}` : ""
+      })`,
+      "g"
+    );
+
+    const counts = [...t.matchAll(unitRe)]
+      // 応募条件や業務量の説明に出てくる数字は、納品数ではない。
+      .filter((m) => {
+        const before = t.slice(Math.max(0, (m.index ?? 0) - 12), m.index);
+        return !/(実績|経験|以上|最低|月間|年間|累計|登録|会員|募集)\s*$/.test(before);
+      })
       .map((m) => num(m[1]))
       // 副業として現実的な数量の上限。超えたら読み間違い。
       .filter((n) => Number.isFinite(n) && n > 0 && n <= 5_000);
@@ -79,11 +107,23 @@ export function estimateHours(text: string): WorkEstimate | null {
   }
 
   // 文字起こし: 音声1分あたり4分（整文込み）
-  const minutes = t.match(/([0-9,]{1,4})\s*分(?:間)?(?:の)?(?:音声|動画|録音|会議)/);
+  const minutes = t.match(/([0-9,]{1,4})\s*分(?:間)?(?:の|ほどの|程度の)?(?:音声|動画|録音|会議|インタビュー|対談)/);
   if (minutes || /(文字起こし|テープ起こし|書き起こし)/.test(t)) {
-    const m = minutes ? num(minutes[1]) : 60;
-    const base = (m * 4) / 60;
-    return withOverhead(base, `音声${m}分 × 4倍（整文込み）として計算`, m ? "medium" : "low");
+    // 本数も読む。「30分の音声を10本」を1本ぶんで見積もっていた。
+    const files = [...t.matchAll(/([0-9,]{1,4})\s*(?:本|ファイル|回分|セッション)/g)]
+      .map((m) => num(m[1]))
+      .filter((n) => Number.isFinite(n) && n > 0 && n <= 1_000);
+    const count = files.length ? Math.max(...files) : 1;
+
+    // 分数が書かれていないときは仮に置く。仮の数字であることを必ず文面に書く。
+    // 以前は「音声60分 × 4倍として計算」とだけ出していたので、
+    // 読み取った数字なのか、こちらが決めた数字なのかが区別できなかった。
+    const perFile = minutes ? num(minutes[1]) : 60;
+    const base = (perFile * 4 * count) / 60;
+    const basis = minutes
+      ? `音声${perFile}分${count > 1 ? ` × ${count}本` : ""} × 4倍（整文込み）として計算`
+      : `分数が書かれていないので、仮に1本60分${count > 1 ? ` × ${count}本` : ""}として計算しました。実際の分数を確認してください。`;
+    return withOverhead(base, basis, minutes ? "medium" : "low");
   }
 
   // 明示的な作業時間・稼働時間

@@ -298,3 +298,95 @@ test("地雷の数だけスコアが下がる", () => {
   assert.ok(risky.score < clean.score);
   assert.ok(risky.score >= 0);
 });
+
+// --- レビュー第3・4弾の回帰 --------------------------------------------------
+
+import { STEP_ORDER } from "../dist-test/agent/types.js";
+import { estimateUnits, estimateByWorkType, stripNonQuantities } from "../dist-test/agent/worktypes.js";
+import { reconcileDiscovery } from "../dist-test/agent/discovery-core.js";
+import { buildRenegotiation } from "../dist-test/agent/renegotiate.js";
+
+test("工程の並び順に listing が含まれる（APIの絞り込みが素通りしない）", () => {
+  // ここが欠けていたせいで only:["listing"] が「該当なし」になり、
+  // 絞り込みが消えて全工程が走っていた。
+  assert.ok(STEP_ORDER.includes("listing"), STEP_ORDER.join(","));
+  assert.equal(STEP_ORDER[0], "ingest");
+  assert.equal(STEP_ORDER[STEP_ORDER.length - 1], "learn");
+});
+
+test("実績や経験の「◯件」を納品本数として数えない", () => {
+  const e = estimateHours("1記事3000文字を5本お願いします。応募には実績50件以上が必要です。");
+  assert.ok(e);
+  // 50件を拾っていたら 3000×50=150,000文字 → 125時間超になる
+  assert.match(e.basis, /× 5本/, e.basis);
+  assert.ok(e.highHours < 30, `high=${e.highHours}`);
+});
+
+test("文字起こしの分数が書かれていないとき、仮の数字だと明示する", () => {
+  const e = estimateHours("会議の文字起こしをお願いします。");
+  assert.ok(e);
+  assert.match(e.basis, /仮に/, e.basis);
+  assert.equal(e.confidence, "low");
+});
+
+test("文字起こしの本数を無視しない", () => {
+  const one = estimateHours("30分の音声の文字起こしをお願いします。");
+  const ten = estimateHours("30分の音声の文字起こしを10本お願いします。");
+  assert.ok(one && ten);
+  assert.ok(ten.highHours > one.highHours * 5, `${one.highHours} → ${ten.highHours}`);
+});
+
+test("10万文字のような大きな数量を、ID とみなして消さない", () => {
+  // 5桁以上を一律に消していたので、100000文字が読めず
+  // 1単位（1,000文字）として計算していた。100倍の過小見積り。
+  assert.match(stripNonQuantities("100000文字の翻訳"), /100000文字/);
+  // ID や年号は今までどおり消える
+  assert.doesNotMatch(stripNonQuantities("求人ID 1234567 の件"), /1234567/);
+  assert.doesNotMatch(stripNonQuantities("ISO9001 の整備"), /9001/);
+});
+
+test("工程表から直接数える（合成文を判定器に通さない）", () => {
+  const sds = estimateByWorkType("SDSの作成をお願いします。20物質分です。");
+  assert.ok(sds, "SDS と判定できていない");
+  const one = estimateUnits(sds.workType, 1);
+  const ten = estimateUnits(sds.workType, 10);
+  assert.ok(one.aiHours > 0);
+  // 1単位4時間という根拠の無い既定値に落ちていないこと
+  assert.notEqual(one.aiHours, 4);
+  assert.ok(Math.abs(ten.aiHours - one.aiHours * 10) < 0.6, `${one.aiHours} → ${ten.aiHours}`);
+  assert.equal(ten.units, 10);
+});
+
+test("知らないプラットフォームを手数料0%で計算しない", () => {
+  const finding = {
+    platformId: "しらないサイト",
+    priceJpy: { low: 10_000, high: 10_000 },
+    estimatedHours: { low: 5, high: 5 },
+  };
+  const unknown = reconcileDiscovery(finding, 1000);
+  const direct = reconcileDiscovery({ ...finding, platformId: "direct" }, 1000);
+  assert.ok(unknown.hourlyJpy && direct.hourlyJpy);
+  // 手数料0%（direct）より必ず低く出る
+  assert.ok(unknown.hourlyJpy.high < direct.hourlyJpy.high, `${unknown.hourlyJpy.high} vs ${direct.hourlyJpy.high}`);
+  assert.match(unknown.note, /手数料が分からない/);
+});
+
+test("相場を1単位あたりのまま案件全体の相場として書かない", () => {
+  const breakdown = estimateByWorkType("SDSの作成をお願いします。20物質分です。");
+  assert.ok(breakdown, "SDS と判定できていない");
+  assert.equal(breakdown.units, 20);
+
+  const r = buildRenegotiation({
+    title: "SDS作成",
+    offeredJpy: 30_000,
+    hours: breakdown.aiHours,
+    minHourlyJpy: 1500,
+    platform: { feeRate: 0.2, withdrawalFeeJpy: 500, name: "クラウドワークス" },
+    breakdown,
+    marketRateJpy: breakdown.workType.marketRateJpy,
+  });
+  assert.ok(r);
+  // 1物質15,000円をそのまま「相場」と書いていた。20物質なら30万円台。
+  assert.match(r.message, /1物質あたり/, r.message);
+  assert.match(r.message, /300,000/, r.message);
+});
