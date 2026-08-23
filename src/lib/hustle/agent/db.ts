@@ -15,6 +15,8 @@ import {
 } from "./types";
 // 型だけ。discovery.ts はこのファイルの関数を呼ぶので、値を取り込むと循環する。
 import type { Discovery, DiscoveryChannel } from "./discovery-core";
+import type { DryRun, DryRunStatus, Grade } from "./dryrun-core";
+import type { Capability } from "./deliverability";
 
 let initialized = false;
 
@@ -92,6 +94,23 @@ export function getAgentDb(): Database.Database {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS hustle_dryruns (
+      id TEXT PRIMARY KEY,
+      lead_id TEXT,
+      source_url TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      genre TEXT NOT NULL,
+      requirement TEXT NOT NULL DEFAULT '',
+      deliverable_spec TEXT NOT NULL DEFAULT '',
+      artifact TEXT NOT NULL DEFAULT '',
+      artifact_path TEXT NOT NULL DEFAULT '',
+      method TEXT NOT NULL DEFAULT '',
+      blocked_reason TEXT NOT NULL DEFAULT '',
+      grade TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_agent_events_run ON hustle_agent_events(run_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_leads_status ON hustle_leads(status, score DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_external ON hustle_leads(source, external_id)
@@ -99,6 +118,8 @@ export function getAgentDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_inbox_status ON hustle_agent_inbox(status, priority DESC, created_at DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_discoveries_key ON hustle_discoveries(key);
     CREATE INDEX IF NOT EXISTS idx_discoveries_status ON hustle_discoveries(status, meets_bar DESC, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_dryruns_genre ON hustle_dryruns(genre, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_dryruns_status ON hustle_dryruns(status, created_at DESC);
   `);
 
   initialized = true;
@@ -641,4 +662,122 @@ export function setDiscoveryStatus(id: string, status: Discovery["status"]): Dis
     | DiscoveryRow
     | undefined;
   return row ? toDiscovery(row) : null;
+}
+
+
+// --- 試作 -------------------------------------------------------------------
+
+interface DryRunRow {
+  id: string;
+  lead_id: string | null;
+  source_url: string;
+  title: string;
+  genre: string;
+  requirement: string;
+  deliverable_spec: string;
+  artifact: string;
+  artifact_path: string;
+  method: string;
+  blocked_reason: string;
+  grade: string | null;
+  status: string;
+  created_at: string;
+}
+
+const toDryRun = (r: DryRunRow): DryRun => ({
+  id: r.id,
+  leadId: r.lead_id,
+  sourceUrl: r.source_url,
+  title: r.title,
+  genre: r.genre as Capability,
+  requirement: r.requirement,
+  deliverableSpec: r.deliverable_spec,
+  artifact: r.artifact,
+  artifactPath: r.artifact_path,
+  method: r.method,
+  blockedReason: r.blocked_reason,
+  grade: r.grade ? parse<Grade | null>(r.grade, null) : null,
+  status: r.status as DryRunStatus,
+  createdAt: r.created_at,
+});
+
+export function insertDryRun(
+  input: Omit<DryRun, "id" | "createdAt" | "status" | "grade" | "artifact" | "artifactPath" | "method" | "blockedReason">
+): DryRun {
+  const db = getAgentDb();
+  const row: DryRunRow = {
+    id: newId(),
+    lead_id: input.leadId,
+    source_url: input.sourceUrl,
+    title: input.title,
+    genre: input.genre,
+    requirement: input.requirement,
+    deliverable_spec: input.deliverableSpec,
+    artifact: "",
+    artifact_path: "",
+    method: "",
+    blocked_reason: "",
+    grade: null,
+    status: "pending",
+    created_at: now(),
+  };
+  db.prepare(
+    `INSERT INTO hustle_dryruns
+       (id, lead_id, source_url, title, genre, requirement, deliverable_spec,
+        artifact, artifact_path, method, blocked_reason, grade, status, created_at)
+     VALUES (@id, @lead_id, @source_url, @title, @genre, @requirement, @deliverable_spec,
+        @artifact, @artifact_path, @method, @blocked_reason, @grade, @status, @created_at)`
+  ).run(row);
+  return toDryRun(row);
+}
+
+export function readDryRuns(status?: DryRunStatus, limit = 100): DryRun[] {
+  const db = getAgentDb();
+  const rows = (
+    status
+      ? db.prepare("SELECT * FROM hustle_dryruns WHERE status = ? ORDER BY created_at DESC LIMIT ?").all(status, limit)
+      : db.prepare("SELECT * FROM hustle_dryruns ORDER BY created_at DESC LIMIT ?").all(limit)
+  ) as DryRunRow[];
+  return rows.map(toDryRun);
+}
+
+export function readDryRun(id: string): DryRun | null {
+  const row = getAgentDb().prepare("SELECT * FROM hustle_dryruns WHERE id = ?").get(id) as DryRunRow | undefined;
+  return row ? toDryRun(row) : null;
+}
+
+/** すでに試作したジャンル（同じジャンルを何度も試さないため）。 */
+export function readTestedGenres(): Set<string> {
+  const rows = getAgentDb()
+    .prepare("SELECT DISTINCT genre FROM hustle_dryruns WHERE status != 'pending'")
+    .all() as { genre: string }[];
+  return new Set(rows.map((r) => r.genre));
+}
+
+export function saveArtifact(
+  id: string,
+  fields: { artifact: string; method: string; blockedReason: string; artifactPath?: string }
+): DryRun | null {
+  getAgentDb()
+    .prepare(
+      `UPDATE hustle_dryruns
+       SET artifact = ?, method = ?, blocked_reason = ?, artifact_path = ?, status = ?
+       WHERE id = ?`
+    )
+    .run(
+      fields.artifact,
+      fields.method,
+      fields.blockedReason,
+      fields.artifactPath ?? "",
+      fields.blockedReason && !fields.artifact ? "skipped" : "produced",
+      id
+    );
+  return readDryRun(id);
+}
+
+export function saveGrade(id: string, grade: Grade): DryRun | null {
+  getAgentDb()
+    .prepare("UPDATE hustle_dryruns SET grade = ?, status = 'graded' WHERE id = ?")
+    .run(JSON.stringify(grade), id);
+  return readDryRun(id);
 }

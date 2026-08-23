@@ -5,6 +5,9 @@
  *
  *   npm run claude-batch                 # 判定を回す
  *   npm run claude-batch -- --discover   # 市場を探しに行く
+ *   npm run claude-batch -- --produce    # 実案件の成果物を実際に作らせる（試作）
+ *   npm run claude-batch -- --grade      # 作られた成果物を採点する
+ *   npm run claude-batch -- --trial      # 試作 → 採点 を続けて回す
  *   npm run claude-batch -- --dry-run    # 指示書を表示するだけ（何も呼ばない）
  *
  * 環境変数:
@@ -29,6 +32,10 @@ const LIMIT = Math.max(1, Math.min(20, Number(process.env.BATCH_LIMIT ?? 10)));
 const WANT = Math.max(1, Math.min(20, Number(process.env.DISCOVER_WANT ?? 6)));
 const DRY_RUN = process.argv.includes("--dry-run");
 const DISCOVER = process.argv.includes("--discover");
+const PRODUCE = process.argv.includes("--produce");
+const GRADE = process.argv.includes("--grade");
+const TRIAL = process.argv.includes("--trial");
+const TRIAL_LIMIT = Math.max(1, Math.min(10, Number(process.env.TRIAL_LIMIT ?? 4)));
 
 const stamp = () => new Date().toLocaleString("ja-JP");
 const log = (...a) => console.log(`[${stamp()}]`, ...a);
@@ -113,6 +120,55 @@ const DISCOVERY_SCHEMA = {
   required: ["findings"],
 };
 
+/** 試作: 実際に成果物を作らせる。 */
+const PRODUCE_SCHEMA = {
+  type: "object",
+  properties: {
+    results: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          dryRunId: { type: "string" },
+          artifact: { type: "string" },
+          method: { type: "string" },
+          humanStepsLeft: { type: "array", items: { type: "string" } },
+          humanHoursLeft: { type: "number" },
+          blocked: { type: "string" },
+          selfDoubt: { type: "string" },
+        },
+        required: ["dryRunId", "artifact", "method", "humanHoursLeft", "blocked"],
+      },
+    },
+  },
+  required: ["results"],
+};
+
+/** 採点: 依頼者の立場で見る。 */
+const GRADE_SCHEMA = {
+  type: "object",
+  properties: {
+    grades: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          dryRunId: { type: "string" },
+          meetsRequirement: { type: "number" },
+          deliverable: { type: "boolean" },
+          gaps: { type: "array", items: { type: "string" } },
+          humanHoursNeeded: { type: "number" },
+          needsFactCheck: { type: "array", items: { type: "string" } },
+          verdict: { type: "string", enum: ["pass", "needs_work", "fail", "cannot_produce"] },
+          reason: { type: "string" },
+        },
+        required: ["dryRunId", "meetsRequirement", "deliverable", "humanHoursNeeded", "verdict", "reason"],
+      },
+    },
+  },
+  required: ["grades"],
+};
+
 /** モードごとの違いはここに閉じ込める。 */
 const MODES = {
   triage: {
@@ -156,9 +212,59 @@ const MODES = {
       log("結果は /hustle/discovery で見られます。");
     },
   },
+  produce: {
+    label: "試作",
+    briefUrl: `${BASE}/api/hustle/agent/dryrun?phase=produce&limit=${TRIAL_LIMIT}`,
+    postUrl: `${BASE}/api/hustle/agent/dryrun`,
+    schema: PRODUCE_SCHEMA,
+    // 実際に作って動かして確かめる必要があるので、ツールを広く許可する。
+    // ただし書き込みは作業ディレクトリの中だけ。
+    allowedTools: "WebSearch,WebFetch,Read,Write,Edit,Glob,Grep,Bash",
+    maxTurns: 120,
+    emptyBrief: "試作する案件がありません",
+    countBrief: (brief) => (brief.match(/^## 試作 /gm) ?? []).length,
+    key: "results",
+    extraBody: { phase: "produce" },
+    report(applied, items) {
+      log(`${applied.saved}件の成果物を記録しました`);
+      for (const r of items) {
+        const state = r.blocked ? `作れず（${String(r.blocked).slice(0, 40)}）` : `${String(r.artifact).length}文字`;
+        log(`  ${state} / 人の残作業 ${r.humanHoursLeft}時間`);
+      }
+      log("採点するには: npm run claude-batch -- --grade");
+    },
+  },
+  grade: {
+    label: "採点",
+    briefUrl: `${BASE}/api/hustle/agent/dryrun?phase=grade&limit=${TRIAL_LIMIT}`,
+    postUrl: `${BASE}/api/hustle/agent/dryrun`,
+    schema: GRADE_SCHEMA,
+    // 採点は事実確認のために外を見るだけ。作らせない。
+    allowedTools: "WebSearch,WebFetch",
+    maxTurns: 60,
+    emptyBrief: "採点する成果物がありません",
+    countBrief: (brief) => (brief.match(/^## 成果物 /gm) ?? []).length,
+    key: "grades",
+    extraBody: { phase: "grade" },
+    report(applied, items) {
+      log(`${applied.saved}件を採点しました`);
+      for (const g of items) {
+        log(`  ${String(g.verdict).padEnd(14)} 要求充足 ${g.meetsRequirement}点 / 人の残作業 ${g.humanHoursNeeded}時間`);
+        if (g.reason) log(`    ${String(g.reason).slice(0, 100)}`);
+      }
+      for (const o of applied.overrides ?? []) log(`  検算で上書き: ${o.note}`);
+      log("結果は /hustle/dryrun で見られます。");
+    },
+  },
 };
 
-const mode = DISCOVER ? MODES.discover : MODES.triage;
+const mode = PRODUCE
+  ? MODES.produce
+  : GRADE
+    ? MODES.grade
+    : DISCOVER
+      ? MODES.discover
+      : MODES.triage;
 
 function run(cmd, args, stdin) {
   return new Promise((resolve) => {
@@ -192,89 +298,121 @@ function parseLoose(text) {
   return null;
 }
 
-const brief = await fetch(mode.briefUrl)
-  .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))
-  .catch((e) => {
-    console.error(`アプリに接続できません (${BASE}): ${e.message}`);
-    console.error(`  ${BASE} で 'npm run dev' か 'npm start' が動いているか確認してください。`);
-    process.exit(1);
-  });
+async function runMode(mode) {
+  const brief = await fetch(mode.briefUrl)
+    .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))
+    .catch((e) => {
+      console.error(`アプリに接続できません (${BASE}): ${e.message}`);
+      console.error(`  ${BASE} で 'npm run dev' か 'npm start' が動いているか確認してください。`);
+      process.exit(1);
+    });
 
-if (mode.emptyBrief && brief.startsWith(mode.emptyBrief)) {
-  log(`${mode.label}に回すものはありません。`);
-  process.exit(0);
-}
+  if (mode.emptyBrief && brief.startsWith(mode.emptyBrief)) {
+    log(`${mode.label}に回すものはありません。`);
+    return false;
+  }
 
-log(`${mode.label}: ${mode.countBrief(brief)}件を ${CLAUDE} に回します。`);
+  log(`${mode.label}: ${mode.countBrief(brief)}件を ${CLAUDE} に回します。`);
 
-if (DRY_RUN) {
-  console.log("\n" + brief);
-  process.exit(0);
-}
+  if (DRY_RUN) {
+    console.log("\n" + brief);
+    return false;
+  }
 
-const args = [
-  "--bare", // CLAUDE.md やフックを読まない。バッチの再現性のため。
-  "-p",
-  "--output-format", "json",
-  "--json-schema", JSON.stringify(mode.schema),
-  // 必要な最小限だけ許可する。bypassPermissions は使わない。
-  "--permission-mode", "dontAsk",
-  "--allowedTools", mode.allowedTools,
-  "--max-turns", String(mode.maxTurns),
-];
-if (process.env.CLAUDE_MODEL) args.push("--model", process.env.CLAUDE_MODEL);
-if (process.env.MAX_BUDGET_USD) args.push("--max-budget-usd", process.env.MAX_BUDGET_USD);
+  const args = [
+    "--bare", // CLAUDE.md やフックを読まない。バッチの再現性のため。
+    "-p",
+    "--output-format", "json",
+    "--json-schema", JSON.stringify(mode.schema),
+    // 必要な最小限だけ許可する。bypassPermissions は使わない。
+    "--permission-mode", "dontAsk",
+    "--allowedTools", mode.allowedTools,
+    "--max-turns", String(mode.maxTurns),
+  ];
+  if (process.env.CLAUDE_MODEL) args.push("--model", process.env.CLAUDE_MODEL);
+  if (process.env.MAX_BUDGET_USD) args.push("--max-budget-usd", process.env.MAX_BUDGET_USD);
 
-log(`${CLAUDE} を起動します…`);
-const { code, out, err } = await run(CLAUDE, args, brief);
+  log(`${CLAUDE} を起動します…`);
+  const { code, out, err } = await run(CLAUDE, args, brief);
 
-if (code !== 0) {
-  if (/ENOENT/.test(err)) {
-    console.error(`\`${CLAUDE}\` が見つかりません。`);
-    console.error("  Claude Code をインストールしてから、一度 `claude` を対話で起動して /login してください。");
-    console.error("  別の場所にある場合は CLAUDE_BIN でパスを指定できます。");
+  if (code !== 0) {
+    if (/ENOENT/.test(err)) {
+      console.error(`\`${CLAUDE}\` が見つかりません。`);
+      console.error("  Claude Code をインストールしてから、一度 `claude` を対話で起動して /login してください。");
+      console.error("  別の場所にある場合は CLAUDE_BIN でパスを指定できます。");
+      process.exit(1);
+    }
+    // 失敗時も JSON が返ってくることがあり、本当の原因はその中にある。
+    // ここを読まずに exit コードだけで説明すると、認証エラーを
+    // 「権限の拒否・不正なフラグ」と誤って案内することになる（実際にそうなった）。
+    const failure = parseLoose(out);
+    const detail = typeof failure?.result === "string" ? failure.result : "";
+
+    console.error(`claude が異常終了しました (exit ${code})`);
+    if (detail) console.error(`  ${detail}`);
+
+    if (/Authentication|認証/i.test(detail) || code === 2) {
+      console.error("  一度 `claude` を対話で起動して /login してください。");
+      console.error("  サブスクで動くので、APIクレジットの購入は要りません。");
+    } else if (code === 1 && !detail) {
+      console.error("  権限の拒否・不正なフラグ・入力なし、のいずれかです。");
+    }
+    if (failure?.permission_denials?.length) {
+      console.error(`  拒否されたツール: ${JSON.stringify(failure.permission_denials).slice(0, 500)}`);
+    }
+    if (err.trim()) console.error(err.trim().slice(0, 2000));
+    process.exit(code === -1 ? 1 : code);
+  }
+
+  const envelope = parseLoose(out);
+  if (envelope?.is_error) {
+    console.error(`claude がエラーを返しました: ${envelope.result ?? "（詳細なし）"}`);
     process.exit(1);
   }
-  console.error(`claude が異常終了しました (exit ${code})`);
-  if (code === 1) console.error("  権限の拒否・不正なフラグ・入力なし、のいずれかです。");
-  if (code === 2) console.error("  コスト上限に達したか、認証に失敗しています。`claude` を対話で起動して /login を試してください。");
-  if (err.trim()) console.error(err.trim().slice(0, 2000));
-  process.exit(code === -1 ? 1 : code);
+  if (!envelope) {
+    console.error("claude の出力を解釈できませんでした。");
+    console.error(out.slice(0, 2000));
+    process.exit(1);
+  }
+
+  if (envelope.total_cost_usd !== undefined) {
+    log(`コスト: $${Number(envelope.total_cost_usd).toFixed(4)}`);
+  }
+
+  // --json-schema を使うと structured_output に入る。素の result のこともある。
+  const payload =
+    envelope.structured_output ??
+    (typeof envelope.result === "string" ? parseLoose(envelope.result) : envelope.result) ??
+    envelope;
+
+  const items = payload?.[mode.key];
+  if (!Array.isArray(items) || items.length === 0) {
+    console.error(`${mode.label}の結果が1件も返ってきませんでした。`);
+    console.error(JSON.stringify(payload).slice(0, 1500));
+    process.exit(1);
+  }
+
+  const applied = await fetch(mode.postUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...(mode.extraBody ?? {}), [mode.key]: items }),
+  }).then((r) => r.json());
+
+  if (applied.error) {
+    console.error(`書き戻しに失敗しました: ${applied.error}`);
+    process.exit(1);
+  }
+
+  mode.report(applied, items);
+  return true;
 }
 
-const envelope = parseLoose(out);
-if (!envelope) {
-  console.error("claude の出力を解釈できませんでした。");
-  console.error(out.slice(0, 2000));
-  process.exit(1);
+if (TRIAL) {
+  // 試作と採点は必ず別プロセスで回す。同じ文脈で採点させると、
+  // 自分が作ったものなので甘い点がつく。
+  log("試作 → 採点 を続けて回します。");
+  const produced = await runMode(MODES.produce);
+  if (produced) await runMode(MODES.grade);
+} else {
+  await runMode(mode);
 }
-
-if (envelope.total_cost_usd !== undefined) {
-  log(`コスト: $${Number(envelope.total_cost_usd).toFixed(4)}`);
-}
-
-// --json-schema を使うと structured_output に入る。素の result のこともある。
-const payload =
-  envelope.structured_output ??
-  (typeof envelope.result === "string" ? parseLoose(envelope.result) : envelope.result) ??
-  envelope;
-
-const items = payload?.[mode.key];
-if (!Array.isArray(items) || items.length === 0) {
-  console.error(`${mode.label}の結果が1件も返ってきませんでした。`);
-  console.error(JSON.stringify(payload).slice(0, 1500));
-  process.exit(1);
-}
-
-const applied = await fetch(mode.postUrl, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ [mode.key]: items }),
-}).then((r) => r.json());
-
-if (applied.error) {
-  console.error(`書き戻しに失敗しました: ${applied.error}`);
-  process.exit(1);
-}
-
-mode.report(applied, items);
