@@ -10,7 +10,8 @@
     "lint": "next lint",
     "test": "tsc -p tsconfig.test.json && TZ=UTC node --test tests/*.test.mjs && TZ=Asia/Tokyo node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
-    "agent": "node scripts/agent-daemon.mjs"
+    "agent": "node scripts/agent-daemon.mjs",
+    "claude-batch": "node scripts/claude-batch.mjs"
   },
   "repository": {
     "type": "git",

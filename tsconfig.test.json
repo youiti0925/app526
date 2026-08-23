@@ -22,6 +22,7 @@
     "src/lib/hustle/templates.ts",
     "src/lib/hustle/agent/estimate.ts",
     "src/lib/hustle/agent/ingest.ts",
-    "src/lib/hustle/agent/budget.ts"
+    "src/lib/hustle/agent/budget.ts",
+    "src/lib/hustle/agent/reconcile.ts"
   ]
 }

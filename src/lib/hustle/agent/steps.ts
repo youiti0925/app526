@@ -6,6 +6,7 @@ import { upsertTask } from "../repo";
 import { getTemplate } from "../templates";
 import { generateJson, hasApiKey, describeAiError } from "../ai";
 import { detectScopeRisks, estimateHours, type WorkEstimate } from "./estimate";
+import { needsEscalation } from "./escalation";
 import { fetchFeed, leadFromParsed } from "./ingest";
 import {
   insertLead,
@@ -109,6 +110,7 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
   let triaged = 0;
   let rejected = 0;
   let queued = 0;
+  let escalated = 0;
 
   const sorted = [...pending].sort((a, b) => (b.budgetJpy ?? 0) - (a.budgetJpy ?? 0));
 
@@ -184,24 +186,32 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     const rateScore = hourly ? Math.min(100, (hourly.low / Math.max(1, minHourly)) * 60) : 25;
     const score = Math.max(0, Math.round(rateScore - scam.score * 0.6 - risks.length * 4));
 
+    const triageData = {
+      scamScore: scam.score,
+      scamVerdict: scam.verdict,
+      scamSignals: scam.signals.map((s) => ({ label: s.label, weight: s.weight })),
+      estimate,
+      estimatedBy,
+      hourly,
+      risks,
+      fitNotes,
+      reason,
+      minHourlyJpy: minHourly,
+    };
+
+    // ルールでも無料枠のAIでも判定しきれなかったものは、上位モデルに回す。
+    // 詐欺で確実に落とせるものは回さない（回す価値がないため）。
+    const escalationReasons = verdict === "reject" && scam.verdict === "danger" ? [] : needsEscalation(triageData);
+
     updateLead(lead.id, {
-      status: verdict === "reject" ? "rejected" : "triaged",
+      status: verdict === "reject" && escalationReasons.length === 0 ? "rejected" : "triaged",
       score,
       verdict,
       budgetJpy: offered,
-      triage: {
-        scamScore: scam.score,
-        scamVerdict: scam.verdict,
-        scamSignals: scam.signals.map((s) => ({ label: s.label, weight: s.weight })),
-        estimate,
-        estimatedBy,
-        hourly,
-        risks,
-        fitNotes,
-        reason,
-        minHourlyJpy: minHourly,
-      },
+      triage: { ...triageData, escalationReasons },
     });
+
+    if (escalationReasons.length > 0) escalated++;
 
     triaged++;
     if (verdict === "reject") rejected++;
@@ -239,7 +249,18 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
   }
 
   ctx.log("info", `${triaged}件を判定し、${rejected}件を除外しました（AI使用 ${aiUsed}回）`);
-  return { summary: `${triaged}件判定・${rejected}件除外`, triaged, queued };
+  if (escalated > 0) {
+    ctx.log(
+      "warn",
+      `${escalated}件は手元のルールでは判定できませんでした。上位モデルに回してください（npm run claude-batch）`,
+      { escalated }
+    );
+  }
+  return {
+    summary: `${triaged}件判定・${rejected}件除外${escalated > 0 ? `・${escalated}件は判定保留` : ""}`,
+    triaged,
+    queued,
+  };
 }
 
 const labelVerdict = (v: Lead["verdict"]): string =>
@@ -255,6 +276,11 @@ interface ProposalOut {
 
 export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
   const candidates = readLeads("triaged", 50)
+    .filter((l) => {
+      const t = l.triage as { escalationReasons?: unknown[] };
+      // 上位モデルの判定待ちのものは、ここで雑な下書きを作らない
+      return (t.escalationReasons?.length ?? 0) === 0;
+    })
     .filter((l) => l.verdict === "proceed" || l.verdict === "verify_first")
     .sort((a, b) => b.score - a.score)
     .slice(0, ctx.config.maxDraftsPerRun);

@@ -218,3 +218,83 @@ test("時給が最低賃金を大きく割る案件を見逃さない", () => {
   const netPerHour = 5000 / e.highHours;
   assert.ok(netPerHour < 200, `時給 ${Math.round(netPerHour)}円 と出るはず`);
 });
+
+// --- 上位モデルの判定の検算 --------------------------------------------------
+// ここは安全上の要。返ってきた結論より、金額と時間から計算した数字を優先する。
+
+import { reconcileVerdict } from "../dist-test/agent/reconcile.js";
+
+const CW = { feeRate: 0.2, withdrawalFeeJpy: 500 };
+const base = {
+  verdict: "proceed",
+  reason: "いけます",
+  riskCount: 0,
+  minHourlyJpy: 1121,
+  platform: CW,
+};
+
+test("時給が基準を割るなら、proceed と返ってきても reject に上書きする", () => {
+  const r = reconcileVerdict({ ...base, offeredJpy: 8000, lowHours: 30, highHours: 45 });
+  // 8,000円 − 手数料1,600円 − 振込500円 = 5,900円 ÷ 45h = 131円/h
+  assert.equal(r.verdict, "reject");
+  assert.equal(r.overridden, true);
+  assert.equal(r.hourly.low, 131);
+  assert.match(r.reason, /元の判定: proceed/, "上書きした事実を残す");
+});
+
+test("下限だけ割っているなら reject ではなく verify_first に落とす", () => {
+  // 20,000円 → 手取り15,500円。10hなら1,550円/h、15hなら1,033円/h。
+  const r = reconcileVerdict({ ...base, offeredJpy: 20000, lowHours: 10, highHours: 15 });
+  assert.equal(r.verdict, "verify_first");
+  assert.equal(r.overridden, true);
+  assert.ok(r.hourly.low < 1121 && r.hourly.high >= 1121);
+});
+
+test("数字が足りているなら結論を変えない", () => {
+  const r = reconcileVerdict({ ...base, offeredJpy: 60000, lowHours: 12, highHours: 18 });
+  assert.equal(r.verdict, "proceed");
+  assert.equal(r.overridden, false);
+  assert.ok(r.hourly.low >= 1121);
+});
+
+test("reject をわざわざ緩めることはしない", () => {
+  const r = reconcileVerdict({
+    ...base,
+    verdict: "reject",
+    reason: "資格が要る",
+    offeredJpy: 200000,
+    lowHours: 2,
+    highHours: 3,
+  });
+  assert.equal(r.verdict, "reject", "時給が高くても reject は維持する");
+  assert.equal(r.overridden, false);
+  assert.equal(r.reason, "資格が要る");
+});
+
+test("報酬額が分からないときは検算せず、結論をそのまま通す", () => {
+  const r = reconcileVerdict({ ...base, offeredJpy: null, lowHours: 10, highHours: 20 });
+  assert.equal(r.hourly, null);
+  assert.equal(r.verdict, "proceed");
+  assert.equal(r.overridden, false);
+  assert.equal(r.score, 25, "判定できないときは中間のスコアにする");
+});
+
+test("壊れた数値でも落ちない", () => {
+  for (const bad of [
+    { offeredJpy: Number.NaN, lowHours: 10, highHours: 20 },
+    { offeredJpy: 10000, lowHours: Number.NaN, highHours: 20 },
+    { offeredJpy: 10000, lowHours: 10, highHours: 0 },
+    { offeredJpy: -5000, lowHours: 10, highHours: 20 },
+  ]) {
+    const r = reconcileVerdict({ ...base, ...bad });
+    assert.equal(r.hourly, null, JSON.stringify(bad));
+    assert.ok(Number.isFinite(r.score));
+  }
+});
+
+test("地雷の数だけスコアが下がる", () => {
+  const clean = reconcileVerdict({ ...base, offeredJpy: 60000, lowHours: 12, highHours: 18 });
+  const risky = reconcileVerdict({ ...base, offeredJpy: 60000, lowHours: 12, highHours: 18, riskCount: 5 });
+  assert.ok(risky.score < clean.score);
+  assert.ok(risky.score >= 0);
+});
