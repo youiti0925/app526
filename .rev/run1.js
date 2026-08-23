@@ -1,0 +1,24 @@
+const Database=require('better-sqlite3');
+const B='/home/user/app526/dist-test/';
+const {scoreScam}=require(B+'scam-rules.js');
+const {judgeDeliverability}=require(B+'agent/deliverability.js');
+const {readCompetition}=require(B+'agent/competition.js');
+const {readEngagement}=require(B+'agent/engagement.js');
+const {estimateByWorkType,describeWorkType}=require(B+'agent/worktypes.js');
+const db=new Database('/home/user/app526/data/videosop.db',{readonly:true});
+const rows=db.prepare('select id,source,title,raw_text,budget_jpy from hustle_leads').all();
+rows.forEach((r,i)=>{
+  const t=(r.title||'')+'\n'+(r.raw_text||'');
+  const s=scoreScam(t);
+  const d=judgeDeliverability(t);
+  const c=readCompetition(t);
+  const e=readEngagement(t, r.budget_jpy);
+  const w=estimateByWorkType(t);
+  console.log('=== #'+i, (r.title||'').slice(0,50));
+  console.log('  scam:', s.score, s.verdict, s.signals.map(x=>x.id+'('+x.weight+')').join(','));
+  s.signals.forEach(x=>console.log('     >',x.id,'::',x.excerpt));
+  console.log('  deliver:', d.canDeliver, 'matched='+d.matched.join(','), 'blockers='+JSON.stringify(d.blockers.map(b=>b.slice(0,30))));
+  console.log('  comp:', JSON.stringify({a:c.applicants,v:c.views,s:c.slots}));
+  console.log('  eng:', e.kind, e.monthlyJpy, e.hourlyJpy, 'hrs='+e.monthlyHours, 'dpw='+e.daysPerWeek, e.onsite);
+  console.log('  worktype:', w? w.workType.id+' units='+w.units+' read='+w.unitsRead : null);
+});

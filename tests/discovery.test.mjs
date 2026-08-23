@@ -659,3 +659,74 @@ test("出品文には、出品前に人が確認すべきことを添える", ()
   assert.match(md, /出品前に確認してください/);
   assert.match(md, /自動出品は各サービスの規約違反/);
 });
+
+// ---------------------------------------------------------------------------
+// ライセンス
+// 「作れる」と「納品してよい」は別。出来が良くても規約違反なら納品できない。
+// ---------------------------------------------------------------------------
+
+const lic = await import("../dist-test/agent/licenses.js");
+const del = await import("../dist-test/agent/deliverability.js");
+const { TOOL_LICENSES, obligationsFor, blockedTools, freeCommercialTools } = lic;
+const { judgeDeliverability } = del;
+
+test("すべてのライセンスに、根拠の引用と出典がある", () => {
+  for (const l of TOOL_LICENSES) {
+    assert.ok(l.quote.length > 20, `${l.id}: 引用が薄い`);
+    assert.match(l.sourceUrl, /^https:\/\//, `${l.id}: 出典が無い`);
+    assert.match(l.checkedOn, /^\d{4}-\d{2}-\d{2}$/, `${l.id}: 確認日が無い`);
+  }
+});
+
+test("確認していないツールは、使えないものとして扱う", () => {
+  // 「たぶん大丈夫」で通すと、納品してから規約違反が分かる
+  assert.deepEqual(obligationsFor(["知らないツール"]), [
+    "知らないツール: ライセンスを確認していません。使う前に規約を読んでください。",
+  ]);
+  assert.equal(blockedTools(["知らないツール"]).length, 1);
+});
+
+test("商用禁止のツールは blockedTools が拾う", () => {
+  const blocked = blockedTools(["flux_dev"]);
+  assert.equal(blocked.length, 1);
+  assert.match(blocked[0].why, /Non-Commercial/);
+});
+
+test("規約を確認していないツールも弾く（たぶん大丈夫で通さない）", () => {
+  const blocked = blockedTools(["gcloud_tts"]);
+  assert.equal(blocked.length, 1, "unverified は使えない扱いにする");
+  assert.match(blocked[0].why, /確認していません/);
+});
+
+test("条件つき（restricted）は弾かず、条件を出す", () => {
+  assert.equal(blockedTools(["gemini_free"]).length, 0);
+  const o = obligationsFor(["gemini_free"]);
+  assert.ok(o.some((x) => /機密/.test(x)), JSON.stringify(o));
+});
+
+test("ffmpeg は成果物に義務が無い（配布しないため）", () => {
+  assert.deepEqual(obligationsFor(["ffmpeg"]), []);
+  assert.equal(blockedTools(["ffmpeg"]).length, 0);
+});
+
+test("VOICEVOX Nemo はクレジット表記の義務を出す", () => {
+  const o = obligationsFor(["voicevox_nemo"]);
+  assert.ok(o.some((x) => /クレジット/.test(x)), JSON.stringify(o));
+  assert.equal(blockedTools(["voicevox_nemo"]).length, 0);
+});
+
+test("無料で商用に使えるツールに、課金が要るものが混ざらない", () => {
+  for (const t of freeCommercialTools()) {
+    assert.equal(t.costJpy, 0, `${t.id} は無料ではない`);
+    assert.ok(["ok", "ok_with_credit"].includes(t.commercial), t.id);
+  }
+});
+
+test("ナレーション付きの動画案件が、クレジット義務つきで通る", () => {
+  const r = judgeDeliverability(
+    "YouTube動画の編集をお願いします。カット、テロップ挿入、BGM合成。ナレーションの読み上げもお願いします。"
+  );
+  assert.equal(r.canDeliver, true, r.note);
+  assert.ok(r.matched.includes("voice"));
+  assert.ok(r.licenseObligations.some((o) => /クレジット/.test(o)), JSON.stringify(r.licenseObligations));
+});

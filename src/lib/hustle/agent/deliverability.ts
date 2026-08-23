@@ -20,6 +20,8 @@
  * API課金が要るものは needsPaid にして別に出す。
  */
 
+import { blockedTools, obligationsFor } from "./licenses";
+
 /** どうやって作るか。 */
 export type Route =
   | "direct" // 私がそのまま書く（文章・コード）
@@ -54,6 +56,8 @@ export interface CapabilityDef {
   route: Route;
   /** 動かすのに要るもの。空なら追加費用なしで動く。 */
   requires: string[];
+  /** 使うツールのID。licenses.ts で規約を確認したもの。 */
+  toolIds?: string[];
   /** 課金が要るか */
   needsPaid: boolean;
   /** 具体的に何ができる／できないか。人に見せる。 */
@@ -122,9 +126,10 @@ export const CAPABILITIES: CapabilityDef[] = [
     label: "動画（仕様どおりの処理）",
     route: "tooling",
     requires: ["ffmpeg"],
+    toolIds: ["ffmpeg"],
     needsPaid: false,
     detail:
-      "カット・無音カット・テロップ焼き込み・BGM合成・尺調整・ショート化・サムネ切り出し・一括変換。ffmpeg のコマンドを私が書いて回します。無料。",
+      "カット・無音カット・テロップ焼き込み・BGM合成・尺調整・ショート化・サムネ切り出し・一括変換。ffmpeg のコマンドを私が書いて回します。無料で、納品物にライセンス上の義務はありません（義務が生じるのは ffmpeg 自体を配布するときだけ）。",
     patterns: [
       /(動画|ムービー|映像).{0,10}(編集|制作|作成)/,
       /(テロップ|字幕|カット編集|エンコード|尺|BGM.{0,6}(挿入|合成))/,
@@ -157,9 +162,13 @@ export const CAPABILITIES: CapabilityDef[] = [
     id: "voice",
     label: "ナレーション（合成音声）",
     route: "tooling",
-    requires: ["音声合成のAPIキー"],
-    needsPaid: true,
-    detail: "台本は私が書けます。読み上げは外部APIが要るので、お金ができてから。",
+    requires: ["VOICEVOX Nemo"],
+    toolIds: ["voicevox_nemo"],
+    // 当初は「有料APIが要るので不可」としていたが、規約を読んだら誤りだった。
+    // VOICEVOX Nemo は無料で商用利用でき、条件はクレジット表記のみ。
+    needsPaid: false,
+    detail:
+      "台本は私が書き、読み上げは VOICEVOX Nemo で出せます。無料で商用利用できますが、成果物にクレジット表記が必要です（表記無しは禁止事項）。依頼者が表記を受け入れるかを先に確認してください。",
     patterns: [/(ナレーション|読み上げ|音声化|VOICEVOX|合成音声)/],
   },
 
@@ -264,6 +273,10 @@ export interface DeliverabilityResult {
   humanSteps: string[];
   commoditized: boolean;
   commodityReasons: string[];
+  /** 納品前に守る必要があること（クレジット表記など） */
+  licenseObligations: string[];
+  /** 商用の納品に使えないツールが混ざっている場合 */
+  licenseBlockers: { id: string; why: string }[];
   note: string;
 }
 
@@ -283,8 +296,13 @@ export function judgeDeliverability(text: string): DeliverabilityResult {
   );
   const humanSteps = detectHumanSteps(t);
 
+  // 使うツールの規約。クレジット表記の義務を見落として納品すると規約違反になる。
+  const toolIds = [...new Set(free.flatMap((c) => c.toolIds ?? []))];
+
   const base = {
     matched: matched.map((c) => c.id),
+    licenseObligations: obligationsFor(toolIds),
+    licenseBlockers: blockedTools(toolIds),
     routes: [...new Set(matched.map((c) => c.route))],
     requires: [...new Set(free.flatMap((c) => c.requires))],
     unlockedByPaying: paid.map((c) => `${c.label}（${c.requires.join("・")}）`),
@@ -321,7 +339,20 @@ export function judgeDeliverability(text: string): DeliverabilityResult {
     };
   }
 
+  // 商用に使えないツールしか手が無いなら、作れることにしない
+  if (base.licenseBlockers.length > 0) {
+    return {
+      ...base,
+      canDeliver: false,
+      blockers: base.licenseBlockers.map((b) => `${b.id}: ${b.why}`),
+      note: `使えるツールが商用の納品に使えません（${base.licenseBlockers.map((b) => b.id).join("・")}）。出来に関係なく規約違反になります。`,
+    };
+  }
+
   const tools = base.requires.length ? `動かすのに ${base.requires.join("・")} が要ります。` : "";
+  const duty = base.licenseObligations.length
+    ? `納品前に守ること: ${base.licenseObligations.join(" / ")}。`
+    : "";
   const money = commodityReasons.length ? "ただし単価が壊れている領域の可能性があります。" : "";
   const hands = humanSteps.length ? `あなたの手が要る工程: ${humanSteps.join(" / ")}。` : "";
 
@@ -329,7 +360,7 @@ export function judgeDeliverability(text: string): DeliverabilityResult {
     ...base,
     canDeliver: true,
     blockers: [],
-    note: `${free.map((c) => c.label).join("・")} なので出せます。${tools}${money}${hands}`,
+    note: `${free.map((c) => c.label).join("・")} なので出せます。${tools}${duty}${money}${hands}`,
   };
 }
 
