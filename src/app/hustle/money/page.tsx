@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Wallet, Plus, Trash2, Calculator, TrendingUp, TrendingDown, AlertTriangle } from "lucide-react";
 import { useHustleStore } from "@/store/useHustleStore";
 import StorageNotice from "@/components/hustle/StorageNotice";
+import TaxPanel from "@/components/hustle/TaxPanel";
 import { computeStats, projectGoal, todayLocal, DEFAULT_MIN_WAGE_JPY } from "@/lib/hustle/analytics";
 import { PLATFORM_FEES, computePayout } from "@/lib/hustle/payout";
 import type { ChannelStats } from "@/lib/hustle/analytics";
@@ -104,6 +105,8 @@ export default function MoneyPage() {
       </section>
 
       <EntryForm paths={paths} onAdd={addEntry} />
+
+      <TaxPanel entries={entries} />
 
       <section className="mt-6">
         <h2 className="font-semibold mb-3">記録（{entries.length}件）</h2>
