@@ -1427,3 +1427,44 @@ test("あなたの時間で割ると、同じ報酬でも時給が上がる", ()
     `${Math.round(reward / proven.highHours)} vs ${Math.round(reward / disproven.highHours)}`
   );
 });
+
+// --- 公的データへの照合が前提になっている工程 -------------------------------
+
+test("GHSと法令の照合は、収載外の調査と分けて数える", () => {
+  // NITE統合版に収載されていれば照合で終わるが、収載外は文献調査になる。
+  // 混ぜると、全物質が45分かかる前提になって工数が跳ね上がる。
+  const e = estimateByWorkType("20物質分のSDS作成");
+  const lookup = e.breakdown.find((b) => /NITE統合版/.test(b.name));
+  const research = e.breakdown.find((b) => /収載外/.test(b.name));
+  assert.ok(lookup && research, "照合と収載外調査が分かれていない");
+  assert.equal(lookup.by, "approve");
+  assert.equal(research.by, "human", "収載外の調査は自動化できない");
+  assert.ok(research.hours > lookup.hours, "収載外のほうが重いはず");
+});
+
+test("CAS番号の再配布制限を台帳に持っている", () => {
+  // 照合キーに使うのは問題ないが、番号入りのDBを配るのは事前許可が要る。
+  // これを忘れると、出品した瞬間に権利の問題になる。
+  const cas = lic.TOOL_LICENSES.find((l) => l.id === "cas_registry_numbers");
+  assert.ok(cas, "CAS番号の条件が記録されていない");
+  assert.equal(cas.commercial, "restricted");
+  assert.match(cas.quote, /再配布することは禁じられています/);
+  assert.ok(cas.obligations.some((o) => /同梱しない/.test(o)));
+});
+
+test("厚労省モデルSDSは商用不可として記録されている", () => {
+  const sds = lic.TOOL_LICENSES.find((l) => l.id === "mhlw_model_sds");
+  assert.ok(sds);
+  assert.equal(sds.commercial, "forbidden");
+  assert.match(sds.quote, /営利目的に使用することはお断り/);
+});
+
+test("公的データの条件も、引用と出典と確認日を持っている", () => {
+  for (const id of ["nite_ghs_integrated", "nite_chrip_laws", "nite_gmiccs"]) {
+    const l = lic.TOOL_LICENSES.find((x) => x.id === id);
+    assert.ok(l, `${id} が無い`);
+    assert.ok(l.quote.length > 20, `${id}: 引用が短い`);
+    assert.match(l.sourceUrl, /^https:\/\//, `${id}: 出典が無い`);
+    assert.match(l.checkedOn, /^\d{4}-\d{2}-\d{2}$/, `${id}: 確認日が無い`);
+  }
+});

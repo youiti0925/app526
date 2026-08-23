@@ -47,6 +47,101 @@ export interface ToolLicense {
 
 export const TOOL_LICENSES: ToolLicense[] = [
   {
+    id: "nite_ghs_integrated",
+    name: "NITE統合版GHS分類結果（xlsx）",
+    makes: "SDSのGHS区分。CAS番号で引く照合テーブル。約3,378物質・35危険有害性クラス。",
+    commercial: "restricted",
+    costJpy: 0,
+    quote:
+      "本分類結果は、GHSに基づくラベルやSDSを作成する際に自由に引用又は複写していただけます。" +
+      "ただし、…責任は、ラベルやSDSの作成者にあることにご留意ください。",
+    sourceUrl: "https://www.chem-info.nite.go.jp/chem/ghs/ghs_download.html",
+    checkedOn: "2026-08-23",
+    obligations: [
+      "許諾の範囲は「ラベル・SDSの作成」に紐づく。無条件のオープンデータではないので、別用途に流用しない",
+      "SDSの内容についての責任は作成者にある（法律上、委譲できない）",
+      "版（更新日）を成果物に残す。統合版は政府分類結果より遅れることがある（令和7年度141CASのうち57件が統合版に未収載だった）",
+    ],
+    note:
+      "旧URL（www.nite.go.jp/chem/ghs/）は404。現行は chem-info.nite.go.jp。" +
+      "同一物質が年度ごとに複数行ある list_all.xlsx ではなく、名寄せ済みの統合版を照合キーに使うこと。",
+  },
+  {
+    id: "nite_chrip_laws",
+    name: "NITE-CHRIP 法規制リスト（安衛法・化管法・消防法ほか）",
+    makes: "法令該当性の判定。CAS番号で引く。群名は個別CASへ展開済み、裾切値つき。",
+    commercial: "ok",
+    costJpy: 0,
+    quote:
+      "複製、公衆送信、翻訳・変形等の翻案等、自由に利用できます。商用利用も可能です。",
+    sourceUrl: "https://www.chem-info.nite.go.jp/chem/chrip/chrip_search/html/condUse.html",
+    checkedOn: "2026-08-23",
+    obligations: [
+      "出典を記載する。改変したときはその旨を明示する",
+      "配布されている xlsx を使う。全件スクレイピングはしない（利用条件に通信量による利用中止の定めがある）",
+      "法規制の該当性を最終判断するときは、所管官庁または化学物質管理センターに確認する旨を成果物に書く（CHRIP自身の免責）",
+      "安衛法は適用日が毎年動く。リストの版を成果物に残す",
+    ],
+    note:
+      "「水銀及びその化合物」のような群名を個別CASへ展開済み（化管法901政令番号→10,855CAS、安衛法2,505→7,061CAS）。" +
+      "手作業で一番時間を食う部分が提供元で解決されている。",
+  },
+  {
+    id: "cas_registry_numbers",
+    name: "CAS登録番号",
+    makes: "（データそのものではなく）照合キーとして使う番号",
+    commercial: "restricted",
+    costJpy: 0,
+    quote:
+      "CAS登録番号は…Chemical Abstracts Service (CAS) の知的財産であり…" +
+      "CASの事前許可なくCAS登録番号を再配布することは禁じられています。",
+    sourceUrl: "https://www.chem-info.nite.go.jp/chem/chrip/chrip_search/html/condUse.html",
+    checkedOn: "2026-08-23",
+    obligations: [
+      "CAS番号を含むデータセットをこのリポジトリに同梱しない。実行時にNITEから取得してローカルに置く",
+      "CAS番号を含むデータを商品として配布しない。内部の照合キーとして使うのは別問題",
+      "納品するSDSにCAS番号が載るのは通常の用途（SDSの記載事項）だが、DBそのものの配布とは分けて考える",
+    ],
+    note:
+      "「照合に使う」と「番号入りのDBを配る」は別。前者は問題にならないが、後者は事前許可が要る。" +
+      "このアプリがデータを同梱せず実行時に取りに行く設計にしているのはこのため。",
+  },
+  {
+    id: "mhlw_model_sds",
+    name: "厚労省 職場のあんぜんサイト モデルSDS",
+    makes: "SDSの記載例。3,622物質。",
+    commercial: "forbidden",
+    costJpy: 0,
+    quote: "内容をそのままダウンロードして営利目的に使用することはお断り致します。",
+    sourceUrl: "https://anzeninfo.mhlw.go.jp/anzen/gmsds/50-00-0.html",
+    checkedOn: "2026-08-23",
+    obligations: ["有償のSDS作成には使わない。同じ情報はNITE-CHRIP側から取れるので、そちらを使う"],
+    note:
+      "第15項に法令該当性が15法令ぶん集約されていて便利だが、営利目的での使用が明示的に断られている。" +
+      "一括取得の口も無い（個別ページのみ）。CHRIPのxlsxで代替すること。",
+  },
+  {
+    id: "nite_gmiccs",
+    name: "NITE-Gmiccs（GHS混合物分類判定システム）",
+    makes: "混合物のGHS区分。健康有害性・環境有害性の計算。",
+    commercial: "unverified",
+    costJpy: 0,
+    quote:
+      "本システムの主な対象は、健康有害性と環境有害性です。" +
+      "物理化学的危険性については基本的に分類できません。",
+    sourceUrl: "https://www.ghs.nite.go.jp/",
+    checkedOn: "2026-08-23",
+    obligations: [
+      "商用利用の可否が明示されていない。有償の受託に使う前に問い合わせること",
+      "混合物の物理化学的危険性は出せない。引火性液体だけは引火点・初留点から算出できる",
+      "つなぎの原則（希釈・同一バッチ・濃縮・内挿）は非対応。ここは人の判断",
+    ],
+    note:
+      "無料・登録不要・CSV入出力あり。分類アルゴリズムの仕様書が公開されており" +
+      "（ATE加算式・濃度限界表）、自前で実装することもできる。" +
+      "ただし公開仕様書は改訂6版/JIS 2019ベースで、改訂9版/JIS 2025のロジックは未確認。",
+  },
+  {
     id: "ffmpeg",
     name: "FFmpeg",
     makes: "動画・音声の変換、カット、テロップ焼き込み、BGM合成",
