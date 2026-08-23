@@ -262,6 +262,7 @@ export function planToTasks(
       dueDate: formatLocalDate(due),
       estMinutes: item.estMinutes,
       orderIndex: index,
+      template: item.template ?? "",
     };
   });
 }

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Factory, Loader2, Copy, Check, Save, AlertTriangle, Clock } from "lucide-react";
 import { TEMPLATES, type TemplateDefinition } from "@/lib/hustle/templates";
 import { useHustleStore } from "@/store/useHustleStore";
@@ -13,6 +14,16 @@ interface Variant {
 }
 
 export default function FactoryPage() {
+  // useSearchParams はサスペンス境界の内側で使う必要がある
+  return (
+    <Suspense fallback={<div className="p-8 text-sm text-slate-500">読み込み中…</div>}>
+      <Factory_ />
+    </Suspense>
+  );
+}
+
+function Factory_() {
+  const searchParams = useSearchParams();
   const { load, paths, addAsset, meta } = useHustleStore();
   const [templateId, setTemplateId] = useState<string>(TEMPLATES[0].id);
   const [values, setValues] = useState<Record<string, string>>({});
@@ -26,6 +37,14 @@ export default function FactoryPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 「今日やること」から飛んできたときは、その作業に対応するテンプレートを開く
+  useEffect(() => {
+    const requested = searchParams.get("template");
+    if (requested && TEMPLATES.some((t) => t.id === requested)) {
+      setTemplateId(requested);
+    }
+  }, [searchParams]);
 
   const template = useMemo(
     () => TEMPLATES.find((t) => t.id === templateId) as TemplateDefinition,

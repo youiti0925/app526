@@ -12,6 +12,7 @@ import {
   ArrowRight,
   AlertTriangle,
   Trash2,
+  Sparkles,
 } from "lucide-react";
 import { useHustleStore } from "@/store/useHustleStore";
 import StorageNotice from "@/components/hustle/StorageNotice";
@@ -116,6 +117,11 @@ export default function HustleDashboard() {
             ))}
           </div>
         )}
+
+        <p className="text-xs text-slate-500 mt-3">
+          タスクを完了すると、見積時間がそのまま作業時間として記録されます。
+          実際にかかった時間が違う場合は「収支と実効時給」で直してください。
+        </p>
 
         <div className="flex gap-2 mt-3">
           <input
@@ -286,6 +292,15 @@ function TaskRow({
             <span className={overdue ? "text-rose-600 font-medium" : ""}>
               {overdue ? `期限切れ ${task.dueDate}` : task.dueDate}
             </span>
+          )}
+          {task.template && (
+            <Link
+              href={`/hustle/factory?template=${task.template}`}
+              className="flex items-center gap-1 text-emerald-700 hover:underline font-medium"
+            >
+              <Sparkles className="w-3 h-3" />
+              AIに下書きさせる
+            </Link>
           )}
         </div>
       </div>

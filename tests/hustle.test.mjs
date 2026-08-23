@@ -10,6 +10,7 @@ import { computePayout, PLATFORM_FEES } from "../dist-test/payout.js";
 import { diagnose, planToTasks } from "../dist-test/diagnose.js";
 import { PATH_DEFINITIONS } from "../dist-test/paths-data.js";
 import { emptyProfile } from "../dist-test/types.js";
+import { TEMPLATES } from "../dist-test/templates.js";
 
 const today = todayLocal();
 
@@ -374,4 +375,56 @@ test("今日のタスクが「今日」として扱われる", () => {
   const s = summarizeTasks([t]);
   assert.equal(s.todayCount, 1);
   assert.equal(s.overdueCount, 0);
+});
+
+test("「これはやらない」で指定したチャネルは除外される", () => {
+  const profile = {
+    ...emptyProfile,
+    budgetJpy: 100000,
+    equipment: ["pc", "smartphone", "stable_internet"],
+    avoid: ["content_seo", "short_video"],
+  };
+  const r = diagnose(profile, PATH_DEFINITIONS);
+  assert.ok(!r.ranked.some((x) => x.key === "content_seo"));
+  assert.ok(!r.ranked.some((x) => x.key === "short_video"));
+  const reasons = r.excluded.filter((x) => ["content_seo", "short_video"].includes(x.key));
+  assert.equal(reasons.length, 2);
+  for (const e of reasons) assert.match(e.excludedReason, /やりたくないこと/);
+});
+
+test("プランのタスクに、対応する生成テンプレートが紐づいている", () => {
+  const ids = new Set(TEMPLATES.map((t) => t.id));
+  let linked = 0;
+  for (const d of PATH_DEFINITIONS) {
+    for (const p of d.plan) {
+      if (!p.template) continue;
+      assert.ok(ids.has(p.template), `${d.key}: 存在しないテンプレート ${p.template}`);
+      linked++;
+    }
+  }
+  assert.ok(linked >= 8, `テンプレートに紐づいたタスクが ${linked} 件しかない`);
+});
+
+test("planToTasks が template を引き継ぐ", () => {
+  const def = PATH_DEFINITIONS.find((d) => d.plan.some((p) => p.template));
+  const tasks = planToTasks(def, "p1");
+  const withTemplate = tasks.filter((t) => t.template);
+  assert.ok(withTemplate.length > 0);
+  for (const t of tasks) assert.equal(typeof t.template, "string");
+});
+
+test("全テンプレートが必須項目とフォールバックを持つ", () => {
+  for (const t of TEMPLATES) {
+    assert.ok(t.name && t.purpose, `${t.id}: 名前/目的が空`);
+    assert.ok(t.manualMinutes > 0, `${t.id}: manualMinutes が0`);
+    assert.ok(t.fields.length > 0, `${t.id}: 入力欄が無い`);
+    const values = Object.fromEntries(t.fields.map((f) => [f.name, "テスト入力"]));
+    const prompt = t.buildPrompt(values, 3);
+    assert.ok(prompt.includes("テスト入力"), `${t.id}: プロンプトに入力が反映されていない`);
+    const fallback = t.fallback(values);
+    assert.ok(fallback.length > 50, `${t.id}: フォールバックが薄い`);
+    // 空入力でも落ちないこと（必須未入力のままボタンを押されるケース）
+    assert.doesNotThrow(() => t.fallback({}), `${t.id}: 空入力でフォールバックが落ちる`);
+    assert.doesNotThrow(() => t.buildPrompt({}, 1), `${t.id}: 空入力でプロンプト生成が落ちる`);
+  }
 });

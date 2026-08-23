@@ -97,6 +97,8 @@ export interface HustleTask {
   orderIndex: number;
   doneAt: string | null;
   createdAt: string;
+  /** この作業を下書きできるテンプレートのID。無ければ空文字。 */
+  template: string;
 }
 
 /** 金と時間の台帳。実効時給の計算元。 */

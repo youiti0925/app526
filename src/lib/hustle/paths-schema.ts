@@ -1,4 +1,5 @@
 import type { PathKey, TaskKind } from "./types";
+import type { TemplateId } from "./templates";
 
 /** 診断で使う、収益チャネル1つ分の実データ。 */
 export interface PathDefinition {
@@ -59,6 +60,8 @@ export interface PlanItem {
   detail: string;
   kind: TaskKind;
   estMinutes: number;
+  /** この作業をアプリに下書きさせられる場合、対応するテンプレートのID */
+  template?: TemplateId;
 }
 
 /** アプリ内のどの機能がその工程を担当するか */

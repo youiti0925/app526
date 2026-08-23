@@ -88,16 +88,18 @@ export function upsertTask(input: Partial<HustleTask> & { title: string }): Hust
     orderIndex: input.orderIndex ?? 0,
     doneAt: input.status === "done" ? input.doneAt ?? now() : input.doneAt ?? null,
     createdAt: input.createdAt ?? now(),
+    template: input.template ?? "",
   };
   db.prepare(
     `INSERT INTO hustle_tasks
-       (id, path_id, title, detail, kind, status, due_date, est_minutes, actual_minutes, order_index, done_at, created_at)
-     VALUES (@id, @pathId, @title, @detail, @kind, @status, @dueDate, @estMinutes, @actualMinutes, @orderIndex, @doneAt, @createdAt)
+       (id, path_id, title, detail, kind, status, due_date, est_minutes, actual_minutes, order_index, done_at, created_at, template)
+     VALUES (@id, @pathId, @title, @detail, @kind, @status, @dueDate, @estMinutes, @actualMinutes, @orderIndex, @doneAt, @createdAt, @template)
      ON CONFLICT(id) DO UPDATE SET
        path_id = excluded.path_id, title = excluded.title, detail = excluded.detail,
        kind = excluded.kind, status = excluded.status, due_date = excluded.due_date,
        est_minutes = excluded.est_minutes, actual_minutes = excluded.actual_minutes,
-       order_index = excluded.order_index, done_at = excluded.done_at`
+       order_index = excluded.order_index, done_at = excluded.done_at,
+       template = excluded.template`
   ).run(task);
   return task;
 }

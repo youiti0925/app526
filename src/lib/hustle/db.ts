@@ -49,6 +49,7 @@ export function getHustleDb(): Database.Database {
       order_index INTEGER NOT NULL DEFAULT 0,
       done_at TEXT,
       created_at TEXT NOT NULL,
+      template TEXT NOT NULL DEFAULT '',
       FOREIGN KEY (path_id) REFERENCES hustle_paths(id) ON DELETE CASCADE
     );
 
@@ -94,6 +95,12 @@ export function getHustleDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_hustle_assets_path ON hustle_assets(path_id, created_at);
   `);
 
+  // 既にテーブルがある環境向けの追加カラム。存在すれば失敗するので握りつぶす。
+  const taskColumns = db.prepare("PRAGMA table_info(hustle_tasks)").all() as { name: string }[];
+  if (!taskColumns.some((c) => c.name === "template")) {
+    db.exec("ALTER TABLE hustle_tasks ADD COLUMN template TEXT NOT NULL DEFAULT ''");
+  }
+
   initialized = true;
   return db;
 }
@@ -125,6 +132,7 @@ type TaskRow = {
   order_index: number;
   done_at: string | null;
   created_at: string;
+  template: string;
 };
 
 type EntryRow = {
@@ -194,6 +202,7 @@ export const rowToTask = (r: TaskRow): HustleTask => ({
   orderIndex: r.order_index,
   doneAt: r.done_at,
   createdAt: r.created_at,
+  template: r.template ?? "",
 });
 
 export const rowToEntry = (r: EntryRow): HustleEntry => ({

@@ -56,6 +56,30 @@ export default function DiagnosePage() {
     }
   }
 
+  async function excludePath(key: string) {
+    const next = { ...form, avoid: [...form.avoid, key] };
+    setForm(next);
+    await saveProfile(next);
+    const res = await fetch("/api/hustle/diagnose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(next),
+    });
+    if (res.ok) setResult(await res.json());
+  }
+
+  async function restoreExcluded(key: string) {
+    const next = { ...form, avoid: form.avoid.filter((k) => k !== key) };
+    setForm(next);
+    await saveProfile(next);
+    const res = await fetch("/api/hustle/diagnose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(next),
+    });
+    if (res.ok) setResult(await res.json());
+  }
+
   async function startPath(ranked: Ranked) {
     setAdding(ranked.key);
     try {
@@ -243,6 +267,7 @@ export default function DiagnosePage() {
                 started={startedKeys.has(r.key)}
                 adding={adding === r.key}
                 onStart={() => startPath(r)}
+                onExclude={() => excludePath(r.key)}
               />
             ))}
           </div>
@@ -257,10 +282,18 @@ export default function DiagnosePage() {
                   <div key={r.key} className="card !py-3 opacity-75">
                     <div className="flex items-start gap-2">
                       <XCircle className="w-4 h-4 mt-0.5 shrink-0 text-slate-400" />
-                      <div>
+                      <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium">{r.name}</p>
                         <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">{r.excludedReason}</p>
                       </div>
+                      {form.avoid.includes(r.key) && (
+                        <button
+                          onClick={() => restoreExcluded(r.key)}
+                          className="text-xs text-emerald-700 hover:underline shrink-0"
+                        >
+                          候補に戻す
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -279,12 +312,14 @@ function RankedCard({
   started,
   adding,
   onStart,
+  onExclude,
 }: {
   rank: number;
   ranked: Ranked;
   started: boolean;
   adding: boolean;
   onStart: () => void;
+  onExclude: () => void;
 }) {
   const [open, setOpen] = useState(rank === 1);
   const def = ranked.definition;
@@ -339,10 +374,15 @@ function RankedCard({
                 開始済み
               </span>
             ) : (
-              <button onClick={onStart} disabled={adding} className="btn-primary !py-1.5 !px-4 text-sm flex items-center gap-1.5 disabled:opacity-60">
-                {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowRight className="w-3.5 h-3.5" />}
-                これで始める（30日ぶんのタスクが入ります）
-              </button>
+              <>
+                <button onClick={onStart} disabled={adding} className="btn-primary !py-1.5 !px-4 text-sm flex items-center gap-1.5 disabled:opacity-60">
+                  {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowRight className="w-3.5 h-3.5" />}
+                  これで始める（30日ぶんのタスクが入ります）
+                </button>
+                <button onClick={onExclude} className="text-sm text-slate-500 hover:text-slate-800 hover:underline">
+                  これはやらない
+                </button>
+              </>
             )}
           </div>
 
