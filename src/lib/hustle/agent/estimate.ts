@@ -1,4 +1,4 @@
-import { describeWorkType, estimateByWorkType } from "./worktypes";
+import { describeWorkType, estimateByWorkType, stripNonQuantities } from "./worktypes";
 
 /**
  * 募集文から作業量を見積もる（AIなしで動く版）。
@@ -23,12 +23,14 @@ const CHARS_PER_HOUR = 1200;
 
 
 export function estimateHours(text: string): WorkEstimate | null {
-  const t = text.normalize("NFKC");
+  const normalized = text.normalize("NFKC");
 
   // 工程が分かっている仕事は、工程を積み上げて出す。
   // 文字数だけで見ていたせいで、SDS・リスクアセスメント・作業標準書のような
   // 「文字数が書かれていない仕事」が全部 判定不能で止まっていた。
-  const byType = estimateByWorkType(t);
+  // ここには元のテキストを渡す。規格番号を消したものを渡すと、
+  // ISO9001 が消えて ISO 案件だと判定できなくなる（実際そうなった）。
+  const byType = estimateByWorkType(normalized);
   if (byType) {
     // 工程を積み上げた値には、やりとり・修正の工程がすでに入っている。
     // 二重に乗せないよう、上乗せは控えめ（1.0〜1.4倍）にする。
@@ -43,6 +45,11 @@ export function estimateHours(text: string): WorkEstimate | null {
     };
   }
 
+  // ここから先の素朴な読み取りでは、数量ではない数字を消しておく。
+  // 消さないと「24365作業なし」というページのタグから 24,365工程 を読み、
+  // 52,790時間 という見積りが出る（実データで発生した）。
+  const t = stripNonQuantities(normalized);
+
   // 「3000文字 × 10本」のような書き方
   const chars = t.match(/([0-9,]{3,7})\s*文字/);
   if (chars) {
@@ -51,7 +58,8 @@ export function estimateHours(text: string): WorkEstimate | null {
     // 最初の一致ではなく最大値を本数とみなす（先頭の「1記事」を拾わないため）。
     const counts = [...t.matchAll(/([0-9,]{1,5})\s*(?:本|記事|ページ|部|通|件|商品|点|枚|個|品|案件|問|コンテンツ)/g)]
       .map((m) => num(m[1]))
-      .filter((n) => Number.isFinite(n) && n > 0 && n <= 100_000);
+      // 副業として現実的な数量の上限。超えたら読み間違い。
+      .filter((n) => Number.isFinite(n) && n > 0 && n <= 5_000);
     const items = counts.length ? Math.max(...counts) : 1;
     const total = perItem * items;
     if (total > 0 && total < 5_000_000) {
@@ -64,7 +72,7 @@ export function estimateHours(text: string): WorkEstimate | null {
   const rows = t.match(/([0-9,]{2,6})\s*(?:件|行|レコード|社|商品)/);
   if (rows && /(入力|収集|リスト|転記|登録|作成)/.test(t)) {
     const n = num(rows[1]);
-    if (n > 0 && n < 200_000) {
+    if (n > 0 && n <= 20_000) {
       const base = (n * 2) / 60;
       return withOverhead(base, `${n.toLocaleString()}件 × 1件2分として計算`, "medium");
     }

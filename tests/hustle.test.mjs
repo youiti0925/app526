@@ -855,3 +855,45 @@ test("入金がゼロなら、余計なことを言わない", () => {
   assert.equal(t.flag, "no_records");
   assert.match(t.note, /最初の1円/);
 });
+
+// ---------------------------------------------------------------------------
+// 敵対的レビューで確定した誤検知の回帰テスト
+// まっとうな案件を danger にすると、警告そのものが信用されなくなる。
+// ---------------------------------------------------------------------------
+
+test("「UDフォント」を闇バイト隠語と誤判定しない", () => {
+  // 前の修正では ASCII 隣接しか除外しておらず、日本語が隣だと素通りしていた
+  for (const t of ["本文はUDフォントを指定してください。", "UD-1の仕様に合わせてください。", "UDトラックスの資料です。"]) {
+    const r = scoreScam(t);
+    assert.ok(!r.signals.some((s) => s.id === "dark_part_time"), `${t} → ${JSON.stringify(r.signals)}`);
+  }
+  // 隠語として単独で立っているときは拾う
+  assert.ok(scoreScam("UDの仕事です。荷物を受け取って指定場所に運んでください。").score > 0);
+});
+
+test("「初期費用0円」「登録料無料」を前払い要求と誤判定しない", () => {
+  for (const t of [
+    "初期費用0円・登録料無料をうたう自社サービスのLPを作成してください。報酬50,000円。",
+    "登録料は不要です。",
+    "入会金はいただきません。",
+  ]) {
+    const r = scoreScam(t);
+    assert.ok(!r.signals.some((s) => s.id === "upfront_payment"), `${t} → ${JSON.stringify(r.signals)}`);
+  }
+  // 実際に払わせる形は拾う
+  for (const t of ["登録料として30,000円をお支払いください。", "初期費用5万円を最初にご入金いただきます。"]) {
+    assert.ok(scoreScam(t).signals.some((s) => s.id === "upfront_payment"), t);
+  }
+});
+
+test("打ち合わせでの画面共有を遠隔操作と誤判定しない", () => {
+  const r = scoreScam("作業内容の擦り合わせのため、初回はZoomで画面共有をお願いします。");
+  assert.ok(!r.signals.some((s) => s.id === "remote_access_tool"), JSON.stringify(r.signals));
+  // 操作させる文脈なら拾う
+  for (const t of [
+    "AnyDeskをインストールして画面を操作させてください。",
+    "遠隔操作アプリをインストールしてください。",
+  ]) {
+    assert.ok(scoreScam(t).signals.some((s) => s.id === "remote_access_tool"), t);
+  }
+});

@@ -207,15 +207,102 @@ export interface WorkTypeEstimate {
   breakdown: { name: string; by: "ai" | "human"; hours: number; why?: string }[];
 }
 
+/**
+ * 数量として読んではいけない数字を消す。
+ *
+ * 実データで「ISO14001 文書の整備」から 14,001文書 と読み、
+ * 33,835時間 という見積りを出していた。ギークスジョブのページタグ
+ * 「24365作業なし」からは 24,365工程 を読んでいた。
+ * どちらも、そのまま時給の計算に流れる。
+ */
+export function stripNonQuantities(text: string): string {
+  return (
+    text
+      // 規格番号: ISO9001 / ISO 14001 / JIS Z 7253 / IEC 62443
+      .replace(/\b(ISO|IEC|JIS|ANSI|ASTM)\s?[A-Z]?\s?[0-9-]{3,7}/gi, " ")
+      // 年号・西暦
+      .replace(/\b(19|20)[0-9]{2}\s*年?/g, " ")
+      // 5桁以上の連番（タグ・ID・郵便番号のたぐい）
+      .replace(/\b[0-9]{5,}\b/g, " ")
+  );
+}
+
+/** 副業として現実的な数量の上限。これを超えたら読み間違いとみなす。 */
+const MAX_PLAUSIBLE_UNITS = 500;
+
+/**
+ * 「これを作ってください」と依頼している形。
+ * 助詞で見る。日本語は「Xを作成」「Xの作成」が依頼で、「Xが整備されている」は状態の説明。
+ */
+const AS_REQUEST =
+  /[をの]\s*[^。\n]{0,20}(作成|制作|整備|作り|書き|執筆|依頼|お願い|募集|代行|支援|実施)/;
+
+/**
+ * 語そのものが動詞になるもの（翻訳・英訳・リスクアセスメント）は、
+ * 直後の「してください」「をお願い」で依頼と分かる。
+ */
+const AS_SAHEN_REQUEST =
+  /^\s*(を?\s*(し|いたし|お願い|依頼|代行|対応)|の\s*(お願い|依頼|代行|案件|業務))/;
+
+/**
+ * 「SDS作成」「リスクアセスメント実施」のように、助詞をはさまず
+ * 直後に動作の語が続く形。日本語ではこれが一番よくある依頼の書き方。
+ * 「手順書が整備されている」は先に AS_BACKGROUND で落ちるので、ここには来ない。
+ */
+const AS_COMPOUND = /^\s*(作成|制作|整備|作り|執筆|代行|支援|実施|対応)/;
+
+/**
+ * 状態の説明。ここに当たるものは依頼ではない。
+ * 実データで「確実な手順書が整備されているため」という背景説明だけで、
+ * SAP運用保守の案件を「作業標準書の作成」と判定していた。
+ */
+const AS_BACKGROUND =
+  /が\s*[^。\n]{0,10}(整備|完備|用意|存在|あり|ある|ござい|できてい|揃っ)|に\s*(沿っ|従っ|基づ)/;
+
+/**
+ * その仕事を「依頼されている」のか、単に言及されているだけなのかを見る。
+ *
+ * 位置では判定しない。本文抽出が JSON-LD の説明文を先頭に置くので、
+ * 「先頭にあれば依頼」という仮定は成り立たなかった。
+ */
+function matchesAsRequest(text: string, workType: WorkType): boolean {
+  // 短い文字列は、それ自体が依頼。背景としての言及は長い文章の中に現れる。
+  const isShort = text.length < 120;
+
+  for (const p of workType.patterns) {
+    // 同じ語が複数回出るので、依頼の形で使われている箇所があるかを全部見る
+    const re = new RegExp(p.source, p.flags.includes("g") ? p.flags : `${p.flags}g`);
+    for (const m of text.matchAll(re)) {
+      if (m.index === undefined) continue;
+      const after = text.slice(m.index + m[0].length, m.index + m[0].length + 30);
+      if (AS_BACKGROUND.test(after)) continue;
+      if (isShort) return true;
+      if (AS_REQUEST.test(after) || AS_SAHEN_REQUEST.test(after) || AS_COMPOUND.test(after)) return true;
+      // 「作業標準書の作成をお願いします」のように語の前に依頼語がある形
+      const before = text.slice(Math.max(0, m.index - 20), m.index);
+      if (/(作成|制作|整備|代行)\s*[すし]?\s*[るま]?[^。\n]{0,6}$/.test(before)) return true;
+    }
+  }
+  return false;
+}
+
 /** 本文がどの仕事に当たるかを判定し、工程を積み上げて時間を出す。 */
 export function estimateByWorkType(text: string): WorkTypeEstimate | null {
-  const t = text.normalize("NFKC");
-  const workType = WORK_TYPES.find((w) => w.patterns.some((p) => p.test(t)));
+  const normalized = text.normalize("NFKC");
+  // 仕事の種類の判定には規格番号が要る（ISO9001 で ISO 案件と分かる）ので元のまま。
+  // 数量を読むときだけ、数量ではない数字を消したテキストを使う。
+  // 本文にたまたま出てくる語で仕事の種類を決めない。
+  // 実データで「確実な手順書が整備されているため」という一文だけで
+  // SAP運用保守の案件を「作業標準書の作成」と判定していた。
+  const workType = WORK_TYPES.find((w) => matchesAsRequest(normalized, w));
   if (!workType) return null;
 
+  const t = stripNonQuantities(normalized);
   const m = t.match(workType.unitPattern);
   const raw = m ? Number(m[1].replace(/,/g, "")) : NaN;
-  const unitsRead = Number.isFinite(raw) && raw > 0 && raw <= 100_000;
+  // 文字単位の仕事だけは桁が大きいので別枠
+  const cap = workType.unit === "文字" ? 500_000 : MAX_PLAUSIBLE_UNITS;
+  const unitsRead = Number.isFinite(raw) && raw > 0 && raw <= cap;
   // 文字単位の仕事は1,000文字を1単位として数える
   const perUnit = workType.unit === "文字" ? 1000 : 1;
   const units = unitsRead ? Math.max(1, Math.ceil(raw / perUnit)) : 1;

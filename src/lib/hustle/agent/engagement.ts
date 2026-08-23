@@ -57,10 +57,21 @@ const toNum = (s: string): number => Number(s.replace(/[,，\s]/g, ""));
  * 逆に「万円/月」という単位は、金額の直後に必ず来る。
  * 範囲のときは安いほうを取る（楽観に倒さないため）。
  */
-export function readMonthlyRate(text: string): number | null {
-  const man = text.match(/([0-9][0-9,]{0,4})\s*(?:[〜~ー-]\s*[0-9][0-9,]{0,4}\s*)?万円\s*[\/／]?\s*(?:月|人月)/);
+export function readMonthlyRate(raw: string): number | null {
+  const text = raw.normalize("NFKC");
+  // 範囲は安いほうを取る。楽観に倒さないため。
+  // 「60万円〜80万円／月」で 80万 を取っていた。原因は、単位の直前にある数字
+  // （＝範囲の上限）だけを見ていたこと。両端を拾って小さいほうを使う。
+  const man = text.match(
+    /([0-9][0-9,]{0,4})\s*(?:万円?)?\s*[〜~ー－-]\s*([0-9][0-9,]{0,4})\s*万円\s*[\/／]?\s*(?:月|人月)/
+  );
   if (man) {
-    const n = toNum(man[1]);
+    const lo = Math.min(toNum(man[1]), toNum(man[2]));
+    if (Number.isFinite(lo) && lo >= 5 && lo <= 500) return Math.round(lo * 10_000);
+  }
+  const single = text.match(/([0-9][0-9,]{0,4})\s*万円\s*[\/／]?\s*(?:月|人月)/);
+  if (single) {
+    const n = toNum(single[1]);
     if (Number.isFinite(n) && n >= 5 && n <= 500) return Math.round(n * 10_000);
   }
   const labelled = text.match(/(?:月額|月単価|月給|月報酬)[^0-9０-９]{0,12}([0-9][0-9,]{2,8})\s*円/);
@@ -68,15 +79,20 @@ export function readMonthlyRate(text: string): number | null {
     const n = toNum(labelled[1]);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  const labelledMan = text.match(/(?:月額|月単価|月給|月報酬)[^0-9０-９]{0,12}([0-9][0-9,]{0,4})\s*(?:[〜~ー-]\s*[0-9][0-9,]{0,4}\s*)?万/);
+  const labelledMan = text.match(
+    /(?:月額|月単価|月給|月報酬)[^0-9]{0,12}([0-9][0-9,]{0,4})\s*(?:万円?)?\s*(?:[〜~ー－-]\s*([0-9][0-9,]{0,4})\s*)?万/
+  );
   if (labelledMan) {
-    const n = toNum(labelledMan[1]);
+    const n = labelledMan[2]
+      ? Math.min(toNum(labelledMan[1]), toNum(labelledMan[2]))
+      : toNum(labelledMan[1]);
     if (Number.isFinite(n) && n >= 5 && n <= 500) return Math.round(n * 10_000);
   }
   return null;
 }
 
-export function readHourlyRate(text: string): number | null {
+export function readHourlyRate(raw: string): number | null {
+  const text = raw.normalize("NFKC");
   const m = text.match(/(?:時給|時間単価)[^0-9０-９]{0,10}([0-9][0-9,]{2,6})\s*円/);
   if (!m) return null;
   const n = toNum(m[1]);
@@ -84,7 +100,10 @@ export function readHourlyRate(text: string): number | null {
 }
 
 export function readEngagement(text: string, budgetHintJpy: number | null = null): Engagement {
-  const t = text.slice(0, 8000);
+  // 他のモジュール（ingest / estimate / worktypes / gates / deadline / scam-rules）は
+  // 全部 NFKC 正規化しているのに、ここだけ抜けていた。
+  // そのせいで全角で書かれた「１５０万円」「１４０時間／月」を1つも読めていなかった。
+  const t = text.normalize("NFKC").slice(0, 8000);
 
   const monthlyHours = readMonthlyHours(t);
   const daysPerWeek = readDaysPerWeek(t);

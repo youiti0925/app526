@@ -262,9 +262,17 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     // 手数料を引いた実効時給で判定する
     let hourly: { low: number; high: number } | null = null;
     const monthlyRate = monthlyHourly(engagement);
-    if (monthlyRate !== null) {
+    if (engagement.kind === "hourly" && engagement.hourlyJpy !== null) {
+      // 時給が書いてあるなら、それが答え。読み取っていたのに使っていなかった。
+      hourly = { low: engagement.hourlyJpy, high: engagement.hourlyJpy };
+    } else if (monthlyRate !== null) {
       // 月額契約は、こちらの見積り工数ではなく先方が決めた稼働時間で割る
       hourly = { low: monthlyRate, high: monthlyRate };
+    } else if (engagement.kind === "monthly") {
+      // 月額契約だが稼働時間が書かれていない。ここで請負として
+      // 「月額300,000円 ÷ 見積り15時間 = 時給2万円」と計算していた。
+      // 月額の総額を1件の報酬として割るのは常に誤り。時給は出さない。
+      hourly = null;
     } else if (offered && offered > 0 && estimate) {
       const payout = computePayout(offered, platform, estimate.highHours);
       hourly = {
@@ -342,9 +350,12 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
         `基準の ${minHourly.toLocaleString()}円 を下回ります。ここに時間を使うより、応募の少ない案件を探すほうが早い`;
     } else if (!hourly) {
       verdict = "verify_first";
-      reason = offered
-        ? "作業量を読み取れないため、実効時給を判定できていない"
-        : "報酬額が書かれていないため、実効時給を判定できていない";
+      reason =
+        engagement.kind === "monthly"
+          ? "月額契約ですが、月に何時間の稼働を求められるかが書かれていません。時給が計算できないので、応募前に必ず確認してください"
+          : offered
+            ? "作業量を読み取れないため、実効時給を判定できていない"
+            : "報酬額が書かれていないため、実効時給を判定できていない";
     } else if (!gates.passed) {
       verdict = "verify_first";
       reason = gates.note;
