@@ -18,6 +18,7 @@ import {
 import { useHustleStore } from "@/store/useHustleStore";
 import StorageNotice from "@/components/hustle/StorageNotice";
 import { computeStats, summarizeTasks, todayLocal, DEFAULT_MIN_WAGE_JPY } from "@/lib/hustle/analytics";
+import type { PublishedListing } from "@/lib/hustle/agent/listing-tracker";
 import { decideNextAction, type NextAction } from "@/lib/hustle/next-action";
 import type { HustleTask } from "@/lib/hustle/types";
 
@@ -40,6 +41,7 @@ export default function HustleDashboard() {
     listingDrafts: number;
     newLeads: number;
     hasSource: boolean;
+    published: PublishedListing[];
   } | null>(null);
 
   // 次の1手はサーバー側の状態（承認待ち・出品案・判定待ち）から決まるので、別に取る
@@ -54,6 +56,7 @@ export default function HustleDashboard() {
           listingDrafts: d.listingDrafts ?? 0,
           newLeads: d.leads?.new ?? 0,
           hasSource: d.hasSource ?? false,
+          published: Array.isArray(d.published) ? d.published : [],
         });
       })
       .catch(() => undefined);
@@ -67,7 +70,7 @@ export default function HustleDashboard() {
     return decideNextAction({
       pendingInbox: agentState.inboxCount,
       pendingListingDrafts: agentState.listingDrafts,
-      published: [],
+      published: agentState.published,
       newLeads: agentState.newLeads,
       hasSource: agentState.hasSource,
       // 期日のある現金需要は、プロフィールの目標期限を使う
