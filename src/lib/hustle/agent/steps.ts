@@ -391,7 +391,7 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       reason =
         `あなたの時間あたりの手取りが ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円で、` +
         `AIに任せられるぶんを引いても基準の ${minHourly.toLocaleString()}円 に届きません` +
-        `（あなたが手を動かす時間を ${yours.lowHours}〜${yours.highHours}時間 と見ています。全体の作業量は ${yours.totalHours}時間）`;
+        `（あなたが手を動かす時間を ${yours.lowHours}〜${yours.highHours}時間 と見ています。手作業なら ${yours.manualHours}時間 かかる仕事です）`;
       // 「安いから見送り」で終わらせない。いくらなら受けられるかを出す。
       if (offered) {
         const byType = byTypeEstimate;
@@ -456,7 +456,7 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       yourTime: {
         lowHours: yours.lowHours,
         highHours: yours.highHours,
-        totalHours: yours.totalHours,
+        machineHours: yours.machineHours,
         manualHours: yours.manualHours,
         speedup: yours.speedup,
         certain: yours.certain,
@@ -648,7 +648,7 @@ function yourTimeLine(triage: Record<string, unknown>): string {
     | {
         lowHours: number;
         highHours: number;
-        totalHours: number;
+        machineHours: number;
         manualHours: number;
         speedup: number;
         certain: boolean;
@@ -659,11 +659,11 @@ function yourTimeLine(triage: Record<string, unknown>): string {
   const range = y.lowHours === y.highHours ? `${y.lowHours}時間` : `${y.lowHours}〜${y.highHours}時間`;
   const speed =
     y.speedup > 1.2
-      ? `AIを使わず全部手でやると ${y.manualHours}時間 なので、約${y.speedup}倍速です。`
+      ? `全部手でやると ${y.manualHours}時間 かかる仕事なので、約${y.speedup}倍速です。`
       : "";
   return (
     `【あなたが手を動かす時間】${range}` +
-    `（仕事全体では ${y.totalHours}時間。差はAIに任せるぶんです）` +
+    `（このほかに機械が ${y.machineHours}時間 動きますが、あなたのカレンダーは埋めません）` +
     `${y.certain ? "" : " ※このジャンルはまだ実案件で試していないので、幅が広いままです"}` +
     `\n  ${y.basis}${speed ? ` ${speed}` : ""}`
   );

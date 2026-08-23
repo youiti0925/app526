@@ -353,7 +353,9 @@ test("工程表から直接数える（合成文を判定器に通さない）",
   assert.ok(one.aiHours > 0);
   // 1単位4時間という根拠の無い既定値に落ちていないこと
   assert.notEqual(one.aiHours, 4);
-  assert.ok(Math.abs(ten.aiHours - one.aiHours * 10) < 0.6, `${one.aiHours} → ${ten.aiHours}`);
+  // 案件ごとの工程（やりとり）は数量で増えないので、厳密な10倍にはならない
+  assert.ok(ten.aiHours > one.aiHours, `${one.aiHours} → ${ten.aiHours}`);
+  assert.ok(ten.aiHours < one.aiHours * 10, "案件ごとの工程まで掛け算している");
   assert.equal(ten.units, 10);
 });
 

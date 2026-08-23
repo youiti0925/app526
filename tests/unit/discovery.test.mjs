@@ -463,12 +463,26 @@ test("SDS・リスクアセスメント・作業標準書・ISO が判定不能�
   }
 });
 
-test("数量に比例して工数が増える", () => {
+test("数量に比例して工数が増える（ただし案件ごとの工程は増えない）", () => {
   const one = estimateByWorkType("1物質分のSDS作成");
   const ten = estimateByWorkType("10物質分のSDS作成");
-  // 表示用に小数第1位で丸めているので、比が厳密に10倍にはならない
-  assert.ok(Math.abs(ten.aiHours / one.aiHours - 10) < 0.2, `${one.aiHours} → ${ten.aiHours}`);
-  assert.ok(ten.humanHours > one.humanHours);
+  assert.ok(ten.humanHours > one.humanHours, `${one.humanHours} → ${ten.humanHours}`);
+  // 単位あたりの工程は10倍になるが、やりとりは1回なので全体は10倍未満
+  assert.ok(ten.humanHours < one.humanHours * 10, "案件ごとの工程まで掛け算している");
+  // 単位ごとの工程だけを見れば、ちゃんと10倍になっている
+  // 工程ごとに小数第1位で丸めているので、比は厳密には10倍にならない
+  const perUnitOne = one.breakdown.filter((b) => !b.perJob).reduce((a, b) => a + b.hours, 0);
+  const perUnitTen = ten.breakdown.filter((b) => !b.perJob).reduce((a, b) => a + b.hours, 0);
+  assert.ok(perUnitTen > perUnitOne * 5, `${perUnitOne} → ${perUnitTen}`);
+});
+
+test("依頼者とのやりとりを数量ぶん掛け算しない", () => {
+  // 20物質のSDSで「メールのやりとりに6.7時間」という数字が
+  // 人の作業時間に入り、そのまま時給の分母になっていた。
+  const one = estimateByWorkType("1物質分のSDS作成");
+  const twenty = estimateByWorkType("20物質分のSDS作成");
+  const talk = (e) => e.breakdown.find((b) => /やりとり/.test(b.name)).hours;
+  assert.equal(talk(one), talk(twenty), "やりとりが数量で増えている");
 });
 
 test("数量が読めなければ1単位として計算し、確信度を下げる", () => {
@@ -478,36 +492,60 @@ test("数量が読めなければ1単位として計算し、確信度を下げ�
   assert.equal(estimateHours("SDSの作成をお願いします。").confidence, "low");
 });
 
-test("人がやらないと終わらない工程を別に出す", () => {
+test("人が関わる工程がゼロにならない", () => {
   const e = estimateByWorkType("化学物質12物質のリスクアセスメント");
-  assert.ok(e.humanHours > 0, "人の工程がゼロになっていない");
-  assert.ok(e.humanHours < e.aiHours, "全部が人の工程ではない");
-  // 現場ヒアリングは人の工程として残っている
-  assert.ok(e.breakdown.some((s) => s.by === "human" && /ヒアリング/.test(s.name)));
+  assert.ok(e.humanHours > 0, "承認まで自動にしてしまっている");
+  assert.ok(e.humanHours < e.manualHours, "全部が人の作業になっている");
+  // 現場の情報は依頼者からもらう（こちらが現場に行く前提にしない）
+  assert.ok(e.breakdown.some((s) => /聞き取り/.test(s.name)));
 });
 
-test("AIによる短縮率が「9割」にならない（検証工程が残るため）", () => {
-  // 実測で、工程レベルの短縮率の中央値は約5割だった。
-  // ここが9割に振れていたら、工数を過小評価している。
+test("全工程が auto の仕事は作らない（承認は必ず人が通す）", () => {
+  // 「最低限、承認だけは人間」がこのアプリの前提。
+  // すべて auto の工程表を作ると、誰も見ないまま納品されることになる。
   for (const w of WORK_TYPES) {
-    const e = estimateByWorkType(w.patterns[0].source.replace(/[\\^$()?:|]/g, "").split("|")[0]);
-    if (!e) continue;
-    assert.ok(e.reduction <= 0.75, `${w.id} の短縮率が高すぎる: ${e.reduction}`);
+    assert.ok(
+      w.steps.some((s) => s.by === "approve" || s.by === "human"),
+      `${w.id} に人が通す工程が無い`
+    );
   }
 });
 
-test("GHS区分の確認は人の工程として残す（AIに任せない）", () => {
+test("短縮率は、手作業に対するあなたの時間の比で出す", () => {
+  // 以前ここに「実測で短縮率の中央値は約5割」と書いて 0.75 の上限を置いていたが、
+  // その「実測」はどこにも無く、私が書いた数字だった。根拠の無い閾値で
+  // 縛るのをやめ、代わりに壊れ方（1を超える・負になる）だけを見る。
+  // 実際の短縮率は、試作ハーネスの採点結果で補正される。
+  for (const w of WORK_TYPES) {
+    const e = wt.estimateUnits(w, 10);
+    assert.ok(e.reduction > 0 && e.reduction < 1, `${w.id}: ${e.reduction}`);
+    assert.ok(e.humanHours < e.manualHours, `${w.id}: 手作業より遅い`);
+  }
+});
+
+test("GHS区分は推論させず、人が必ず通す", () => {
+  // 守りたい性質は「LLMに区分を推論させない」であって、
+  // 「人が45分かけて手で調べる」ではない。
+  // 決定論的な照合にして、人は結果を承認する。ただし auto にはしない。
   const e = estimateByWorkType("5物質分のSDS作成");
   const ghs = e.breakdown.find((s) => /GHS/.test(s.name));
   assert.ok(ghs, "GHSの工程がある");
-  assert.equal(ghs.by, "human");
-  assert.match(ghs.why, /一次情報/);
+  assert.notEqual(ghs.by, "auto", "人が見ないまま通してはいけない");
+  assert.match(ghs.how, /推論させない/, "推論ではなく照合であることを明示する");
+  assert.match(ghs.why, /ずれても/);
 });
 
-test("翻訳は後編集を人の工程として計上する", () => {
+test("法令の該当性も人が通す", () => {
+  const e = estimateByWorkType("5物質分のSDS作成");
+  const law = e.breakdown.find((s) => /法令/.test(s.name));
+  assert.ok(law);
+  assert.notEqual(law.by, "auto");
+});
+
+test("翻訳は確認を人の工程として計上する", () => {
   const e = estimateByWorkType("技術資料20,000文字を英訳してください。");
-  const post = e.breakdown.find((s) => /後編集/.test(s.name));
-  assert.equal(post.by, "human");
+  const post = e.breakdown.find((s) => /確認/.test(s.name));
+  assert.equal(post.by, "approve");
   // 2万文字 = 20単位。機械翻訳より後編集のほうが長い
   assert.ok(post.hours > 1, String(post.hours));
 });
@@ -580,7 +618,7 @@ test("工程の内訳があれば、根拠として文面に入れる", () => {
     breakdown: byType,
     marketRateJpy: byType.workType.marketRateJpy,
   });
-  assert.match(r.message, /GHS区分の確認/);
+  assert.match(r.message, /GHS区分の照合/);
   assert.match(r.message, /15,000〜50,000円/, "相場を添える");
 });
 
@@ -1318,23 +1356,21 @@ const yt = await import("../../dist-test/agent/yourtime.js");
 
 const SDS20 = "SDSの作成をお願いします。20物質分です。";
 
-test("あなたの時間は、仕事全体の作業量より短い", () => {
+test("あなたの時間は、承認と確認のぶんだけ", () => {
   const est = wt.estimateByWorkType(SDS20);
   assert.ok(est);
   const y = yt.yourTime(est, "proven");
-  assert.equal(y.totalHours, Math.round(est.aiHours * 10) / 10);
-  assert.ok(y.lowHours < y.totalHours, `${y.lowHours} / ${y.totalHours}`);
+  // 機械が動く時間はカレンダーを埋めないので、別に持つ
+  assert.equal(y.machineHours, est.machineHours);
+  assert.ok(y.lowHours < y.manualHours / 5, `${y.lowHours} / 手作業 ${y.manualHours}`);
   assert.ok(y.certain);
 });
 
-test("効きめは、全体との差ではなく手作業との差で見る", () => {
-  // SDSは工程の74%が人の担当（GHS区分の確認は仕様上AIに任せられない）。
-  // なので「全体との差」を見ると効いていないように読める。
-  // 比べる相手は、AIを使わず全部手でやった場合。
+test("効きめは、手作業との差で見る", () => {
   const est = wt.estimateByWorkType(SDS20);
   const y = yt.yourTime(est, "proven");
-  assert.ok(y.manualHours > y.totalHours, `手作業 ${y.manualHours} / AI併用 ${y.totalHours}`);
-  assert.ok(y.speedup >= 2, `倍率 ${y.speedup}`);
+  assert.ok(y.manualHours > y.highHours, `手作業 ${y.manualHours} / あなた ${y.highHours}`);
+  assert.ok(y.speedup >= 5, `倍率 ${y.speedup}`);
 });
 
 test("それでも、あなたの時間はゼロにならない", () => {
@@ -1345,19 +1381,21 @@ test("それでも、あなたの時間はゼロにならない", () => {
   assert.ok(y.highHours > y.lowHours, "確認と手直しのぶんが乗っていない");
 });
 
-test("試作で「作れなかった」ジャンルは、全部あなたの時間として見る", () => {
+test("試作で「作れなかった」ジャンルは、手作業に戻す", () => {
+  // 承認して出す、という前提が成り立たなかったジャンル。
   const est = wt.estimateByWorkType(SDS20);
   const y = yt.yourTime(est, "disproven");
-  assert.equal(y.lowHours, y.totalHours);
-  assert.equal(y.highHours, y.totalHours);
-  assert.match(y.basis, /全部あなたの時間/);
+  assert.equal(y.lowHours, y.manualHours);
+  assert.equal(y.highHours, y.manualHours);
+  assert.equal(y.speedup, 1);
+  assert.match(y.basis, /成り立たない/);
 });
 
-test("未検証のジャンルは、幅を狭めずに「分からない」と返す", () => {
+test("未検証のジャンルは、幅を残して「分からない」と返す", () => {
   const est = wt.estimateByWorkType(SDS20);
   const y = yt.yourTime(est, "untested");
-  assert.equal(y.lowHours, Math.round(Math.min(est.humanHours, est.aiHours) * 10) / 10);
-  assert.equal(y.highHours, y.totalHours);
+  assert.equal(y.lowHours, Math.round(est.humanHours * 10) / 10);
+  assert.ok(y.highHours > y.lowHours, "承認だけで済む前提に寄せてしまっている");
   assert.equal(y.certain, false);
   assert.match(y.basis, /試していない/);
 });
@@ -1367,7 +1405,7 @@ test("条件つきは、実証済みより人の時間を多く見る", () => {
   const proven = yt.yourTime(est, "proven");
   const needs = yt.yourTime(est, "needs_human");
   assert.ok(needs.highHours > proven.highHours, `${needs.highHours} vs ${proven.highHours}`);
-  assert.ok(needs.highHours < needs.totalHours);
+  assert.ok(needs.highHours <= needs.manualHours);
 });
 
 test("工程の内訳が無い仕事は、勝手に比率を掛けない", () => {

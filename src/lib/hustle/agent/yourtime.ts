@@ -30,8 +30,11 @@ export interface YourTime {
   lowHours: number;
   /** 同、上限 */
   highHours: number;
-  /** 仕事全体の作業量（AIがやるぶんを含む）。納期の目安に使う。 */
-  totalHours: number;
+  /**
+   * 機械が動いている時間。あなたのカレンダーは埋めない。
+   * 納期に間に合うかを見るときだけ使う。
+   */
+  machineHours: number;
   /**
    * AIを使わず全部手でやった場合の時間。
    *
@@ -51,97 +54,88 @@ export interface YourTime {
 const round = (n: number): number => Math.max(0.1, Math.round(n * 10) / 10);
 
 /**
- * 実証済みのジャンルでも、AIの出力をそのまま出さない。
- * 目視の確認と手直しに、AIがやった作業量のこれだけを見込む。
+ * 承認だけで済まなかったときの割り増し。
  *
- * 根拠: 試作9件のうち最も出来が良かったもの（要求充足78点）でも、
- * 採点者は「納品まで12時間」と付けた。ゼロで見積もることはできない。
- * 実証済み（そのまま納品できた）の実例はまだ無いので、
- * ここは「一番良かった実例より甘くしない」という下限の置き方をしている。
+ * 工程表の「あなたの時間」は、AIとツールが出したものを人が承認する時間として
+ * 積んである。それが成り立つのは、出てきたものが承認できる水準のときだけ。
+ *
+ * 実案件9件で成果物を作らせて採点した結果、そのまま納品できたものはゼロだった。
+ * だから「承認だけ」を額面どおりには扱わない。試作の結果に応じて割り増す。
  */
-const REVIEW_SHARE_WHEN_PROVEN = 0.15;
-
-/**
- * 条件つき（人が手を入れれば納品できた）のジャンル。
- * AIがやった作業量のうち、これだけは結局こちらで触ることになる。
- */
-const REVIEW_SHARE_WHEN_NEEDS_HUMAN = 0.4;
+const OVERRUN: Record<Evidence, number> = {
+  // 実案件で納品できたジャンル。それでも確認で1〜2件は差し戻る。
+  proven: 1.3,
+  // 人が手を入れれば納品できた。承認では済まず、直す時間が要る。
+  needs_human: 2.5,
+  // 納品できる水準にならなかった。承認モデルが成り立たない。
+  disproven: 1,
+  untested: 1,
+};
 
 /**
  * 工程表と試作の結果から、あなたの時間を出す。
  *
- * @param estimate 工程表からの見積り（aiHours = 全体、humanHours = 人の担当）
+ * @param estimate 工程表からの見積り
  * @param evidence そのジャンルを実際に試した結果。試していなければ "untested"。
  */
 export function yourTime(estimate: WorkTypeEstimate, evidence: Evidence): YourTime {
-  const total = round(estimate.aiHours);
-  const human = round(Math.min(estimate.humanHours, estimate.aiHours));
+  const approve = round(estimate.humanHours);
   const manual = round(estimate.manualHours);
-  // AIに任せる部分
-  const aiPart = Math.max(0, total - human);
-  const withManual = (low: number, high: number) => ({
-    manualHours: manual,
-    // 手作業に対する倍率。悪いほうの端で見る。
-    speedup: high > 0 ? Math.round((manual / high) * 10) / 10 : 1,
-  });
+  const machine = round(estimate.machineHours);
+  const speed = (h: number) => (h > 0 ? Math.round((manual / h) * 10) / 10 : 1);
 
-  switch (evidence) {
-    case "proven":
-      return {
-        lowHours: human,
-        highHours: round(human + aiPart * REVIEW_SHARE_WHEN_PROVEN),
-        totalHours: total,
-        ...withManual(human, round(human + aiPart * REVIEW_SHARE_WHEN_PROVEN)),
-        certain: true,
-        basis:
-          `工程表の人の担当が ${human}時間。このジャンルは実案件の試作で納品できています。` +
-          `AIが作ったぶん（${round(aiPart)}時間ぶんの作業）の確認と手直しに ` +
-          `${Math.round(REVIEW_SHARE_WHEN_PROVEN * 100)}% を見込んでいます。`,
-      };
-
-    case "needs_human":
-      return {
-        lowHours: human,
-        highHours: round(human + aiPart * REVIEW_SHARE_WHEN_NEEDS_HUMAN),
-        totalHours: total,
-        ...withManual(human, round(human + aiPart * REVIEW_SHARE_WHEN_NEEDS_HUMAN)),
-        certain: true,
-        basis:
-          `工程表の人の担当が ${human}時間。このジャンルは試作で「人が手を入れれば納品できる」でした。` +
-          `AIが作ったぶんの ${Math.round(REVIEW_SHARE_WHEN_NEEDS_HUMAN * 100)}% は結局こちらで触ることになります。`,
-      };
-
-    case "disproven":
-      return {
-        lowHours: total,
-        highHours: total,
-        totalHours: total,
-        ...withManual(total, total),
-        certain: true,
-        basis:
-          `このジャンルは試作で「納品できる水準にならなかった」という結果でした。` +
-          `AIの出力を当てにできないので、${total}時間 は全部あなたの時間として見ています。`,
-      };
-
-    default:
-      return {
-        lowHours: human,
-        highHours: total,
-        totalHours: total,
-        ...withManual(human, total),
-        certain: false,
-        basis:
-          `工程表の人の担当は ${human}時間で、全体は ${total}時間です。` +
-          `ただしこのジャンルはまだ実案件で試していないので、AIの出力がそのまま使えるか分かりません。` +
-          `うまくいけば ${human}時間、AIの出力が使えなければ ${total}時間、と幅で見てください。`,
-      };
+  if (evidence === "disproven") {
+    // AIの出力を当てにできない。手作業に戻る。
+    return {
+      lowHours: manual,
+      highHours: manual,
+      machineHours: machine,
+      manualHours: manual,
+      speedup: 1,
+      certain: true,
+      basis:
+        `このジャンルは実案件の試作で「納品できる水準にならなかった」という結果でした。` +
+        `AIの出力を承認して出す、という前提が成り立たないので、手作業と同じ ${manual}時間 で見ています。`,
+    };
   }
+
+  if (evidence === "untested") {
+    return {
+      lowHours: approve,
+      highHours: round(Math.min(manual, approve * OVERRUN.needs_human)),
+      machineHours: machine,
+      manualHours: manual,
+      speedup: speed(round(Math.min(manual, approve * OVERRUN.needs_human))),
+      certain: false,
+      basis:
+        `工程表では、あなたがやるのは承認と確認だけで ${approve}時間 です` +
+        `（機械が動くのは別に ${machine}時間。あなたのカレンダーは埋めません）。` +
+        `ただしこのジャンルはまだ実案件で試していないので、承認だけで済むかは分かりません。` +
+        `済まなかった場合を見込んで、上は ${round(Math.min(manual, approve * OVERRUN.needs_human))}時間 まで見ています。`,
+    };
+  }
+
+  const high = round(Math.min(manual, approve * OVERRUN[evidence]));
+  return {
+    lowHours: approve,
+    highHours: high,
+    machineHours: machine,
+    manualHours: manual,
+    speedup: speed(high),
+    certain: true,
+    basis:
+      `工程表では、あなたがやるのは承認と確認だけで ${approve}時間 です` +
+      `（機械が動くのは別に ${machine}時間）。` +
+      (evidence === "proven"
+        ? `このジャンルは実案件の試作で納品できています。確認で差し戻るぶんを見て、上は ${high}時間。`
+        : `このジャンルは試作で「人が手を入れれば納品できる」でした。承認だけでは済まないので、上は ${high}時間。`),
+  };
 }
 
 /**
- * 工程表が無い仕事（文字数からの素朴な見積りなど）向け。
+ * 工程表が無い仕事向け。
  *
- * 工程の内訳が無いので、人とAIの切り分けができない。
+ * 工程の内訳が無いので、どこまで自動化できるかが分からない。
  * ここで適当な比率を掛けると、根拠の無い数字が時給の計算に流れる。
  * **分けられないことを、分けられないまま返す。**
  */
@@ -150,13 +144,13 @@ export function unknownSplit(totalHours: number): YourTime {
   return {
     lowHours: total,
     highHours: total,
-    totalHours: total,
+    machineHours: 0,
     manualHours: total,
     speedup: 1,
     certain: false,
     basis:
       `${total}時間の見積りですが、この仕事は工程の内訳を持っていないので、` +
-      `どこまでAIに任せられるかが分かりません。全部あなたの時間として計算しています。` +
+      `どこまで機械に任せられるかが分かりません。全部あなたの時間として計算しています。` +
       `実際にはもっと短く済む可能性があります（そのぶん時給は上がります）。`,
   };
 }

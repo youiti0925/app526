@@ -111,8 +111,10 @@ function buildTiers(workType: WorkType, minHourlyJpy: number, platform: Platform
 }
 
 function buildIncludes(workType: WorkType, units: number, note: string): string[] {
-  const machine = workType.steps.filter((s) => s.by === "ai").map((s) => s.name);
-  const human = workType.steps.filter((s) => s.by === "human").map((s) => s.name);
+  const machine = workType.steps.filter((s) => s.by === "auto").map((s) => s.name);
+  const human = workType.steps
+    .filter((s) => s.by === "approve" || s.by === "human")
+    .map((s) => s.name);
   return [
     `${units}${workType.unit}ぶん`,
     ...machine.slice(0, 3),
