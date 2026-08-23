@@ -37,6 +37,23 @@ export interface SourceDefinition {
   trackBy: "lastmod" | "seen";
 }
 
+/**
+ * 既定のオン・オフは、実際に取り込んだ結果で決めている。
+ *
+ * 44件を取り込んで契約形態を数えた結果:
+ *   ギークスジョブ      16件 → 全部 月額（準委任の要員募集）
+ *   ITプロパートナーズ  16件 → 全部 月額（準委任の要員募集）
+ *   ココナラ 公開依頼   10件 → 9件が 請負（1件いくらの納品案件）
+ *
+ * 月額の要員募集は、月140〜160時間の常駐が前提です。
+ * 週10時間しか出せない人には、時給が良くても成立しません
+ * （engagement.ts の checkCapacity が全部落とします）。
+ * つまり前2つは、取りに行っても1件も応募できないものを
+ * 相手のサーバーに負荷をかけて集めていたことになります。
+ *
+ * なので、請負が取れるものを既定オン、月額の要員募集を既定オフにしました。
+ * 稼働時間が増えたら、設定画面で前2つを有効にしてください。
+ */
 export const SOURCES: SourceDefinition[] = [
   {
     id: "geechs",
@@ -46,8 +63,8 @@ export const SOURCES: SourceDefinition[] = [
     detailPattern: /\/project\/details\/\d+$/,
     trackBy: "lastmod",
     note:
-      "フリーランスのIT案件が約10,100件。全件に更新日時が入っているので新着だけを拾えます。robots.txt は取得を禁止していません。本文はJSON-LDで取れます。",
-    defaultEnabled: true,
+      "フリーランスのIT案件が約10,100件。全件に更新日時が入っているので新着だけを拾えます。robots.txt は取得を禁止していません。本文はJSON-LDで取れます。取り込んだ16件は全部が月額の準委任（常駐・週5日前提）でした。週の稼働が20時間を超えてから有効にしてください。",
+    defaultEnabled: false,
   },
   {
     id: "itpropartners",
@@ -57,8 +74,8 @@ export const SOURCES: SourceDefinition[] = [
     detailPattern: /\/job\/detail\/\d+$/,
     trackBy: "seen",
     note:
-      "週2日から入れる業務委託案件が約3,000件。エンジニア以外（マーケター・ディレクター）もあります。更新日時がサイトマップに無いので、取り込み済みかどうかで差分を取ります。",
-    defaultEnabled: true,
+      "「週2日から」と書かれた業務委託案件が約3,000件。ただし取り込んだ16件は全部が月額の準委任で、週2日でも月60時間前後が必要でした。更新日時がサイトマップに無いので、取り込み済みかどうかで差分を取ります。週の稼働が15時間を超えてから有効にしてください。",
+    defaultEnabled: false,
   },
   {
     id: "coconala",
@@ -68,8 +85,8 @@ export const SOURCES: SourceDefinition[] = [
     detailPattern: /\/requests\/\d+$/,
     trackBy: "lastmod",
     note:
-      "公開依頼が約230件。実際に取り込んでみたところ、イラスト・動画編集・作曲といった「AIでは納品物を作れない」案件が大半でした。数は少ないので有効にしても負荷は小さいですが、期待はしないでください。",
-    defaultEnabled: false,
+      "公開依頼が約230件。1件いくらの請負が中心で、取り込んだ10件のうち9件が請負でした。いま唯一、週10時間で受けられる案件が取れるソースです。以前ここに「イラスト・動画編集はAIでは作れないので期待するな」と書いていましたが、それは調べる前の思い込みでした（画像生成・ffmpeg・VOICEVOX の利用条件を確認した結果、仕様が決まっているものは作れます。licenses.ts を参照）。件数が少ないので負荷も小さいです。",
+    defaultEnabled: true,
   },
 ];
 

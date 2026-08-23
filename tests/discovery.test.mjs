@@ -1300,3 +1300,12 @@ test("月額の要員募集を試作の対象にしない", () => {
   };
   assert.equal(dr.pickTargets([monthly]).length, 0);
 });
+
+test("既定で有効なソースは、請負が取れるものだけ", () => {
+  // 取り込み実績: ギークス16件・ITプロ16件が全部 月額の準委任、
+  // ココナラ10件のうち9件が請負。週10時間では月額の要員募集は受けられない。
+  const on = sources.SOURCES.filter((s) => s.defaultEnabled).map((s) => s.id);
+  assert.deepEqual(on, ["coconala"], on.join(","));
+  // 無効にしたものも、消さずに残しておく（稼働が増えたら使う）
+  assert.equal(sources.SOURCES.length, 3);
+});

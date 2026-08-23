@@ -524,6 +524,16 @@ function SourceToggles({
               {state.lastError && (
                 <p className="pl-6 mt-2 text-xs text-rose-600 leading-relaxed">
                   前回の失敗: {state.lastError}
+                  {state.consecutiveFailures > 0 && (
+                    <>
+                      {" "}
+                      （{state.consecutiveFailures}回連続。
+                      {state.consecutiveFailures >= 2
+                        ? "サイトの作りが変わったか、プログラムからの取得を弾かれている可能性があります。"
+                        : "次回もう一度この範囲を取りに行きます。"}
+                      ）
+                    </>
+                  )}
                 </p>
               )}
             </div>
