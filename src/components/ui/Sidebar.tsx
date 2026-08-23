@@ -12,6 +12,7 @@ import {
   Video,
   ClipboardCheck,
   BarChart3,
+  Wallet,
 } from "lucide-react";
 
 const navItems = [
@@ -21,6 +22,7 @@ const navItems = [
 ];
 
 const secondaryItems = [
+  { href: "/hustle", label: "副業パイプライン", icon: Wallet },
   { href: "/settings", label: "設定", icon: Settings },
   { href: "/help", label: "ヘルプ", icon: HelpCircle },
 ];

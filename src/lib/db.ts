@@ -1,10 +1,43 @@
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
+import os from "os";
 
-const DATA_DIR = path.join(process.cwd(), "data");
+/**
+ * Resolve a writable data directory.
+ *
+ * Locally (`npm run dev`, self-hosting) this is `<project>/data` and the data
+ * survives restarts. On read-only serverless filesystems (Vercel etc.) that
+ * mkdir throws, so we fall back to the platform temp dir. Data there is
+ * ephemeral — the hustle app mirrors everything to the browser and re-seeds
+ * the server on load, so the user never loses their ledger.
+ */
+function resolveDataDir(): { dir: string; ephemeral: boolean } {
+  const configured = process.env.APP_DATA_DIR;
+  const candidates = configured
+    ? [configured, path.join(os.tmpdir(), "app526-data")]
+    : [path.join(process.cwd(), "data"), path.join(os.tmpdir(), "app526-data")];
+
+  for (let i = 0; i < candidates.length; i++) {
+    try {
+      fs.mkdirSync(candidates[i], { recursive: true });
+      fs.accessSync(candidates[i], fs.constants.W_OK);
+      return { dir: candidates[i], ephemeral: i > 0 };
+    } catch {
+      // try the next candidate
+    }
+  }
+  throw new Error("書き込み可能なデータディレクトリが見つかりません");
+}
+
+const resolved = resolveDataDir();
+
+const DATA_DIR = resolved.dir;
 const DB_PATH = path.join(DATA_DIR, "videosop.db");
 export const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
+
+/** True when the database lives in a temp dir and will not survive a restart. */
+export const STORAGE_IS_EPHEMERAL = resolved.ephemeral;
 
 let _db: Database.Database | null = null;
 

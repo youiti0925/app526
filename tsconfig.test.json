@@ -1,0 +1,24 @@
+{
+  "//": "純ロジックだけを CommonJS にコンパイルして node:test から読む。ブラウザ/Next 依存は含めない。",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": "dist-test",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "noEmit": false
+  },
+  "files": [
+    "src/lib/hustle/types.ts",
+    "src/lib/hustle/paths-schema.ts",
+    "src/lib/hustle/paths-data.ts",
+    "src/lib/hustle/scam-rules.ts",
+    "src/lib/hustle/analytics.ts",
+    "src/lib/hustle/payout.ts",
+    "src/lib/hustle/diagnose.ts",
+    "src/lib/hustle/templates.ts"
+  ]
+}
