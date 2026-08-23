@@ -16,6 +16,8 @@ import { buildRenegotiation } from "./renegotiate";
 import { buildListing, listableWorkTypes, renderListing } from "./listing";
 import { reviewListing, summarizeListings } from "./listing-tracker";
 import { estimateByWorkType } from "./worktypes";
+import { unknownSplit, yourTime, type YourTime } from "./yourtime";
+import { evidenceFor } from "./dryrun-core";
 import { needsEscalation } from "./escalation";
 import { fetchFeed, leadFromParsed } from "./ingest";
 import { SOURCES, fetchSource } from "./sources";
@@ -26,6 +28,7 @@ import {
   writeAgentConfig,
   pushInbox,
   readInbox,
+  readDryRuns,
   readLeads,
   readPublishedListings,
   updateLead,
@@ -234,6 +237,11 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
 
   const sorted = [...pending].sort((a, b) => (b.budgetJpy ?? 0) - (a.budgetJpy ?? 0));
 
+  // 試作の結果をジャンルごとにまとめておく。案件ごとに読み直さない。
+  // 「AIに任せられるか」を主張ではなく結果で決めるために使う。
+  const dryRuns = readDryRuns(undefined, 200);
+  const dryRunsFor = (genre: string) => dryRuns.filter((r) => r.genre === genre);
+
   let notDeliverable = 0;
   let gated = 0;
 
@@ -257,8 +265,20 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     // 遅延して信用を失うか、無理をして時給が崩れるかのどちらかになる。
     const deadline = readDeadline(lead.rawText);
     const byTypeEstimate = estimateByWorkType(lead.rawText);
-    const humanHours = byTypeEstimate?.humanHours ?? estimateHours(lead.rawText)?.highHours ?? 0;
-    const deadlineCheck = checkDeadline(deadline, humanHours, weeklyHours);
+
+    // 週の稼働時間は「あなたの時間」であって、仕事に要る時間の合計ではない。
+    // 処理するのはAIなので、ここを混ぜると受けられるはずの仕事を落とす。
+    // ただし「AIがやるから人の時間はゼロ」でもない（試作9件で、そのまま
+    // 納品できたものはゼロだった）。試作の結果でどちらに寄せるかを決める。
+    const genre = deliver.matched[0] ?? null;
+    const evidence = genre ? evidenceFor(dryRunsFor(genre)) : "untested";
+    const yours: YourTime = byTypeEstimate
+      ? yourTime(byTypeEstimate, evidence)
+      : unknownSplit(estimateHours(lead.rawText)?.highHours ?? 0);
+
+    // 納期に間に合うかは、あなたの時間で見る（AIの待ち時間はカレンダーを埋めない）。
+    // 悪いほうの端を使う。楽観に倒すと、受けてから間に合わないことが分かる。
+    const deadlineCheck = checkDeadline(deadline, yours.highHours, weeklyHours);
 
     let estimate: WorkEstimate | null = estimateHours(lead.rawText);
     let offered = lead.budgetJpy;
@@ -303,11 +323,21 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       // 「月額300,000円 ÷ 見積り15時間 = 時給2万円」と計算していた。
       // 月額の総額を1件の報酬として割るのは常に誤り。時給は出さない。
       hourly = null;
-    } else if (offered && offered > 0 && estimate) {
-      const payout = computePayout(offered, platform, estimate.highHours);
+    } else if (offered && offered > 0) {
+      // ここが「あなたの時間あたりいくらか」。
+      //
+      // 以前は工程表の合計時間（AIがやる工程を含む）で割っていた。
+      // 週10時間はあなたの時間なのだから、割るのもあなたの時間でなければ
+      // 意味が合わない。20物質のSDSなら、合計32時間ではなく
+      // 実際に手を動かす時間で割る。
+      //
+      // 悪いほう（時間が長い側）を low、良いほうを high に置く。
+      // 試作で「作れなかった」ジャンルは yourTime が全時間を返すので、
+      // 従来どおり厳しい数字になる。
+      const payout = computePayout(offered, platform, yours.highHours);
       hourly = {
-        low: Math.round(payout.netJpy / estimate.highHours),
-        high: Math.round(payout.netJpy / Math.max(0.5, estimate.lowHours)),
+        low: Math.round(payout.netJpy / Math.max(0.5, yours.highHours)),
+        high: Math.round(payout.netJpy / Math.max(0.5, yours.lowHours)),
       };
     }
 
@@ -317,11 +347,13 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     if (engagement.kind === "monthly") {
       // 月額契約は応募人数が公開されないことが多く、期待値も出せない
       expected = null;
-    } else if (offered && offered > 0 && estimate) {
-      const payout = computePayout(offered, platform, estimate.highHours);
+    } else if (offered && offered > 0) {
+      // 期待値も、あなたの時間で割る。落選したときに失うのは
+      // 提案文を書いた時間（あなたの時間）なので、単位を揃える。
+      const payout = computePayout(offered, platform, yours.highHours);
       expected = expectedHourly(
         payout.netJpy,
-        (estimate.lowHours + estimate.highHours) / 2,
+        (yours.lowHours + yours.highHours) / 2,
         PROPOSAL_HOURS,
         competition.winRate
       );
@@ -353,14 +385,21 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       reason = deadlineCheck.reason;
     } else if (hourly && hourly.high < minHourly) {
       verdict = "reject";
-      reason = `手数料を引いた実効時給が ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円で、基準の ${minHourly.toLocaleString()}円 を下回る`;
+      // 良いほうの端でも基準に届かないときだけ落とす。
+      // 「あなたの時間 ${yours.lowHours}〜${yours.highHours}時間」で割った数字なので、
+      // どちらの端を見ているのかが分かるように書いておく。
+      reason =
+        `あなたの時間あたりの手取りが ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円で、` +
+        `AIに任せられるぶんを引いても基準の ${minHourly.toLocaleString()}円 に届きません` +
+        `（あなたが手を動かす時間を ${yours.lowHours}〜${yours.highHours}時間 と見ています。全体の作業量は ${yours.totalHours}時間）`;
       // 「安いから見送り」で終わらせない。いくらなら受けられるかを出す。
-      if (offered && estimate) {
-        const byType = estimateByWorkType(lead.rawText);
+      if (offered) {
+        const byType = byTypeEstimate;
         renegotiation = buildRenegotiation({
           title: lead.title,
           offeredJpy: offered,
-          hours: estimate.highHours,
+          // 交渉で示すのは、こちらが実際に使う時間。
+          hours: yours.highHours,
           minHourlyJpy: minHourly,
           platform,
           breakdown: byType,
@@ -412,6 +451,18 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       estimate,
       estimatedBy,
       hourly,
+      // あなたが手を動かす時間と、仕事全体の作業量。
+      // 時給はこの「あなたの時間」で割ったもの。
+      yourTime: {
+        lowHours: yours.lowHours,
+        highHours: yours.highHours,
+        totalHours: yours.totalHours,
+        manualHours: yours.manualHours,
+        speedup: yours.speedup,
+        certain: yours.certain,
+        basis: yours.basis,
+        evidence,
+      },
       risks,
       fitNotes,
       reason,
@@ -585,6 +636,39 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
   };
 }
 
+/**
+ * 「あなたの時間」を1行で書く。
+ *
+ * 時給の数字だけ見せると、それが何で割ったものか分からない。
+ * AIに任せられる前提の数字なのか、全部自分でやる前提の数字なのかで
+ * 意味がまるで変わるので、必ず一緒に出す。
+ */
+function yourTimeLine(triage: Record<string, unknown>): string {
+  const y = triage.yourTime as
+    | {
+        lowHours: number;
+        highHours: number;
+        totalHours: number;
+        manualHours: number;
+        speedup: number;
+        certain: boolean;
+        basis: string;
+      }
+    | undefined;
+  if (!y) return "";
+  const range = y.lowHours === y.highHours ? `${y.lowHours}時間` : `${y.lowHours}〜${y.highHours}時間`;
+  const speed =
+    y.speedup > 1.2
+      ? `AIを使わず全部手でやると ${y.manualHours}時間 なので、約${y.speedup}倍速です。`
+      : "";
+  return (
+    `【あなたが手を動かす時間】${range}` +
+    `（仕事全体では ${y.totalHours}時間。差はAIに任せるぶんです）` +
+    `${y.certain ? "" : " ※このジャンルはまだ実案件で試していないので、幅が広いままです"}` +
+    `\n  ${y.basis}${speed ? ` ${speed}` : ""}`
+  );
+}
+
 const labelVerdict = (v: Lead["verdict"]): string =>
   ({ reject: "見送り", verify_first: "要確認", proceed: "応募候補", unknown: "判定不能" })[v];
 
@@ -652,9 +736,10 @@ export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
     const header = [
       `【この案件の判定】${triage.reason ?? ""}`,
       triage.hourly
-        ? `【実効時給の見込み】${triage.hourly.low.toLocaleString()}〜${triage.hourly.high.toLocaleString()}円（手数料控除後）`
-        : "【実効時給】判定できていません。送る前に手取り計算を通してください。",
-      triage.estimate ? `【想定作業時間】${triage.estimate.lowHours}〜${triage.estimate.highHours}時間 — ${triage.estimate.basis}` : "",
+        ? `【あなたの時間あたりの手取り】${triage.hourly.low.toLocaleString()}〜${triage.hourly.high.toLocaleString()}円（手数料控除後）`
+        : "【時給】判定できていません。送る前に手取り計算を通してください。",
+      yourTimeLine(triage),
+      triage.estimate ? `【仕事全体の作業量】${triage.estimate.lowHours}〜${triage.estimate.highHours}時間 — ${triage.estimate.basis}` : "",
       (triage.risks ?? []).length > 0 ? `\n【送る前に詰めること】\n${(triage.risks ?? []).map((r) => `・${r}`).join("\n")}` : "",
     ]
       .filter(Boolean)

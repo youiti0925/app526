@@ -1309,3 +1309,83 @@ test("既定で有効なソースは、請負が取れるものだけ", () => {
   // 無効にしたものも、消さずに残しておく（稼働が増えたら使う）
   assert.equal(sources.SOURCES.length, 3);
 });
+
+// --- あなたの時間と、仕事全体の作業量を分ける -------------------------------
+// 週10時間は「あなたの時間」であって、仕事に要る時間の合計ではない。
+// 処理するのはAIなので、混ぜると受けられるはずの仕事を落とす。
+
+const yt = await import("../../dist-test/agent/yourtime.js");
+
+const SDS20 = "SDSの作成をお願いします。20物質分です。";
+
+test("あなたの時間は、仕事全体の作業量より短い", () => {
+  const est = wt.estimateByWorkType(SDS20);
+  assert.ok(est);
+  const y = yt.yourTime(est, "proven");
+  assert.equal(y.totalHours, Math.round(est.aiHours * 10) / 10);
+  assert.ok(y.lowHours < y.totalHours, `${y.lowHours} / ${y.totalHours}`);
+  assert.ok(y.certain);
+});
+
+test("効きめは、全体との差ではなく手作業との差で見る", () => {
+  // SDSは工程の74%が人の担当（GHS区分の確認は仕様上AIに任せられない）。
+  // なので「全体との差」を見ると効いていないように読める。
+  // 比べる相手は、AIを使わず全部手でやった場合。
+  const est = wt.estimateByWorkType(SDS20);
+  const y = yt.yourTime(est, "proven");
+  assert.ok(y.manualHours > y.totalHours, `手作業 ${y.manualHours} / AI併用 ${y.totalHours}`);
+  assert.ok(y.speedup >= 2, `倍率 ${y.speedup}`);
+});
+
+test("それでも、あなたの時間はゼロにならない", () => {
+  // 試作9件で「そのまま納品できた」はゼロ。一番良かったもの（78点）でも
+  // 採点者は「納品まで12時間」と付けた。確認の時間を0で見積もらない。
+  const est = wt.estimateByWorkType(SDS20);
+  const y = yt.yourTime(est, "proven");
+  assert.ok(y.highHours > y.lowHours, "確認と手直しのぶんが乗っていない");
+});
+
+test("試作で「作れなかった」ジャンルは、全部あなたの時間として見る", () => {
+  const est = wt.estimateByWorkType(SDS20);
+  const y = yt.yourTime(est, "disproven");
+  assert.equal(y.lowHours, y.totalHours);
+  assert.equal(y.highHours, y.totalHours);
+  assert.match(y.basis, /全部あなたの時間/);
+});
+
+test("未検証のジャンルは、幅を狭めずに「分からない」と返す", () => {
+  const est = wt.estimateByWorkType(SDS20);
+  const y = yt.yourTime(est, "untested");
+  assert.equal(y.lowHours, Math.round(Math.min(est.humanHours, est.aiHours) * 10) / 10);
+  assert.equal(y.highHours, y.totalHours);
+  assert.equal(y.certain, false);
+  assert.match(y.basis, /試していない/);
+});
+
+test("条件つきは、実証済みより人の時間を多く見る", () => {
+  const est = wt.estimateByWorkType(SDS20);
+  const proven = yt.yourTime(est, "proven");
+  const needs = yt.yourTime(est, "needs_human");
+  assert.ok(needs.highHours > proven.highHours, `${needs.highHours} vs ${proven.highHours}`);
+  assert.ok(needs.highHours < needs.totalHours);
+});
+
+test("工程の内訳が無い仕事は、勝手に比率を掛けない", () => {
+  // ここで適当な比率を掛けると、根拠の無い数字が時給の計算に流れる。
+  const y = yt.unknownSplit(12);
+  assert.equal(y.lowHours, 12);
+  assert.equal(y.highHours, 12);
+  assert.equal(y.certain, false);
+  assert.match(y.basis, /分かりません/);
+});
+
+test("あなたの時間で割ると、同じ報酬でも時給が上がる", () => {
+  const est = wt.estimateByWorkType(SDS20);
+  const proven = yt.yourTime(est, "proven");
+  const disproven = yt.yourTime(est, "disproven");
+  const reward = 300_000;
+  assert.ok(
+    reward / proven.highHours > reward / disproven.highHours,
+    `${Math.round(reward / proven.highHours)} vs ${Math.round(reward / disproven.highHours)}`
+  );
+});
