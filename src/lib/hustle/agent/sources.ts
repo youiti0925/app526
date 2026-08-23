@@ -150,6 +150,9 @@ export function parseSitemap(xml: string): SitemapEntry[] {
  * lastmod の無いページは対象外にする。更新日時が無いと位置を進められず、
  * 毎回そこで止まってしまうため。件数は undated として返し、黙って捨てない。
  */
+/** 索引サイトマップで、1回に開く子の上限。 */
+const MAX_INDEX_CHILDREN = 20;
+
 export function selectNew(
   entries: SitemapEntry[],
   detailPattern: RegExp,
@@ -299,6 +302,18 @@ export interface SourceResult {
   remaining: number;
   /** 更新日時が無くて対象外にした数 */
   undated: number;
+  /** 取得しようとして落ちた数 */
+  failedPages: number;
+  /** 取れたが本文が空だった数 */
+  emptyPages: number;
+  /** 索引の子サイトマップのうち、上限で開かなかった数 */
+  skippedChildren: number;
+  /** 索引の子サイトマップのうち、取得に失敗した数 */
+  failedChildren: number;
+  /** 見に行ったのに1件も本文が取れなかったか */
+  allFailed: boolean;
+  /** そのときの説明 */
+  failureNote: string;
   leads: (Partial<Lead> & { rawText: string })[];
   error: string | null;
   /** 次回の since に使う値 */
@@ -316,6 +331,12 @@ export async function fetchSource(source: SourceDefinition, options: FetchOption
     fetched: 0,
     remaining: 0,
     undated: 0,
+    failedPages: 0,
+    emptyPages: 0,
+    skippedChildren: 0,
+    failedChildren: 0,
+    allFailed: false,
+    failureNote: "",
     leads: [],
     error: null,
     newestLastmod: options.since,
@@ -327,12 +348,23 @@ export async function fetchSource(source: SourceDefinition, options: FetchOption
     if (source.isIndex) {
       const index = parseSitemap(await get(source.sitemapUrl));
       // 索引の lastmod が古い子は開かない。無駄な取得をしないため。
-      const fresh = index.filter((c) => !options.since || c.lastmod >= options.since.slice(0, 10));
-      for (const child of fresh.slice(0, 20)) {
+      //
+      // ただし lastmod が無い子は開く。以前は文字列比較で落としていたので
+      // （"" >= "2026-08-20" は false）、lastmod を書かない索引だと
+      // since が入った2回目以降ずっと0件になり、そのサイトが死んでいた。
+      const fresh = index.filter(
+        (c) => !options.since || !c.lastmod || c.lastmod >= options.since.slice(0, 10)
+      );
+      const children = fresh.slice(0, MAX_INDEX_CHILDREN);
+      if (fresh.length > children.length) {
+        result.skippedChildren = fresh.length - children.length;
+      }
+      for (const child of children) {
         try {
           entries.push(...parseSitemap(await get(child.url)));
         } catch {
           // 子サイトマップ1本が落ちても続ける
+          result.failedChildren++;
         }
         await new Promise((r) => setTimeout(r, options.delayMs));
       }
@@ -358,22 +390,39 @@ export async function fetchSource(source: SourceDefinition, options: FetchOption
       try {
         const html = await get(entry.url);
         const text = extractText(html);
-        if (text.length < 80) continue;
-
-        result.leads.push({
-          source: "site",
-          externalId: `${source.id}:${entry.url}`,
-          url: entry.url,
-          title: guessTitle(html, text),
-          rawText: text,
-          budgetJpy: extractBudget(text),
-          postedAt: entry.lastmod || new Date().toISOString(),
-        });
-        result.fetched++;
+        if (text.length < 80) {
+          // 本文が取れなかった。ここで continue すると下の待ち時間を飛ばして
+          // 次のページを叩いてしまう。相手のサーバーに連打をかけることになる。
+          result.emptyPages++;
+        } else {
+          result.leads.push({
+            source: "site",
+            externalId: `${source.id}:${entry.url}`,
+            url: entry.url,
+            title: guessTitle(html, text),
+            rawText: text,
+            budgetJpy: extractBudget(text),
+            postedAt: entry.lastmod || new Date().toISOString(),
+          });
+          result.fetched++;
+        }
       } catch {
         // 1件落ちても続ける
+        result.failedPages++;
       }
+      // 成否にかかわらず必ず待つ
       await new Promise((r) => setTimeout(r, options.delayMs));
+    }
+
+    // 全部取れなかったのに何も言わないと、画面上は「0件でした」としか出ず
+    // 原因が分からない。error とは分けて持つ（error にすると呼び出し側が
+    // 「取得そのものが失敗した」として扱い、位置の判断ができなくなる）。
+    if (result.fetched === 0 && attempted.length > 0) {
+      result.allFailed = true;
+      result.failureNote =
+        `${attempted.length}件を見に行きましたが、1件も本文を取れませんでした` +
+        `（取得エラー ${result.failedPages}件 / 本文が空 ${result.emptyPages}件）。` +
+        `ページの作りが変わったか、プログラムからの取得を弾かれている可能性があります。`;
     }
 
     // 見に行ったところまで位置を進める。取れなかった1件があっても進めてよい

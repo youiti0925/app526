@@ -1092,3 +1092,139 @@ test("依頼の形なら拾う（助詞なしの複合語も）", () => {
     assert.equal(estimateByWorkType(t)?.workType.id, id, t);
   }
 });
+
+// --- サイトマップ取得の回帰（レビュー第5弾）---------------------------------
+
+const { fetchSource } = sources;
+
+/** fetch を差し替えて、応答を辞書で与える。 */
+function stubFetch(pages) {
+  const calls = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    const body = pages[String(url)];
+    if (body === undefined) return { ok: false, status: 404, text: async () => "" };
+    return { ok: true, status: 200, text: async () => body };
+  };
+  return { calls, restore: () => { globalThis.fetch = original; } };
+}
+
+const urlset = (entries) =>
+  `<?xml version="1.0"?><urlset>${entries
+    .map((e) => `<url><loc>${e.loc}</loc>${e.lastmod ? `<lastmod>${e.lastmod}</lastmod>` : ""}</url>`)
+    .join("")}</urlset>`;
+
+const sitemapindex = (children) =>
+  `<?xml version="1.0"?><sitemapindex>${children
+    .map((c) => `<sitemap><loc>${c.loc}</loc>${c.lastmod ? `<lastmod>${c.lastmod}</lastmod>` : ""}</sitemap>`)
+    .join("")}</sitemapindex>`;
+
+const jobPage = (title) =>
+  `<html><body><h1>${title}</h1><p>${"募集内容の本文です。記事作成をお願いします。".repeat(6)}</p></body></html>`;
+
+const INDEX_SOURCE = {
+  id: "t",
+  name: "テスト",
+  sitemapUrl: "https://e.test/sitemap.xml",
+  isIndex: true,
+  detailPattern: /\/job\/\d+$/,
+  trackBy: "lastmod",
+  defaultEnabled: false,
+};
+
+test("索引の子に lastmod が無くても、2回目以降に0件にならない", async () => {
+  // "" >= "2026-08-20" は false。文字列比較で落としていたので、
+  // lastmod を書かない索引は since が入った途端に死んでいた。
+  const stub = stubFetch({
+    "https://e.test/sitemap.xml": sitemapindex([{ loc: "https://e.test/child.xml" }]),
+    "https://e.test/child.xml": urlset([{ loc: "https://e.test/job/1", lastmod: "2026-08-25" }]),
+    "https://e.test/job/1": jobPage("案件1"),
+  });
+  try {
+    const r = await fetchSource(INDEX_SOURCE, {
+      since: "2026-08-20",
+      maxDetails: 5,
+      delayMs: 0,
+      isKnown: () => false,
+    });
+    assert.equal(r.error, null, String(r.error));
+    assert.equal(r.fetched, 1, JSON.stringify(r));
+  } finally {
+    stub.restore();
+  }
+});
+
+const FLAT_SOURCE = { ...INDEX_SOURCE, isIndex: false };
+
+test("本文が取れなくても、次のページとの間隔を空ける", async () => {
+  // 短すぎるページで continue していたので、待ち時間を飛ばして
+  // 相手のサーバーに連打をかけていた。
+  const stub = stubFetch({
+    "https://e.test/sitemap.xml": urlset([
+      { loc: "https://e.test/job/1", lastmod: "2026-08-25" },
+      { loc: "https://e.test/job/2", lastmod: "2026-08-26" },
+    ]),
+    "https://e.test/job/1": "<html><body>短い</body></html>",
+    "https://e.test/job/2": "<html><body>これも短い</body></html>",
+  });
+  try {
+    const started = Date.now();
+    const r = await fetchSource(FLAT_SOURCE, {
+      since: "",
+      maxDetails: 5,
+      delayMs: 40,
+      isKnown: () => false,
+    });
+    const elapsed = Date.now() - started;
+    assert.equal(r.emptyPages, 2, JSON.stringify(r));
+    assert.ok(elapsed >= 70, `間隔を空けていない: ${elapsed}ms`);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("1件も取れなかったことを、黙って0件にしない", async () => {
+  const stub = stubFetch({
+    "https://e.test/sitemap.xml": urlset([{ loc: "https://e.test/job/1", lastmod: "2026-08-25" }]),
+    // job/1 は 404
+  });
+  try {
+    const r = await fetchSource(FLAT_SOURCE, {
+      since: "",
+      maxDetails: 5,
+      delayMs: 0,
+      isKnown: () => false,
+    });
+    assert.equal(r.allFailed, true, JSON.stringify(r));
+    assert.equal(r.failedPages, 1);
+    assert.match(r.failureNote, /1件も本文を取れませんでした/);
+    // error にはしない。error にすると呼び出し側が位置の判断をできなくなる。
+    assert.equal(r.error, null);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("取れたページがあれば allFailed は立たない", async () => {
+  const stub = stubFetch({
+    "https://e.test/sitemap.xml": urlset([
+      { loc: "https://e.test/job/1", lastmod: "2026-08-25" },
+      { loc: "https://e.test/job/2", lastmod: "2026-08-26" },
+    ]),
+    "https://e.test/job/2": jobPage("案件2"),
+  });
+  try {
+    const r = await fetchSource(FLAT_SOURCE, {
+      since: "",
+      maxDetails: 5,
+      delayMs: 0,
+      isKnown: () => false,
+    });
+    assert.equal(r.fetched, 1);
+    assert.equal(r.failedPages, 1);
+    assert.equal(r.allFailed, false);
+  } finally {
+    stub.restore();
+  }
+});

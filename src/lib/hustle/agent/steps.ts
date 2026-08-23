@@ -31,7 +31,7 @@ import {
   updateLead,
   writeLearned,
 } from "./db";
-import { defaultSourceState } from "./types";
+import { MAX_SOURCE_RETRIES, defaultSourceState } from "./types";
 import type { AgentConfig, InboxItem, Lead, LearnedParams, StepId } from "./types";
 import type { CallBudget } from "./budget";
 
@@ -134,25 +134,55 @@ async function ingestFromSources(
     }
     ingested += added;
 
+    // 1件も本文が取れなかったときは、位置を進めない。進めると
+    // 一時的な障害でその日のぶんが二度と拾われない。
+    // ただし進めないままだと同じページを永久に叩くので、
+    // 続けて何度も全滅したら、そのぶんは諦めて先に進む。
+    const failures = result.allFailed ? state.consecutiveFailures + 1 : 0;
+    const giveUp = failures >= MAX_SOURCE_RETRIES;
+    const holdPosition = result.allFailed && !giveUp;
+
+    if (result.allFailed) {
+      ctx.log(
+        "warn",
+        `${source.name}: ${result.failureNote}` +
+          (giveUp
+            ? `${MAX_SOURCE_RETRIES}回続けて取れなかったので、このぶんは諦めて次に進みます。サイトの設定を見直してください。`
+            : `次回もう一度この範囲を取りに行きます（${failures}/${MAX_SOURCE_RETRIES}回目）。`),
+        { sourceId: source.id, failures, failedPages: result.failedPages, emptyPages: result.emptyPages }
+      );
+    }
+
     ctx.log(
       "action",
       `${source.name} から ${added}件 取り込みました（新着 ${result.found}件 / 本文取得 ${result.fetched}件` +
         `${result.remaining > 0 ? ` / 残り ${result.remaining}件 は次回` : ""}` +
-        `${result.undated > 0 ? ` / 更新日時が無く対象外 ${result.undated}件` : ""}）`,
+        `${result.undated > 0 ? ` / 更新日時が無く対象外 ${result.undated}件` : ""}` +
+        `${result.skippedChildren > 0 ? ` / 索引の子 ${result.skippedChildren}本 は次回` : ""}）`,
       {
         sourceId: source.id,
         found: result.found,
         fetched: result.fetched,
         remaining: result.remaining,
         undated: result.undated,
+        failedPages: result.failedPages,
+        emptyPages: result.emptyPages,
+        skippedChildren: result.skippedChildren,
         added,
         since: state.since,
-        nextSince: result.newestLastmod,
+        nextSince: holdPosition ? state.since : result.newestLastmod,
       }
     );
 
     writeAgentConfig({
-      sources: { [source.id]: { since: result.newestLastmod, lastRunAt: now, lastError: "" } },
+      sources: {
+        [source.id]: {
+          since: holdPosition ? state.since : result.newestLastmod,
+          lastRunAt: now,
+          lastError: result.allFailed ? result.failureNote : "",
+          consecutiveFailures: giveUp ? 0 : failures,
+        },
+      },
     });
     // 次のソースに移る前にも間を空ける
     await new Promise((r) => setTimeout(r, 1500));

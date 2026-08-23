@@ -191,6 +191,10 @@ function normalizeSources(stored: unknown): Record<string, SourceState> {
           : defaultSourceState.maxDetails,
       lastRunAt: typeof v.lastRunAt === "string" ? v.lastRunAt : "",
       lastError: typeof v.lastError === "string" ? v.lastError : "",
+      consecutiveFailures:
+        typeof v.consecutiveFailures === "number" && Number.isFinite(v.consecutiveFailures)
+          ? Math.max(0, Math.round(v.consecutiveFailures))
+          : 0,
     };
   }
   return out;
@@ -492,6 +496,34 @@ export function readLeads(status?: Lead["status"], limit = 100): Lead[] {
         .prepare("SELECT * FROM hustle_leads ORDER BY created_at DESC LIMIT ?")
         .all(limit) as LeadRow[]);
   return rows.map(toLead);
+}
+
+/**
+ * id を指定して案件を引く。
+ *
+ * 上位モデルの判定を書き戻すときに、新しい順300件を読んでから
+ * その中を探していた。エスカレーションは時間のかかる経路なので、
+ * 返ってくる頃には300件を超えていることがあり、
+ * せっかく出した判定が「見つかりません」で捨てられていた。
+ */
+export function readLeadsByIds(ids: string[]): Map<string, Lead> {
+  const out = new Map<string, Lead>();
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (unique.length === 0) return out;
+
+  const db = getAgentDb();
+  // SQLite の変数の上限（既定999）に収まるように分ける
+  for (let i = 0; i < unique.length; i += 400) {
+    const chunk = unique.slice(i, i + 400);
+    const rows = db
+      .prepare(`SELECT * FROM hustle_leads WHERE id IN (${chunk.map(() => "?").join(",")})`)
+      .all(...chunk) as LeadRow[];
+    for (const row of rows) {
+      const lead = toLead(row);
+      out.set(lead.id, lead);
+    }
+  }
+  return out;
 }
 
 // --- 承認キュー -------------------------------------------------------------

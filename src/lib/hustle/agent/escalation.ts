@@ -1,7 +1,7 @@
 import { readProfile } from "../db";
 import { PLATFORM_FEES } from "../payout";
 import { DEFAULT_MIN_WAGE_JPY } from "../analytics";
-import { readAgentConfig, readLeads, updateLead, pushInbox, logEvent } from "./db";
+import { readAgentConfig, readLeads, readLeadsByIds, updateLead, pushInbox, logEvent } from "./db";
 import type { Lead } from "./types";
 import { reconcileVerdict } from "./reconcile";
 
@@ -230,7 +230,7 @@ export function applyVerdicts(verdicts: EscalationVerdict[], runId = "escalation
   const config = readAgentConfig();
   const result: ApplyResult = { applied: 0, queued: 0, skipped: [] };
 
-  const known = new Map(readLeads(undefined, 300).map((l) => [l.id, l]));
+  const known = readLeadsByIds(verdicts.map((v) => v.leadId));
 
   for (const v of verdicts) {
     const lead = known.get(v.leadId);

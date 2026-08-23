@@ -146,6 +146,15 @@ export interface SourceState {
   maxDetails: number;
   lastRunAt: string;
   lastError: string;
+  /**
+   * 1件も本文が取れなかった実行が何回続いているか。
+   *
+   * 全滅した回は位置（since）を進めない。進めると、
+   * 一時的な障害でその日のぶんが二度と拾われなくなる。
+   * ただし進めないままだと同じページを永久に叩き続けるので、
+   * この回数が上限に達したら諦めて先に進む。
+   */
+  consecutiveFailures: number;
 }
 
 export const defaultSourceState: SourceState = {
@@ -154,7 +163,11 @@ export const defaultSourceState: SourceState = {
   maxDetails: 12,
   lastRunAt: "",
   lastError: "",
+  consecutiveFailures: 0,
 };
+
+/** 何回続けて全滅したら、そのぶんを諦めて位置を進めるか。 */
+export const MAX_SOURCE_RETRIES = 3;
 
 export interface AgentConfig {
   /** 自律運転を有効にするか */
