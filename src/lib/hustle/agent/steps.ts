@@ -9,6 +9,8 @@ import { detectScopeRisks, estimateHours, type WorkEstimate } from "./estimate";
 import { judgeDeliverability } from "./deliverability";
 import { expectedHourly, readCompetition } from "./competition";
 import { checkCapacity, monthlyHourly, readEngagement } from "./engagement";
+import { checkDeadline, readDeadline } from "./deadline";
+import { checkGates, renderGateQuestions } from "./gates";
 import { buildRenegotiation } from "./renegotiate";
 import { buildListing, listableWorkTypes, renderListing } from "./listing";
 import { estimateByWorkType } from "./worktypes";
@@ -200,12 +202,16 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
   const sorted = [...pending].sort((a, b) => (b.budgetJpy ?? 0) - (a.budgetJpy ?? 0));
 
   let notDeliverable = 0;
+  let gated = 0;
 
   for (const lead of sorted) {
     const scam = scoreScam(lead.rawText);
     const risks = detectScopeRisks(lead.rawText);
     // 一番上の関門。私が納品物を作れない案件は、金額を見るまでもなく落とす。
     // 経歴ではなく納品物で切る（このアプリはAIが作業する前提のため）。
+    // 納品物より先に見る4つの関門（機密・表明保証・納品形式・クレジット）。
+    // ここで落ちる案件は、どのツールを選んでも無料枠では成立しない。
+    const gates = checkGates(lead.rawText);
     const deliver = judgeDeliverability(lead.rawText);
     // 応募人数はページに数字で書いてある。読まずに時給だけ見ると、
     // 44人が応募している案件を「応募候補」として出してしまう。
@@ -214,6 +220,12 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     // 「1案件の報酬」として割ってしまい、実効時給8万円のような数字が出る。
     const engagement = readEngagement(lead.rawText, lead.budgetJpy);
     const capacity = checkCapacity(engagement, weeklyHours);
+    // 時給が良くても、納期までに終わらなければ受けられない。
+    // 遅延して信用を失うか、無理をして時給が崩れるかのどちらかになる。
+    const deadline = readDeadline(lead.rawText);
+    const byTypeEstimate = estimateByWorkType(lead.rawText);
+    const humanHours = byTypeEstimate?.humanHours ?? estimateHours(lead.rawText)?.highHours ?? 0;
+    const deadlineCheck = checkDeadline(deadline, humanHours, weeklyHours);
 
     let estimate: WorkEstimate | null = estimateHours(lead.rawText);
     let offered = lead.budgetJpy;
@@ -281,6 +293,10 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     if (scam.verdict === "danger") {
       verdict = "reject";
       reason = `詐欺・搾取のシグナルが強い（スコア ${scam.score}）`;
+    } else if (!gates.passed && !gates.negotiable) {
+      verdict = "reject";
+      reason = gates.note;
+      gated++;
     } else if (!deliver.canDeliver) {
       verdict = "reject";
       reason = deliver.note;
@@ -291,6 +307,9 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     } else if (engagement.onsite === "required") {
       verdict = "reject";
       reason = "常駐（出社）が条件です。リモートで完結しないので、私が代わりに作業できません";
+    } else if (!deadlineCheck.fits) {
+      verdict = "reject";
+      reason = deadlineCheck.reason;
     } else if (hourly && hourly.high < minHourly) {
       verdict = "reject";
       reason = `手数料を引いた実効時給が ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円で、基準の ${minHourly.toLocaleString()}円 を下回る`;
@@ -323,6 +342,10 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       reason = offered
         ? "作業量を読み取れないため、実効時給を判定できていない"
         : "報酬額が書かれていないため、実効時給を判定できていない";
+    } else if (!gates.passed) {
+      verdict = "verify_first";
+      reason = gates.note;
+      gated++;
     } else if (scam.verdict === "caution" || risks.length > 0 || hourly.low < minHourly) {
       verdict = "verify_first";
       reason =
@@ -349,6 +372,20 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       fitNotes,
       reason,
       minHourlyJpy: minHourly,
+      gates: {
+        passed: gates.passed,
+        negotiable: gates.negotiable,
+        hits: gates.hits.map((h) => ({ id: h.id, label: h.label, matched: h.matched })),
+        note: gates.note,
+      },
+      deadline: {
+        days: deadline.days,
+        rushed: deadline.rushed,
+        fits: deadlineCheck.fits,
+        availableHours: deadlineCheck.availableHours,
+        neededHours: deadlineCheck.neededHours,
+        reason: deadlineCheck.reason,
+      },
       engagement: {
         kind: engagement.kind,
         monthlyJpy: engagement.monthlyJpy,
@@ -417,6 +454,22 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       scamScore: scam.score,
     });
 
+    // 関門に引っかかったものは、何を確認すればよいかを出す。
+    // 「条件が合わない」で終わらせると、聞けば通った案件を毎回捨てる。
+    if (!gates.passed && gates.negotiable) {
+      pushInbox({
+        runId: ctx.runId,
+        kind: "question",
+        priority: 50,
+        title: `応募前の確認: ${lead.title.slice(0, 40)}（${gates.hits.map((h) => h.label).join("・")}）`,
+        body: renderGateQuestions(gates, lead.title),
+        actionUrl: lead.url,
+        leadId: lead.id,
+        meta: { kind: "gate", hits: gates.hits.map((h) => h.id) },
+      });
+      queued++;
+    }
+
     // 単価が理由で落としたものは、交渉すれば取れることがある。黙って捨てない。
     if (renegotiation?.realistic) {
       pushInbox({
@@ -464,8 +517,8 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
   ctx.log(
     "info",
     `${triaged}件を判定し、${rejected}件を除外しました` +
-      `（うち ${notDeliverable}件は私が納品物を作れない案件 / AI使用 ${aiUsed}回）`,
-    { triaged, rejected, notDeliverable, aiUsed }
+      `（うち ${notDeliverable}件は私が納品物を作れない案件 / ${gated}件は応募前の条件で引っかかり / AI使用 ${aiUsed}回）`,
+    { triaged, rejected, notDeliverable, gated, aiUsed }
   );
   if (notDeliverable === triaged && triaged > 0) {
     ctx.log(

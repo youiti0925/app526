@@ -75,7 +75,7 @@ export const TOOL_LICENSES: ToolLicense[] = [
       "納品前に、依頼者がクレジット表記を受け入れるか確認する",
     ],
     note:
-      "本家 VOICEVOX はキャラクターごとに規約が異なります（一部は条件が厳しい）。Nemo 以外を使う場合は、そのキャラクターの規約を個別に確認してください。",
+      "**Nemo を使ってください。** 本家 VOICEVOX はキャラクターごとに規約が違います。No.7 とユーレイちゃんは一般商用不可、もち子さんは音声作品・音声素材・ゲーム作品が対象外、ぞん子は商用なら個別問い合わせ、Voidoll は法人利用なら問い合わせ、青山龍星・後鬼は企業が関わる形なら事前確認が要ります。Nemo ならクレジット1行だけで済み、この分岐に悩まされません。",
   },
   {
     id: "flux_dev",
@@ -107,6 +107,93 @@ export const TOOL_LICENSES: ToolLicense[] = [
     ],
     note:
       "**商用利用そのものは禁止されていません。** 生成物の権利も Google に留保されません（「Google won't claim ownership over that content」）。問題は、無料枠では送った内容が製品改善に使われることです。だから公開情報の処理には使えますが、顧客から預かった資料には使えません。ここを取り違えて「商用禁止」と覚えないでください。",
+  },
+  {
+    id: "sdxl_local",
+    name: "Stable Diffusion XL / 1.5（ローカル実行）",
+    makes: "画像生成",
+    commercial: "ok",
+    costJpy: 0,
+    quote:
+      "「Licensor claims no rights in the Output You generate using the Model.」（CreativeML Open RAIL++-M License）",
+    sourceUrl: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
+    checkedOn: "2026-08-23",
+    obligations: [
+      "他人が配布している LoRA を足すなら、その LoRA 側の配布条件を1件ずつ確認する（ベースが商用可でも LoRA が非商用のことが多い）",
+      "既存キャラ・特定作家の画風に似ていないか目視で確認する（侵害の責任は利用者側）",
+    ],
+    note:
+      "売上の閾値も登録義務も帰属表示も無く、調査した画像生成の中で制約が最も少ない。ただし GPU が要ります。無ければ ChatGPT 無料枠の gpt-image が次点。",
+  },
+  {
+    id: "gpt_image_free",
+    name: "DALL·E / gpt-image（ChatGPT 無料枠）",
+    makes: "画像生成",
+    commercial: "ok",
+    costJpy: 0,
+    quote:
+      "「you own the Output. We hereby assign to you all our right, title, and interest」／ヘルプが「regardless of whether an image was generated through a free or paid credit」と無料・有料の区別を明示的に否定",
+    sourceUrl: "https://openai.com/policies/terms-of-use",
+    checkedOn: "2026-08-23",
+    obligations: [
+      "「他所では使われない」と約束しない（同様の出力が他の利用者にも生成されうると明記されている）",
+    ],
+    note: "無料枠と有料枠で権利の扱いが変わらないことを、運営が名指しで否定しています。GPUが無い場合の第一候補。",
+  },
+  {
+    id: "leonardo_free",
+    name: "Leonardo.Ai（無料プラン）",
+    makes: "画像生成",
+    commercial: "forbidden",
+    costJpy: 0,
+    quote:
+      "§8.7「ownership of all Intellectual Property Rights in any Output you ... create while using the Platform will vest in us upon creation」",
+    sourceUrl: "https://leonardo.ai/terms-of-service/",
+    checkedOn: "2026-08-23",
+    obligations: [],
+    note:
+      "生成した瞬間に権利が運営に移ります。納品すると、自分が持っていない権利を渡すことになります。調査で見つかった中で最も危険な条項でした。",
+  },
+  {
+    id: "opusclip_free",
+    name: "Opus Clip（無料プラン）",
+    makes: "縦型ショート動画の切り抜き",
+    commercial: "forbidden",
+    costJpy: 0,
+    quote:
+      "「You will only use the Services for your own internal, personal, non-commercial use, and not on behalf of or for the benefit of any third party」",
+    sourceUrl: "https://www.opus.pro/terms",
+    checkedOn: "2026-08-23",
+    obligations: [],
+    note:
+      "クライアントワークは「非商用違反」と「第三者の利益のための利用」の二重で規約違反になります。同じことは ffmpeg で無料・無制限にできます。",
+  },
+  {
+    id: "runway_free",
+    name: "Runway（無料プラン）",
+    makes: "動画生成・編集",
+    commercial: "forbidden",
+    costJpy: 0,
+    quote:
+      "「All videos generated on a Free plan feature a Runway watermark.」／§4.1 が proprietary rights notices の改変を禁止",
+    sourceUrl: "https://runwayml.com/terms-of-use",
+    checkedOn: "2026-08-23",
+    obligations: [],
+    note:
+      "透かしが入り、その除去は規約違反です。透かし入りのまま納品するしかない＝実質使えません。",
+  },
+  {
+    id: "elevenlabs_free",
+    name: "ElevenLabs（無料プラン）",
+    makes: "音声合成",
+    commercial: "forbidden",
+    costJpy: 0,
+    quote:
+      "「if you access or use our Services free of charge (such a user, a Free User), you may only use the Services for non-commercial purposes」",
+    sourceUrl: "https://elevenlabs.io/terms-of-use",
+    checkedOn: "2026-08-23",
+    obligations: [],
+    note: "無料枠は非商用に明文で限定されています。VOICEVOX Nemo を使ってください。",
   },
   {
     id: "gcloud_tts",

@@ -598,3 +598,85 @@ test("本物の連鎖販売（ダウンライン構築）はこれまでどお�
   const r = scoreScam("ダウンラインを構築すれば、あなたは何もしなくても権利収入が入り続けます。");
   assert.ok(r.score > 0, JSON.stringify(r));
 });
+
+// ---------------------------------------------------------------------------
+// いつ現金が入るか
+// このアプリを使う理由が「お金が無い」ことなので、
+// いくら稼げるかより、期日までに現金化できるかのほうが重要な場面がある。
+// ---------------------------------------------------------------------------
+
+import { projectPayout, checkCashNeed, nextCutoff, PAYOUT_RULES } from "../dist-test/cashflow.js";
+
+const AUG23 = new Date(2026, 7, 23); // 日曜
+
+test("ココナラは毎週木曜なので現金化が速い", () => {
+  const p = projectPayout(50_000, "coconala", AUG23, AUG23);
+  assert.equal(p.payoutDate, "2026-08-27", "次の木曜");
+  assert.ok(p.daysUntil <= 7, String(p.daysUntil));
+});
+
+test("クラウドワークスは締めてから半月かかる", () => {
+  const p = projectPayout(50_000, "crowdworks", AUG23, AUG23);
+  assert.equal(p.cutoffDate, "2026-08-31", "23日なので月末締め");
+  assert.equal(p.payoutDate, "2026-09-15");
+});
+
+test("15日より前なら15日締め", () => {
+  const aug10 = new Date(2026, 7, 10);
+  assert.equal(projectPayout(50_000, "crowdworks", aug10, aug10).cutoffDate, "2026-08-15");
+});
+
+test("締め曜日当日は、その週に間に合わないものとして翌週にする", () => {
+  const thursday = new Date(2026, 7, 27);
+  const rule = PAYOUT_RULES.find((r) => r.platformId === "coconala");
+  const next = nextCutoff(thursday, rule);
+  assert.equal(next.getDate(), 3, "翌週の木曜（9/3）");
+});
+
+test("最低出金額に届かない報酬は、入らないものとして数える", () => {
+  const p = projectPayout(500, "crowdworks", AUG23, AUG23);
+  assert.equal(p.stuck, true);
+  assert.match(p.note, /引き出せません/);
+});
+
+test("締め日の規則を確認していないものは、その旨を出す", () => {
+  const p = projectPayout(50_000, "direct", AUG23, AUG23);
+  assert.equal(p.verified, false);
+  assert.match(p.note, /未確認/);
+});
+
+test("期日までに足りるかを判定し、足りなければ額と日数を出す", () => {
+  const c = checkCashNeed(
+    { byDate: "2026-09-05", amountJpy: 60_000, label: "家賃" },
+    [
+      { label: "記事10本", amountJpy: 50_000, platformId: "crowdworks", wonAt: AUG23 },
+      { label: "資料作成", amountJpy: 30_000, platformId: "coconala", wonAt: AUG23 },
+    ],
+    AUG23
+  );
+  assert.equal(c.covers, false);
+  assert.equal(c.arriving.length, 1, "ココナラだけ間に合う");
+  assert.equal(c.tooLate.length, 1, "クラウドワークスは9/15で間に合わない");
+  assert.equal(c.shortfallJpy, 60_000 - c.incomingJpy);
+});
+
+test("期日が近いときは、副業で埋めさせずに公的支援へ向ける", () => {
+  const c = checkCashNeed(
+    { byDate: "2026-08-30", amountJpy: 100_000, label: "家賃" },
+    [],
+    AUG23
+  );
+  assert.equal(c.covers, false);
+  assert.match(c.advice, /副業で埋めようとしないでください/);
+  assert.match(c.advice, /緊急小口資金|住居確保給付金/);
+});
+
+test("足りるときは余計なことを言わない", () => {
+  const c = checkCashNeed(
+    { byDate: "2026-09-30", amountJpy: 10_000, label: "携帯代" },
+    [{ label: "資料作成", amountJpy: 30_000, platformId: "coconala", wonAt: AUG23 }],
+    AUG23
+  );
+  assert.equal(c.covers, true);
+  assert.ok(!/公的支援|窓口/.test(c.advice), c.advice);
+});

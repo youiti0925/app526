@@ -730,3 +730,136 @@ test("ナレーション付きの動画案件が、クレジット義務つき�
   assert.ok(r.matched.includes("voice"));
   assert.ok(r.licenseObligations.some((o) => /クレジット/.test(o)), JSON.stringify(r.licenseObligations));
 });
+
+// ---------------------------------------------------------------------------
+// 納期
+// 実効時給が良くても、週10時間で納期までに終わらなければ受けられない。
+// ---------------------------------------------------------------------------
+
+const dl = await import("../dist-test/agent/deadline.js");
+const { readDeadline, checkDeadline } = dl;
+
+const NOW = new Date(2026, 7, 23); // 2026-08-23
+
+test("相対の納期を日数で読む", () => {
+  assert.equal(readDeadline("納期は2週間以内でお願いします。", NOW).days, 14);
+  assert.equal(readDeadline("納期 10日", NOW).days, 10);
+  assert.equal(readDeadline("1ヶ月以内", NOW).days, 30);
+});
+
+test("絶対の納期を日数で読む", () => {
+  assert.equal(readDeadline("納品希望日 2026年9月10日", NOW).days, 18);
+});
+
+test("月日だけの表記で、すでに過ぎていれば来年とみなす", () => {
+  // 8/23 時点で「1月10日」は来年
+  const d = readDeadline("納期 1月10日まで", NOW);
+  assert.ok(d.days > 100, String(d.days));
+});
+
+test("即日は成立しないものとして落とす", () => {
+  const d = readDeadline("即日納品でお願いします", NOW);
+  assert.equal(d.days, 0);
+  assert.equal(d.rushed, true);
+  assert.equal(checkDeadline(d, 5, 10).fits, false);
+});
+
+test("納期が読めなければ落とさず、確認させる", () => {
+  const d = readDeadline("よろしくお願いします。", NOW);
+  assert.equal(d.days, null);
+  const c = checkDeadline(d, 20, 10);
+  assert.equal(c.fits, true);
+  assert.match(c.reason, /応募前に必ず確認/);
+});
+
+test("週の時間を全部1件に注ぐ前提にしない", () => {
+  // 週10時間 × 14日 = 20時間ぶんだが、7割しか充てられない前提なので14時間
+  const d = readDeadline("納期は2週間以内", NOW);
+  const c = checkDeadline(d, 18, 10);
+  assert.equal(c.availableHours, 14);
+  assert.equal(c.fits, false, "楽観に倒さない");
+  assert.match(c.reason, /週かかります/);
+});
+
+test("余裕があれば通す", () => {
+  const c = checkDeadline(readDeadline("納期 2ヶ月", NOW), 20, 10);
+  assert.equal(c.fits, true, c.reason);
+});
+
+test("急ぎを煽る書き方を記録する", () => {
+  assert.equal(readDeadline("至急対応をお願いします。納期は1週間。", NOW).rushed, true);
+  assert.equal(readDeadline("納期は1ヶ月程度で結構です。", NOW).rushed, false);
+});
+
+// ---------------------------------------------------------------------------
+// 応募前の4つの関門
+// ツール調査（規約の条文で確認）から出た結論。この4つで落ちる案件は、
+// どのツールを選んでも無料枠では成立しない。
+// ---------------------------------------------------------------------------
+
+const gt = await import("../dist-test/agent/gates.js");
+const { checkGates, renderGateQuestions } = gt;
+
+test("Premiere プロジェクトファイル必須の案件を拾う", () => {
+  // 実在の案件2件が2件ともこれを要求していた。ffmpeg は .prproj を出せない。
+  const g = checkGates("動画編集をお願いします。Adobe Premiereのプロジェクトファイルにて納品できる方。");
+  assert.equal(g.passed, false);
+  assert.ok(g.hits.some((h) => h.id === "format"));
+});
+
+test("NDA は交渉で外せないものとして扱う", () => {
+  const g = checkGates("本案件はNDAを締結いただきます。社外秘の資料をお渡しします。");
+  assert.equal(g.passed, false);
+  assert.equal(g.negotiable, false, "交渉では外せない");
+  assert.match(g.note, /受けられません/);
+});
+
+test("権利非侵害の表明保証・著作権譲渡・独占利用を拾う", () => {
+  for (const t of [
+    "第三者の権利を侵害しないことを保証していただきます。",
+    "著作権は全部譲渡していただきます。",
+    "独占的に利用したいので、他所では使わないでください。",
+  ]) {
+    const g = checkGates(t);
+    assert.ok(g.hits.some((h) => h.id === "warranty"), t);
+  }
+});
+
+test("クレジット表記が出せない案件を拾う", () => {
+  const g = checkGates("弊社名義として公開するため、クレジット表記は不可です。");
+  assert.ok(g.hits.some((h) => h.id === "credit"));
+});
+
+test("交渉で外せるものだけなら、落とさず確認に回す", () => {
+  const g = checkGates("Premiereのプロジェクトファイルで納品してください。");
+  assert.equal(g.passed, false);
+  assert.equal(g.negotiable, true);
+  assert.match(g.note, /確認すれば通る可能性/);
+});
+
+test("普通の案件は素通しする", () => {
+  const g = checkGates("記事を5本書いてください。テーマは弊社ブログの既存記事に沿って。");
+  assert.equal(g.passed, true);
+  assert.equal(g.hits.length, 0);
+});
+
+test("確認事項は、何を聞けばよいかまで書く", () => {
+  const g = checkGates("Adobe Premiereのプロジェクトファイルで納品してください。");
+  const md = renderGateQuestions(g, "動画編集");
+  assert.match(md, /完成データ/);
+  assert.match(md, /該当箇所/);
+});
+
+test("汎用イラストは作れる側に入っている（ライセンスを確認した結果）", () => {
+  const r = judgeDeliverability("ブログのアイキャッチ画像を10点、用意してください。");
+  assert.equal(r.canDeliver, true, r.note);
+  assert.ok(r.matched.includes("image_gen"), JSON.stringify(r.matched));
+});
+
+test("画風・キャラ指定のイラストは作れない側のまま", () => {
+  const r = judgeDeliverability(
+    "この画風でオリジナルキャラクターのイラストを制作していただける方を募集します。CLIP STUDIO PAINT使用。"
+  );
+  assert.equal(r.canDeliver, false, r.note);
+  assert.ok(r.matched.includes("art"));
+});

@@ -146,6 +146,14 @@ export const GENRE_TARGETS: GenreTarget[] = [
     gradeFocus: ["処理結果が要求どおりか", "枚数が多くても現実的な時間で終わるか"],
   },
   {
+    genre: "image_gen",
+    label: "汎用イラスト・画像",
+    claim: "can",
+    probe:
+      "画風の指定が無い画像（アイキャッチ、挿絵、アイコン）を、無料で商用利用できる手段で実際に出してください。使った手段の商用可否を規約で確認して書いてください。",
+    gradeFocus: ["依頼者が金を払う水準か", "商用利用が許諾されている手段か", "既存の作品に似ていないか"],
+  },
+  {
     genre: "art",
     label: "イラスト・キャラクター",
     claim: "cannot",
