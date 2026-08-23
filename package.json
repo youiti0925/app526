@@ -8,7 +8,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsc -p tsconfig.test.json && TZ=UTC node --test tests/*.test.mjs && TZ=Asia/Tokyo node --test tests/*.test.mjs",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "tsc -p tsconfig.test.json && TZ=UTC node --test tests/unit/*.test.mjs && TZ=Asia/Tokyo node --test tests/unit/*.test.mjs",
+    "test:e2e": "tsc -p tsconfig.e2e.json && TZ=Asia/Tokyo node --test tests/e2e.test.mjs",
     "typecheck": "tsc --noEmit",
     "agent": "node scripts/agent-daemon.mjs",
     "claude-batch": "node scripts/claude-batch.mjs"

@@ -4,13 +4,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { scoreScam, combineSignals } from "../dist-test/scam-rules.js";
-import { computeStats, projectGoal, summarizeTasks, shiftDays, todayLocal } from "../dist-test/analytics.js";
-import { computePayout, PLATFORM_FEES } from "../dist-test/payout.js";
-import { diagnose, planToTasks } from "../dist-test/diagnose.js";
-import { PATH_DEFINITIONS } from "../dist-test/paths-data.js";
-import { emptyProfile } from "../dist-test/types.js";
-import { TEMPLATES } from "../dist-test/templates.js";
+import { scoreScam, combineSignals } from "../../dist-test/scam-rules.js";
+import { computeStats, projectGoal, summarizeTasks, shiftDays, todayLocal } from "../../dist-test/analytics.js";
+import { computePayout, PLATFORM_FEES } from "../../dist-test/payout.js";
+import { diagnose, planToTasks } from "../../dist-test/diagnose.js";
+import { PATH_DEFINITIONS } from "../../dist-test/paths-data.js";
+import { emptyProfile } from "../../dist-test/types.js";
+import { TEMPLATES } from "../../dist-test/templates.js";
 
 const today = todayLocal();
 
@@ -605,7 +605,7 @@ test("本物の連鎖販売（ダウンライン構築）はこれまでどお�
 // いくら稼げるかより、期日までに現金化できるかのほうが重要な場面がある。
 // ---------------------------------------------------------------------------
 
-import { projectPayout, checkCashNeed, nextCutoff, PAYOUT_RULES } from "../dist-test/cashflow.js";
+import { projectPayout, checkCashNeed, nextCutoff, PAYOUT_RULES } from "../../dist-test/cashflow.js";
 
 const AUG23 = new Date(2026, 7, 23); // 日曜
 
@@ -687,7 +687,7 @@ test("足りるときは余計なことを言わない", () => {
 // 選択肢を並べず、状態から1つだけ決める。順番は固定で、気分で変えない。
 // ---------------------------------------------------------------------------
 
-import { decideNextAction } from "../dist-test/next-action.js";
+import { decideNextAction } from "../../dist-test/next-action.js";
 
 const appState = (over = {}) => ({
   pendingInbox: 0,
@@ -774,7 +774,7 @@ test("何も無ければ、待たせずに入り口を増やさせる", () => {
 // これは所得税だけの話で、住民税の申告は金額に関係なく必要。
 // ---------------------------------------------------------------------------
 
-import { summarizeTax, INCOME_TAX_THRESHOLD_JPY } from "../dist-test/tax.js";
+import { summarizeTax, INCOME_TAX_THRESHOLD_JPY } from "../../dist-test/tax.js";
 
 test("20万円のラインは売上ではなく所得（売上 − 経費）で見る", () => {
   const t = summarizeTax({

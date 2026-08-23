@@ -3,9 +3,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { estimateHours, detectScopeRisks } from "../dist-test/agent/estimate.js";
-import { extractBudget, parsePasted, parseFeed, splitPasted, fingerprint, cleanEmail } from "../dist-test/agent/ingest.js";
-import { CallBudget } from "../dist-test/agent/budget.js";
+import { estimateHours, detectScopeRisks } from "../../dist-test/agent/estimate.js";
+import { extractBudget, parsePasted, parseFeed, splitPasted, fingerprint, cleanEmail } from "../../dist-test/agent/ingest.js";
+import { CallBudget } from "../../dist-test/agent/budget.js";
 
 // --- 作業量の見積もり（AIなしで実効時給を出すための土台）-------------------
 
@@ -222,7 +222,7 @@ test("時給が最低賃金を大きく割る案件を見逃さない", () => {
 // --- 上位モデルの判定の検算 --------------------------------------------------
 // ここは安全上の要。返ってきた結論より、金額と時間から計算した数字を優先する。
 
-import { reconcileVerdict } from "../dist-test/agent/reconcile.js";
+import { reconcileVerdict } from "../../dist-test/agent/reconcile.js";
 
 const CW = { feeRate: 0.2, withdrawalFeeJpy: 500 };
 const base = {
@@ -301,10 +301,10 @@ test("地雷の数だけスコアが下がる", () => {
 
 // --- レビュー第3・4弾の回帰 --------------------------------------------------
 
-import { STEP_ORDER } from "../dist-test/agent/types.js";
-import { estimateUnits, estimateByWorkType, stripNonQuantities } from "../dist-test/agent/worktypes.js";
-import { reconcileDiscovery } from "../dist-test/agent/discovery-core.js";
-import { buildRenegotiation } from "../dist-test/agent/renegotiate.js";
+import { STEP_ORDER } from "../../dist-test/agent/types.js";
+import { estimateUnits, estimateByWorkType, stripNonQuantities } from "../../dist-test/agent/worktypes.js";
+import { reconcileDiscovery } from "../../dist-test/agent/discovery-core.js";
+import { buildRenegotiation } from "../../dist-test/agent/renegotiate.js";
 
 test("工程の並び順に listing が含まれる（APIの絞り込みが素通りしない）", () => {
   // ここが欠けていたせいで only:["listing"] が「該当なし」になり、

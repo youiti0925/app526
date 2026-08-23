@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import * as sources from "../dist-test/agent/sources.js";
-import * as core from "../dist-test/agent/discovery-core.js";
+import * as sources from "../../dist-test/agent/sources.js";
+import * as core from "../../dist-test/agent/discovery-core.js";
 
 const { parseSitemap, selectNew, nextSince, extractText, dropRepeatedShortLines } = sources;
 const { reconcileDiscovery, parseFindings } = core;
@@ -313,7 +313,7 @@ test("key が無ければ URL、URLも無ければタイトルで代用する", 
 // 通してしまった。応募人数はページに書いてあったのに読んでいなかった。
 // ---------------------------------------------------------------------------
 
-const comp = await import("../dist-test/agent/competition.js");
+const comp = await import("../../dist-test/agent/competition.js");
 const { readCompetition, estimateWinRate, expectedHourly } = comp;
 
 test("応募人数と閲覧数を読む", () => {
@@ -368,7 +368,7 @@ test("競合が少なければ期待時給は受注時の時給に近づく", ()
 // として割り、実効時給57,119〜85,679円 という数字を出していた。
 // ---------------------------------------------------------------------------
 
-const eng = await import("../dist-test/agent/engagement.js");
+const eng = await import("../../dist-test/agent/engagement.js");
 const { readEngagement, checkCapacity, monthlyHourly, readMonthlyRate } = eng;
 
 test("ラベルと数字が離れていても月額を読む", () => {
@@ -444,8 +444,8 @@ test("「〜1,500,000円/月」のような他案件の単価表記も金額と�
 // SDS・リスクアセスメント・作業標準書・ISO が全部「判定不能」で止まっていた。
 // ---------------------------------------------------------------------------
 
-const wt = await import("../dist-test/agent/worktypes.js");
-const est = await import("../dist-test/agent/estimate.js");
+const wt = await import("../../dist-test/agent/worktypes.js");
+const est = await import("../../dist-test/agent/estimate.js");
 const { estimateByWorkType, WORK_TYPES } = wt;
 const { estimateHours } = est;
 
@@ -517,7 +517,7 @@ test("翻訳は後編集を人の工程として計上する", () => {
 // 「安いから見送り」で終わらせると、聞けば動いたかもしれない案件を毎回捨てる。
 // ---------------------------------------------------------------------------
 
-const rn = await import("../dist-test/agent/renegotiate.js");
+const rn = await import("../../dist-test/agent/renegotiate.js");
 const { requiredAsk, buildRenegotiation } = rn;
 const CW = { feeRate: 0.2, withdrawalFeeJpy: 500, name: "クラウドワークス" };
 
@@ -590,7 +590,7 @@ test("工程の内訳があれば、根拠として文面に入れる", () => {
 // 原理的に見えない。ココナラの公開依頼1,751件に1件も出てこなかった。
 // ---------------------------------------------------------------------------
 
-const ls = await import("../dist-test/agent/listing.js");
+const ls = await import("../../dist-test/agent/listing.js");
 const { buildListing, listableWorkTypes, renderListing } = ls;
 
 test("狙う仕事の出品プランが全部作れる", () => {
@@ -665,8 +665,8 @@ test("出品文には、出品前に人が確認すべきことを添える", ()
 // 「作れる」と「納品してよい」は別。出来が良くても規約違反なら納品できない。
 // ---------------------------------------------------------------------------
 
-const lic = await import("../dist-test/agent/licenses.js");
-const del = await import("../dist-test/agent/deliverability.js");
+const lic = await import("../../dist-test/agent/licenses.js");
+const del = await import("../../dist-test/agent/deliverability.js");
 const { TOOL_LICENSES, obligationsFor, blockedTools, freeCommercialTools } = lic;
 const { judgeDeliverability } = del;
 
@@ -736,7 +736,7 @@ test("ナレーション付きの動画案件が、クレジット義務つき�
 // 実効時給が良くても、週10時間で納期までに終わらなければ受けられない。
 // ---------------------------------------------------------------------------
 
-const dl = await import("../dist-test/agent/deadline.js");
+const dl = await import("../../dist-test/agent/deadline.js");
 const { readDeadline, checkDeadline } = dl;
 
 const NOW = new Date(2026, 7, 23); // 2026-08-23
@@ -804,7 +804,7 @@ test("急ぎを煽る書き方を記録する", () => {
 // どのツールを選んでも無料枠では成立しない。
 // ---------------------------------------------------------------------------
 
-const gt = await import("../dist-test/agent/gates.js");
+const gt = await import("../../dist-test/agent/gates.js");
 const { checkGates, renderGateQuestions } = gt;
 
 test("Premiere プロジェクトファイル必須の案件を拾う", () => {
@@ -877,7 +877,7 @@ test("画風・キャラ指定のイラストは作れない側のまま", () =>
 // 半年ゼロのものを「まだ早い」と言い続けるのも違う。境目を数字で決める。
 // ---------------------------------------------------------------------------
 
-const lt = await import("../dist-test/agent/listing-tracker.js");
+const lt = await import("../../dist-test/agent/listing-tracker.js");
 const { reviewListing, summarizeListings } = lt;
 
 const listing = (over = {}) => ({
@@ -951,7 +951,7 @@ test("全部が様子見なら、いじらずに出品を増やさせる", () =>
 // 失敗の型は全件同じで、募集に書いてある項目を黙って飛ばしていた。
 // ---------------------------------------------------------------------------
 
-const cov = await import("../dist-test/agent/coverage.js");
+const cov = await import("../../dist-test/agent/coverage.js");
 const { extractRequirements, buildChecklist } = cov;
 
 const POSTING = `【動画制作の依頼】
@@ -1013,7 +1013,7 @@ test("なぜ確認が要るのかを毎回書く（形骸化させない）", ()
 // robots.txt の解析（緩く解釈すると規約違反になる）
 // ---------------------------------------------------------------------------
 
-const rb = await import("../dist-test/agent/robots.js");
+const rb = await import("../../dist-test/agent/robots.js");
 const { parseRobots, isAllowed } = rb;
 
 test("同じUAを名指しするグループが複数あれば、全部をまとめて見る", () => {
@@ -1035,8 +1035,8 @@ test("robots.txt が読めなければ許可しない", () => {
 });
 
 test("調査は案件ページのパスで判定する（トップだけ見ない）", async () => {
-  const pr = await import("../dist-test/agent/probe.js");
-  const sr = await import("../dist-test/agent/site-registry.js");
+  const pr = await import("../../dist-test/agent/probe.js");
+  const sr = await import("../../dist-test/agent/site-registry.js");
   const coconala = sr.SITE_CANDIDATES.find((s) => s.id === "coconala");
   assert.equal(pr.samplePath(coconala), "/requests/123456");
 });
@@ -1231,7 +1231,7 @@ test("取れたページがあれば allFailed は立たない", async () => {
 
 // --- 試作ハーネスの採点（能力表を書き換える土台なので、ここが緩むと全部緩む）---
 
-const dr = await import("../dist-test/agent/dryrun-core.js");
+const dr = await import("../../dist-test/agent/dryrun-core.js");
 
 const grade = (over = {}) => ({
   meetsRequirement: 90,

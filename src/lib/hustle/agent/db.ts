@@ -18,6 +18,7 @@ import type { Discovery, DiscoveryChannel } from "./discovery-core";
 import type { DryRun, DryRunStatus, Grade } from "./dryrun-core";
 import type { PublishedListing, ListingStatus } from "./listing-tracker";
 import type { Capability } from "./deliverability";
+import { SOURCES } from "./sources";
 
 let initialized = false;
 
@@ -176,11 +177,25 @@ export function readAgentConfig(): AgentConfig {
   };
 }
 
-/** 保存されている値に欠けがあっても既定で埋める。 */
+/**
+ * 保存されている値に欠けがあっても既定で埋める。
+ *
+ * SOURCES の defaultEnabled は、ここで読むまで**どこからも参照されていなかった**。
+ * その結果、入れたばかりの状態では取り込み元が1つも有効にならず、
+ * 設定画面で手で入れるまでパイプラインが何も取りに行かなかった。
+ * 保存された値が無いソースは defaultEnabled に従う。
+ * 保存された値があるなら、そちらを優先する（利用者が切ったものを勝手に戻さない）。
+ */
 function normalizeSources(stored: unknown): Record<string, SourceState> {
   const out: Record<string, SourceState> = {};
-  if (!stored || typeof stored !== "object") return out;
-  for (const [id, value] of Object.entries(stored as Record<string, unknown>)) {
+  const saved = (stored && typeof stored === "object" ? stored : {}) as Record<string, unknown>;
+
+  for (const source of SOURCES) {
+    if (source.id in saved) continue;
+    out[source.id] = { ...defaultSourceState, enabled: source.defaultEnabled };
+  }
+
+  for (const [id, value] of Object.entries(saved)) {
     const v = (value ?? {}) as Partial<SourceState>;
     out[id] = {
       enabled: v.enabled === true,

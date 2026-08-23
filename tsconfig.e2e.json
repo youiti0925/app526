@@ -1,0 +1,18 @@
+{
+  "//": "パイプライン全体を CommonJS にして、AIキー無しで最後まで走ることを確かめる。",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": "dist-e2e",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "noEmit": false,
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] }
+  },
+  "include": ["src/lib/**/*.ts"]
+}

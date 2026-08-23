@@ -47,3 +47,4 @@ next-env.d.ts
 
 # test build output
 /dist-test/
+/dist-e2e/
