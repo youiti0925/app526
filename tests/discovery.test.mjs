@@ -583,3 +583,79 @@ test("工程の内訳があれば、根拠として文面に入れる", () => {
   assert.match(r.message, /GHS区分の確認/);
   assert.match(r.message, /15,000〜50,000円/, "相場を添える");
 });
+
+// ---------------------------------------------------------------------------
+// 出品型
+// 応募型のパイプラインでは、実効時給が高い仕事（SDS・リスクアセスメント・ISO）が
+// 原理的に見えない。ココナラの公開依頼1,751件に1件も出てこなかった。
+// ---------------------------------------------------------------------------
+
+const ls = await import("../dist-test/agent/listing.js");
+const { buildListing, listableWorkTypes, renderListing } = ls;
+
+test("狙う仕事の出品プランが全部作れる", () => {
+  const ids = listableWorkTypes();
+  assert.ok(ids.includes("sds"));
+  assert.ok(ids.includes("risk_assessment"));
+  for (const id of ids) {
+    const p = buildListing(id, { minHourlyJpy: 1121 });
+    assert.ok(p, id);
+    assert.equal(p.tiers.length, 3);
+  }
+});
+
+test("料金は相場の範囲に収める（自分で相場割れの値を付けない）", () => {
+  for (const id of listableWorkTypes()) {
+    const p = buildListing(id, { minHourlyJpy: 1121 });
+    assert.match(p.priceCheck, /範囲に入っています/, `${id}: ${p.priceCheck}`);
+  }
+});
+
+test("件数が増えるほど1件あたりは安くなる（ただし相場の下限は割らない）", () => {
+  const p = buildListing("sds", { minHourlyJpy: 1121 });
+  const per = p.tiers.map((t) => t.priceJpy / t.units);
+  assert.ok(per[0] >= per[1] && per[1] >= per[2], JSON.stringify(per));
+  assert.ok(per[2] >= 15_000 * 0.75, "下限から離れすぎない");
+});
+
+test("実効時給は手数料を引いた後の値", () => {
+  const p = buildListing("sds", { minHourlyJpy: 1121 });
+  const t = p.tiers[0];
+  // ココナラ 22% + 振込160円
+  const net = t.priceJpy - Math.floor(t.priceJpy * 0.22) - 160;
+  assert.equal(t.hourlyJpy, Math.round(net / t.hours));
+});
+
+test("責任範囲と「含まないもの」を必ず書く", () => {
+  for (const id of listableWorkTypes()) {
+    const p = buildListing(id, { minHourlyJpy: 1121 });
+    assert.ok(p.notIncluded.length > 0, `${id}: 含まないものが空`);
+    assert.ok(p.disclaimer.length > 20, `${id}: 免責が薄い`);
+  }
+});
+
+test("行政手続の代理を含むと書かない（行政書士法違反になるため）", () => {
+  for (const id of listableWorkTypes()) {
+    const p = buildListing(id, { minHourlyJpy: 1121 });
+    const sellText = [p.title, p.catchCopy, p.body].join("\n");
+    assert.ok(!/(届出|申請).{0,6}(代行|代理)(します|いたします|可能)/.test(sellText), `${id} が代理を謳っている`);
+  }
+  // SDS と リスクアセスメントは、届出代行を「含まないもの」に明記している
+  for (const id of ["sds", "risk_assessment"]) {
+    const p = buildListing(id, { minHourlyJpy: 1121 });
+    assert.ok(p.notIncluded.some((n) => /行政書士/.test(n)), `${id}`);
+  }
+});
+
+test("持っていない資格を持っていると書かない", () => {
+  const iso = buildListing("iso_docs", { minHourlyJpy: 1121 });
+  assert.match(iso.disclaimer, /審査員.{0,10}資格は持っていません/);
+  const ra = buildListing("risk_assessment", { minHourlyJpy: 1121 });
+  assert.ok(ra.notIncluded.some((n) => /作業環境測定/.test(n)), "測定士の業務は含まないと明記");
+});
+
+test("出品文には、出品前に人が確認すべきことを添える", () => {
+  const md = renderListing(buildListing("sds", { minHourlyJpy: 1121 }));
+  assert.match(md, /出品前に確認してください/);
+  assert.match(md, /自動出品は各サービスの規約違反/);
+});

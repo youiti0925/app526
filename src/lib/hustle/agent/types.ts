@@ -3,11 +3,12 @@
 // ---------------------------------------------------------------------------
 
 /** エージェントが順に実行する工程。 */
-export type StepId = "ingest" | "triage" | "draft" | "plan" | "review" | "learn";
+export type StepId = "ingest" | "triage" | "listing" | "draft" | "plan" | "review" | "learn";
 
 export const STEP_LABELS: Record<StepId, string> = {
   ingest: "案件の取り込み",
   triage: "案件の判定",
+  listing: "出品の準備",
   draft: "下書きの生成",
   plan: "計画の組み直し",
   review: "収支レビュー",
@@ -192,7 +193,7 @@ export const defaultAgentConfig: AgentConfig = {
   runOnOpen: true,
   maxRunsPerDay: 4,
   callBudget: 20,
-  steps: { ingest: true, triage: true, draft: true, plan: true, review: true, learn: true },
+  steps: { ingest: true, triage: true, listing: true, draft: true, plan: true, review: true, learn: true },
   maxDraftsPerRun: 3,
   feeds: [],
   sources: {},

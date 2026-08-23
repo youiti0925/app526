@@ -46,7 +46,7 @@ interface AgentState {
   aiEnabled: boolean;
 }
 
-const STEP_ORDER: StepId[] = ["ingest", "triage", "draft", "plan", "review", "learn"];
+const STEP_ORDER: StepId[] = ["ingest", "triage", "listing", "draft", "plan", "review", "learn"];
 
 export default function AgentPage() {
   const [state, setState] = useState<AgentState | null>(null);

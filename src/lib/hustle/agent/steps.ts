@@ -10,6 +10,7 @@ import { judgeDeliverability } from "./deliverability";
 import { expectedHourly, readCompetition } from "./competition";
 import { checkCapacity, monthlyHourly, readEngagement } from "./engagement";
 import { buildRenegotiation } from "./renegotiate";
+import { buildListing, listableWorkTypes, renderListing } from "./listing";
 import { estimateByWorkType } from "./worktypes";
 import { needsEscalation } from "./escalation";
 import { fetchFeed, leadFromParsed } from "./ingest";
@@ -836,9 +837,82 @@ export async function stepLearn(ctx: StepContext): Promise<StepOutcome> {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 出品の準備
+// ---------------------------------------------------------------------------
+
+/**
+ * 出品して待つ市場のための下ごしらえ。
+ *
+ * 応募型のパイプラインでは見えない仕事がある。実測で、ココナラの公開依頼に
+ * SDS・リスクアセスメント・ISO は1件も出てこなかった。募集を待っていても
+ * 来ないので、こちらから店を出す必要がある。
+ *
+ * 出品そのものは自動化しない（各サービスの規約違反になる）。
+ * 出品文・料金プラン・責任範囲まで作って、承認キューに出すところまで。
+ */
+export async function stepListing(ctx: StepContext): Promise<StepOutcome> {
+  const ids = listableWorkTypes();
+  const pending = readInbox("pending", 100);
+  const approved = readInbox("approved", 100);
+  // 同じ出品を毎回積み直さない
+  const already = new Set(
+    [...pending, ...approved]
+      .filter((i) => i.kind === "listing")
+      .map((i) => String((i.meta as { workTypeId?: string }).workTypeId ?? ""))
+  );
+
+  const todo = ids.filter((id) => !already.has(id));
+  if (todo.length === 0) {
+    return { summary: "出品案はすべて承認待ちか対応済み", queued: 0 };
+  }
+
+  let queued = 0;
+  for (const id of todo.slice(0, 2)) {
+    const plan = buildListing(id, { minHourlyJpy: ctx.config.learned.minHourlyJpy });
+    if (!plan) continue;
+
+    const standard = plan.tiers.find((t) => t.name === "標準") ?? plan.tiers[0];
+    pushInbox({
+      runId: ctx.runId,
+      kind: "listing",
+      // 応募型で取れる案件が少ないほど、出品型の優先度を上げる
+      priority: 65,
+      title: `出品案: ${plan.title}（標準 ${standard.priceJpy.toLocaleString()}円 / 実効時給 ${standard.hourlyJpy.toLocaleString()}円）`,
+      body: renderListing(plan),
+      actionUrl: "",
+      leadId: null,
+      meta: {
+        kind: "listing",
+        workTypeId: id,
+        priceJpy: standard.priceJpy,
+        hourlyJpy: standard.hourlyJpy,
+        where: plan.where,
+      },
+    });
+    queued++;
+    ctx.log("action", `出品案を作りました: ${plan.title}`, {
+      workTypeId: id,
+      priceJpy: standard.priceJpy,
+      hourlyJpy: standard.hourlyJpy,
+    });
+  }
+
+  if (queued > 0) {
+    ctx.log(
+      "info",
+      "出品はあなたが手で行ってください。自動出品は各サービスの規約違反になります",
+      { queued }
+    );
+  }
+
+  return { summary: `出品案 ${queued}件`, queued };
+}
+
 export const STEP_IMPL: Record<StepId, (ctx: StepContext) => Promise<StepOutcome>> = {
   ingest: stepIngest,
   triage: stepTriage,
+  listing: stepListing,
   draft: stepDraft,
   plan: stepPlan,
   review: stepReview,

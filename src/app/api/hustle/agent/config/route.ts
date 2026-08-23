@@ -4,7 +4,7 @@ import { guard, num, readJsonObject } from "@/lib/hustle/http";
 import { SOURCES } from "@/lib/hustle/agent/sources";
 import type { SourceState, StepId } from "@/lib/hustle/agent/types";
 
-const STEPS: StepId[] = ["ingest", "triage", "draft", "plan", "review", "learn"];
+const STEPS: StepId[] = ["ingest", "triage", "listing", "draft", "plan", "review", "learn"];
 
 export async function GET() {
   return guard(async () => NextResponse.json({ config: readAgentConfig() }));
