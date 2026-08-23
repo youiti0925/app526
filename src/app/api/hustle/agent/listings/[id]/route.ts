@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readPublishedListings, upsertPublishedListing, logEvent } from "@/lib/hustle/agent/db";
+import { readPublishedListing, upsertPublishedListing, logEvent } from "@/lib/hustle/agent/db";
 import { guard, num, oneOf, readJsonObject, str } from "@/lib/hustle/http";
 
 /** 負の数と小数を弾く。実績は0以上の整数。 */
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
     if (!parsed.ok) return parsed.response;
     const body = parsed.data;
 
-    const existing = readPublishedListings(500).find((l) => l.id === id);
+    const existing = readPublishedListing(id);
     if (!existing) return NextResponse.json({ error: "見つかりません" }, { status: 404 });
 
     const listing = upsertPublishedListing({

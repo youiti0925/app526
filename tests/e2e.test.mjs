@@ -107,6 +107,76 @@ test("取り込み元は、入れたばかりの状態でも既定で有効に�
   assert.deepEqual(on, ["coconala"], JSON.stringify(config.sources));
 });
 
+test("承認待ちも出品も、件数が上限を超えても id で引ける", () => {
+  // 一覧（上限つき）から find していたので、溜まると古いものが
+  // 404 になり、承認も却下もできなくなっていた。同じ間違いを
+  // 案件・出品でもしていた。
+  const first = agentDb.pushInbox({
+    runId: "e2e",
+    kind: "question",
+    priority: 1,
+    title: "いちばん古い1件",
+    body: "本文",
+    actionUrl: "",
+    leadId: null,
+    meta: {},
+  });
+  for (let i = 0; i < 120; i++) {
+    agentDb.pushInbox({
+      runId: "e2e",
+      kind: "question",
+      priority: 50,
+      title: `あとから来た ${i}`,
+      body: "本文",
+      actionUrl: "",
+      leadId: null,
+      meta: {},
+    });
+  }
+  // 既定の一覧（100件）には入っていないこと＝上限を超えている状態
+  assert.ok(
+    !agentDb.readInbox("pending", 100).some((i) => i.id === first.id),
+    "上限を超えていない。テストの前提が崩れている"
+  );
+  // それでも id で引ける
+  assert.equal(agentDb.readInboxItem(first.id)?.title, "いちばん古い1件");
+  assert.ok(agentDb.countInbox("pending") > 100);
+
+  const listing = agentDb.upsertPublishedListing({
+    workTypeId: "sds",
+    title: "SDS作成",
+    publishedAt: "2026-01-01",
+    priceJpy: 30000,
+  });
+  assert.equal(agentDb.readPublishedListing(listing.id)?.title, "SDS作成");
+  assert.equal(agentDb.readPublishedListing("そんなidは無い"), null);
+});
+
+test("上位モデルの判定は、新しい案件が増えても書き戻せる", () => {
+  const target = agentDb.insertLead({
+    source: "manual",
+    externalId: "e2e:old",
+    url: "https://example.test/jobs/old",
+    title: "古い案件",
+    rawText: "記事作成をお願いします。".repeat(30),
+    budgetJpy: 50_000,
+  }).lead;
+  for (let i = 0; i < 320; i++) {
+    agentDb.insertLead({
+      source: "manual",
+      externalId: `e2e:filler-${i}`,
+      url: `https://example.test/jobs/f${i}`,
+      title: `あとから来た ${i}`,
+      rawText: "記事作成をお願いします。".repeat(30),
+      budgetJpy: 50_000,
+    });
+  }
+  // 新しい順300件には入っていない
+  assert.ok(!agentDb.readLeads(undefined, 300).some((l) => l.id === target.id));
+  // それでも id で引ける（ここが無くて判定が捨てられていた）
+  assert.equal(agentDb.readLeadsByIds([target.id]).get(target.id)?.title, "古い案件");
+});
+
 test.after(() => {
   fs.rmSync(dataDir, { recursive: true, force: true });
 });

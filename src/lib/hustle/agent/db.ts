@@ -961,6 +961,18 @@ export function upsertPublishedListing(
   return toListing(row);
 }
 
+/**
+ * id で1件引く。
+ * 一覧（上限あり）から find すると、件数が増えたときに古いものが
+ * 見つからなくなる。承認キューと案件で同じ間違いをしていた。
+ */
+export function readPublishedListing(id: string): PublishedListing | null {
+  const row = getAgentDb()
+    .prepare("SELECT * FROM hustle_published_listings WHERE id = ?")
+    .get(id) as ListingRow | undefined;
+  return row ? toListing(row) : null;
+}
+
 export function readPublishedListings(limit = 100): PublishedListing[] {
   const rows = getAgentDb()
     .prepare(
