@@ -146,7 +146,13 @@ export default function DryRunPage() {
 
       <div className="space-y-3">
         {runs.map((run) => (
-          <RunCard key={run.id} run={run} open={open === run.id} onToggle={() => setOpen(open === run.id ? null : run.id)} />
+          <RunCard
+            key={run.id}
+            run={run}
+            open={open === run.id}
+            onToggle={() => setOpen(open === run.id ? null : run.id)}
+            onJudged={() => void load()}
+          />
         ))}
       </div>
 
@@ -181,7 +187,99 @@ function HowToRun() {
   );
 }
 
-function RunCard({ run, open, onToggle }: { run: DryRun; open: boolean; onToggle: () => void }) {
+/**
+ * 人の判断を入れる欄。
+ *
+ * AIの採点はあくまで参考で、売り物になるかどうかを決めるのは人。
+ * ここが入ると、そのジャンルの扱い（能力表）が即座に変わる。
+ */
+function Judgement({ run, onJudged }: { run: DryRun; onJudged: () => void }) {
+  const [note, setNote] = useState(run.humanVerdict?.note ?? "");
+  const [saving, setSaving] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const current = run.humanVerdict?.verdict ?? null;
+
+  const CHOICES: { v: DryRunVerdict; label: string; cls: string }[] = [
+    { v: "pass", label: "そのまま出せる", cls: "bg-emerald-600 border-emerald-600 text-white" },
+    { v: "needs_work", label: "手を入れれば出せる", cls: "bg-amber-600 border-amber-600 text-white" },
+    { v: "fail", label: "出せない", cls: "bg-rose-600 border-rose-600 text-white" },
+  ];
+
+  async function judge(v: DryRunVerdict) {
+    setSaving(v);
+    setError(null);
+    try {
+      const res = await fetch("/api/hustle/agent/dryrun", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phase: "judge", id: run.id, humanVerdict: v, note }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "保存に失敗しました");
+      onJudged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "保存に失敗しました");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <div
+      className="mt-3 pt-3 border-t"
+      style={{ borderColor: "var(--card-border)" }}
+    >
+      <p className="text-xs font-medium mb-2">
+        あなたの判断
+        {current && (
+          <span className="ml-2 font-normal text-slate-500">
+            （{VERDICT_LABELS[current]}・{run.humanVerdict?.decidedAt.slice(0, 10)}）
+          </span>
+        )}
+      </p>
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {CHOICES.map((c) => (
+          <button
+            key={c.v}
+            onClick={() => void judge(c.v)}
+            disabled={saving !== null}
+            aria-pressed={current === c.v}
+            className={`text-xs px-2.5 py-1 rounded border disabled:opacity-50 ${
+              current === c.v ? c.cls : "bg-white text-slate-700"
+            }`}
+            style={current === c.v ? undefined : { borderColor: "var(--card-border)" }}
+          >
+            {saving === c.v ? "保存中" : c.label}
+          </button>
+        ))}
+      </div>
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        rows={2}
+        placeholder="気づいたこと（例: 図は良いが数字の出典が本文に無い）"
+        className="w-full text-xs rounded border px-2 py-1.5"
+        style={{ borderColor: "var(--card-border)" }}
+      />
+      <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+        ここでの判断は、AIの採点より優先されます。「出せない」にすると、以後このジャンルの案件を落とすようになります。
+      </p>
+      {error && <p className="text-xs text-rose-600 mt-1">{error}</p>}
+    </div>
+  );
+}
+
+function RunCard({
+  run,
+  open,
+  onToggle,
+  onJudged,
+}: {
+  run: DryRun;
+  open: boolean;
+  onToggle: () => void;
+  onJudged: () => void;
+}) {
   const target = getGenreTarget(run.genre);
   const grade = run.grade;
   const style = grade ? VERDICT_STYLE[grade.verdict] : null;
@@ -266,6 +364,8 @@ function RunCard({ run, open, onToggle }: { run: DryRun; open: boolean; onToggle
           )}
         </div>
       )}
+
+      {run.status === "graded" && <Judgement run={run} onJudged={onJudged} />}
     </div>
   );
 }

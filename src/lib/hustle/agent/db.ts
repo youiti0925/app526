@@ -15,7 +15,7 @@ import {
 } from "./types";
 // 型だけ。discovery.ts はこのファイルの関数を呼ぶので、値を取り込むと循環する。
 import type { Discovery, DiscoveryChannel } from "./discovery-core";
-import type { DryRun, DryRunStatus, Grade } from "./dryrun-core";
+import type { DryRun, DryRunStatus, Grade, HumanVerdict } from "./dryrun-core";
 import type { PublishedListing, ListingStatus } from "./listing-tracker";
 import type { Capability } from "./deliverability";
 import { SOURCES } from "./sources";
@@ -140,8 +140,24 @@ export function getAgentDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_dryruns_status ON hustle_dryruns(status, created_at DESC);
   `);
 
+  // CREATE TABLE IF NOT EXISTS は、すでにあるテーブルに列を足さない。
+  // 使い始めたあとで項目が増えたときは、ここで足す。
+  ensureColumn(db, "hustle_dryruns", "human_verdict", "TEXT");
+
   initialized = true;
   return db;
+}
+
+/**
+ * 無ければ列を足す。あれば何もしない。
+ *
+ * 保存済みのデータを消さずに項目を増やすため。
+ * sqlite の ALTER TABLE ADD COLUMN は既存行に NULL を入れるだけなので安全。
+ */
+function ensureColumn(db: Database.Database, table: string, column: string, ddl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (cols.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
 }
 
 const now = () => new Date().toISOString();
@@ -783,6 +799,7 @@ interface DryRunRow {
   method: string;
   blocked_reason: string;
   grade: string | null;
+  human_verdict: string | null;
   status: string;
   created_at: string;
 }
@@ -800,16 +817,29 @@ const toDryRun = (r: DryRunRow): DryRun => ({
   method: r.method,
   blockedReason: r.blocked_reason,
   grade: r.grade ? parse<Grade | null>(r.grade, null) : null,
+  humanVerdict: r.human_verdict ? parse<HumanVerdict | null>(r.human_verdict, null) : null,
   status: r.status as DryRunStatus,
   createdAt: r.created_at,
 });
 
 export function insertDryRun(
-  input: Omit<DryRun, "id" | "createdAt" | "status" | "grade" | "artifact" | "artifactPath" | "method" | "blockedReason">
+  input: Omit<
+    DryRun,
+    | "id"
+    | "createdAt"
+    | "status"
+    | "grade"
+    | "humanVerdict"
+    | "artifact"
+    | "artifactPath"
+    | "method"
+    | "blockedReason"
+  >
 ): DryRun {
   const db = getAgentDb();
   const row: DryRunRow = {
     id: newId(),
+    human_verdict: null,
     lead_id: input.leadId,
     source_url: input.sourceUrl,
     title: input.title,
@@ -832,6 +862,29 @@ export function insertDryRun(
         @artifact, @artifact_path, @method, @blocked_reason, @grade, @status, @created_at)`
   ).run(row);
   return toDryRun(row);
+}
+
+/**
+ * 人が現物を見て下した判断を保存する。
+ *
+ * AIの採点を上書きするのではなく、別に持つ。
+ * どちらも残しておけば「採点は通したのに人は落とした」が後から追える。
+ */
+export function saveHumanVerdict(
+  id: string,
+  verdict: HumanVerdict["verdict"],
+  note: string
+): DryRun | null {
+  const db = getAgentDb();
+  const value: HumanVerdict = { verdict, note, decidedAt: now() };
+  db.prepare("UPDATE hustle_dryruns SET human_verdict = ? WHERE id = ?").run(
+    JSON.stringify(value),
+    id
+  );
+  const row = db.prepare("SELECT * FROM hustle_dryruns WHERE id = ?").get(id) as
+    | DryRunRow
+    | undefined;
+  return row ? toDryRun(row) : null;
 }
 
 export function readDryRuns(status?: DryRunStatus, limit = 100): DryRun[] {

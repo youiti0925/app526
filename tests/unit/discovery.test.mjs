@@ -1790,3 +1790,54 @@ test("非現実的な数量・金額は読み違えとして捨てる", () => {
   const p = pr.readPricing("単価 1000円 作成数 999999");
   assert.equal(p.totalJpy, null, JSON.stringify(p));
 });
+
+// --- 人の判断が能力表を決める -----------------------------------------------
+
+test("人が現物を見て下した判断は、AIの採点より優先される", () => {
+  // AIの採点が「そのまま出せる」でも、人が「出せない」と言ったら出せない。
+  // 売り物になるかを決めるのは採点者ではない。
+  const aiSaysPass = { grade: grade({ verdict: "pass" }), humanVerdict: null };
+  assert.equal(dr.evidenceFor([aiSaysPass]), "proven");
+
+  const humanSaysNo = {
+    grade: grade({ verdict: "pass" }),
+    humanVerdict: { verdict: "fail", note: "出典が本文に無い", decidedAt: "2026-08-24T00:00:00Z" },
+  };
+  assert.equal(dr.evidenceFor([humanSaysNo]), "disproven");
+});
+
+test("逆方向にも効く（AIが落としたものを人が通す）", () => {
+  const humanSaysOk = {
+    grade: grade({ verdict: "fail" }),
+    humanVerdict: { verdict: "pass", note: "十分", decidedAt: "2026-08-24T00:00:00Z" },
+  };
+  assert.equal(dr.evidenceFor([humanSaysOk]), "proven");
+});
+
+test("人が見た試作が1件でもあれば、見ていない試作は数えない", () => {
+  // 判断が混ざると、古いAI採点が人の判断を打ち消してしまう。
+  const runs = [
+    { grade: grade({ verdict: "pass" }), humanVerdict: null },
+    { grade: grade({ verdict: "fail" }), humanVerdict: { verdict: "fail", note: "", decidedAt: "x" } },
+  ];
+  assert.equal(dr.evidenceFor(runs), "disproven");
+});
+
+test("対象違いの試作は、人が判断していても数えない", () => {
+  const runs = [
+    {
+      grade: grade({ verdict: "fail", targetMismatch: true }),
+      humanVerdict: { verdict: "fail", note: "", decidedAt: "x" },
+    },
+  ];
+  assert.equal(dr.evidenceFor(runs), "untested");
+});
+
+test("検分待ちを取り出せる", () => {
+  const runs = [
+    { status: "graded", grade: grade(), humanVerdict: null },
+    { status: "graded", grade: grade(), humanVerdict: { verdict: "pass", note: "", decidedAt: "x" } },
+    { status: "produced", grade: null, humanVerdict: null },
+  ];
+  assert.equal(dr.awaitingJudgement(runs).length, 1);
+});

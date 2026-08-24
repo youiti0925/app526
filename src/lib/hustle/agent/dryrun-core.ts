@@ -77,8 +77,24 @@ export interface DryRun {
   /** 作れなかった場合の理由 */
   blockedReason: string;
   grade: Grade | null;
+  /**
+   * 人が現物を見て下した判断。
+   *
+   * AIの採点（grade）とは別に持つ。採点はあくまで参考で、
+   * **売り物になるかどうかを決めるのは人**。
+   * ここが入っていれば、能力表の判定は必ずこちらが優先される。
+   */
+  humanVerdict: HumanVerdict | null;
   status: DryRunStatus;
   createdAt: string;
+}
+
+/** 人が現物を見て下した判断。 */
+export interface HumanVerdict {
+  verdict: DryRunVerdict;
+  /** 気づいたこと。次の生成で避けるために使う。 */
+  note: string;
+  decidedAt: string;
 }
 
 /**
@@ -328,12 +344,31 @@ export const EVIDENCE_LABELS: Record<Evidence, string> = {
 export function evidenceFor(runs: DryRun[]): Evidence {
   // 成果物が募集と別物だったものは、能力の検証になっていないので除く。
   // ここを数えると「案件選びを間違えた」を「作れない」と誤って結論づける。
-  const graded = runs.filter((r) => r.grade !== null && !r.grade.targetMismatch);
+  const usable = runs.filter((r) => !r.grade?.targetMismatch);
+
+  // 人が現物を見て判断していれば、それだけを見る。
+  // AIの採点は参考であって、売り物になるかを決めるのは人。
+  // 採点が「そのまま出せる」でも、人が「出せない」と言ったら出せない。
+  // `!== null` で書くと、項目そのものが無い（undefined）ものまで
+  // 「判断済み」に数えてしまう。中身があるかで見る。
+  const judged = usable.filter((r) => Boolean(r.humanVerdict?.verdict));
+  if (judged.length > 0) return fromVerdicts(judged.map((r) => r.humanVerdict!.verdict));
+
+  const graded = usable.filter((r) => r.grade !== null);
   if (graded.length === 0) return "untested";
-  if (graded.some((r) => r.grade!.verdict === "pass")) return "proven";
-  if (graded.some((r) => r.grade!.verdict === "needs_work")) return "needs_human";
+  return fromVerdicts(graded.map((r) => r.grade!.verdict));
+}
+
+function fromVerdicts(verdicts: DryRunVerdict[]): Evidence {
+  if (verdicts.length === 0) return "untested";
+  if (verdicts.includes("pass")) return "proven";
+  if (verdicts.includes("needs_work")) return "needs_human";
   return "disproven";
 }
+
+/** 人がまだ見ていない試作。検分待ちとして画面に出す。 */
+export const awaitingJudgement = (runs: DryRun[]): DryRun[] =>
+  runs.filter((r) => r.status === "graded" && !r.humanVerdict?.verdict);
 
 /** 対象選びを間違えた試作。ハーネス側の問題として別に数える。 */
 export const mismatchedRuns = (runs: DryRun[]): DryRun[] =>

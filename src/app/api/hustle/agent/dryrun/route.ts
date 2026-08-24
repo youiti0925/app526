@@ -19,8 +19,10 @@ import {
   readTestedGenres,
   saveArtifact,
   saveGrade,
+  saveHumanVerdict,
+  logEvent,
 } from "@/lib/hustle/agent/db";
-import { guard, num, oneOf, readJsonObject } from "@/lib/hustle/http";
+import { guard, num, oneOf, readJsonObject, str } from "@/lib/hustle/http";
 
 /**
  * 試作ハーネスの受け渡し口。
@@ -30,6 +32,7 @@ import { guard, num, oneOf, readJsonObject } from "@/lib/hustle/http";
  * GET ?format=json   … 結果の一覧と、主張と結果の食い違い
  * POST phase=produce … 成果物を書き戻す
  * POST phase=grade   … 採点を書き戻す
+ * POST phase=judge   … 人が現物を見た判断を書き戻す（採点より優先される）
  *
  * localhost でしか使わない前提。
  */
@@ -116,12 +119,39 @@ export async function GET(request: NextRequest) {
   });
 }
 
+const HUMAN_VERDICTS = ["pass", "needs_work", "fail", "cannot_produce"] as const;
+
 export async function POST(request: NextRequest) {
   return guard(async () => {
     const parsed = await readJsonObject(request);
     if (!parsed.ok) return parsed.response;
     const body = parsed.data;
     const phase = oneOf(body.phase, PHASES);
+
+    // 人が現物を見て下した判断。AIの採点より優先される。
+    // 「売り物になるか」を決めるのは人であって、採点者ではない。
+    if (body.phase === "judge" || typeof body.humanVerdict === "string") {
+      const id = str(body.id, 100) ?? "";
+      const verdict = oneOf(body.humanVerdict, HUMAN_VERDICTS);
+      if (!id || !verdict) {
+        return NextResponse.json(
+          { error: "id と humanVerdict（pass / needs_work / fail / cannot_produce）が要ります" },
+          { status: 400 }
+        );
+      }
+      const saved = saveHumanVerdict(id, verdict, str(body.note, 2000) ?? "");
+      if (!saved) return NextResponse.json({ error: "見つかりません" }, { status: 404 });
+
+      // このジャンルの扱いがどう変わったかを、その場で返す。
+      const runs = readDryRuns(undefined, 200).filter((r) => r.genre === saved.genre);
+      logEvent("manual", "runner", "decision", `試作の検分: ${saved.title.slice(0, 40)} → ${verdict}`, {
+        dryRunId: saved.id,
+        genre: saved.genre,
+        humanVerdict: verdict,
+        evidence: evidenceFor(runs),
+      });
+      return NextResponse.json({ dryRun: saved, genre: saved.genre, evidence: evidenceFor(runs) });
+    }
 
     if (phase === "produce" || Array.isArray(body.results)) {
       const results = parseProduceResults(body);
