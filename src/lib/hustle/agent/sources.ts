@@ -248,7 +248,7 @@ export function extractText(html: string, maxChars = 6000): string {
     // 閉じ忘れたスタイルブロックの残骸
     .filter((l) => !/[{};]\s*[\w-]+\s*:/.test(l));
 
-  const body = cutAfterBody(dropRepeatedShortLines(lines)).join("\n").replace(/\n{3,}/g, "\n\n");
+  const body = cutAfterBody(dropLeadingChrome(dropRepeatedShortLines(lines))).join("\n").replace(/\n{3,}/g, "\n\n");
   return (jsonLd ? `${jsonLd}\n\n${body}` : body).slice(0, maxChars);
 }
 
@@ -274,11 +274,43 @@ const BODY_END_MARKERS = [
   /^.{0,12}(の)?(新着|人気)案件$/,
   /(応募人気|閲覧数)ランキング/,
   /^(この|同じ).{0,10}(の)?(他の)?(案件|求人)/,
+  // 応募者の一覧。ここを残すと、応募者のハンドル名が募集文として読まれる。
+  // 「nachuho_イラスト・動画・広報」という応募者名のせいで、アンケートの
+  // 募集をイラスト案件と誤判定した実例がある。
+  /^応募者(一覧)?$/,
+  /^(応募|購入)者のみ/,
+  /^(添付ファイル|参考URL)$/,
 ];
 
+/**
+ * ページ冒頭のメニューを落とす。
+ *
+ * dropRepeatedShortLines は「何度も出てくる短い行」しか落とせないので、
+ * 1回しか出てこないメニュー項目（「購入・発注したい方」「ログイン」など）が
+ * そのまま本文の先頭に残っていた。実際、ココナラの「仕事・求人を投稿して募集」
+ * という**メニュー項目**に当たって、電話対応の求人をSNS投稿の案件と誤判定した。
+ *
+ * 冒頭から続く短い行の連なりは、本文ではなくメニューとみなして落とす。
+ */
+/** 本文の始まりを示す行。短くても、ここから先は本文。 */
+const BODY_START = /^[【\[［]|^[■●◆▼]|^(お?仕事|業務|依頼|作業|募集)(内容|範囲|詳細)|^(概要|前提|背景)[:：]?$|[:：]\s*$/;
+
+export function dropLeadingChrome(lines: string[], shortLen = 25, maxSkip = 60): string[] {
+  let i = 0;
+  while (i < lines.length && i < maxSkip && lines[i].length < shortLen) {
+    // 「【業務内容】」のような見出しは短いが本文の始まり。ここで止める。
+    if (BODY_START.test(lines[i])) break;
+    i++;
+  }
+  // 全部落ちてしまうなら、判断を誤っている。元のまま返す。
+  return i >= lines.length ? lines : lines.slice(i);
+}
+
 export function cutAfterBody(lines: string[]): string[] {
-  const at = lines.findIndex((l) => BODY_END_MARKERS.some((m) => m.test(l)));
-  // 先頭近くで当たったら、それは本文ではなくページの飾り。切らない。
+  // 先頭近く（5行以内）で当たったものは、本文ではなくページの飾りなので無視する。
+  // ただし「最初の一致」で探すと、飾りに当たった時点で探索が終わってしまい、
+  // その先にある本物の切れ目（応募者一覧など）を見落とす。6行目以降で探す。
+  const at = lines.findIndex((l, i) => i > 5 && BODY_END_MARKERS.some((m) => m.test(l)));
   return at > 5 ? lines.slice(0, at) : lines;
 }
 

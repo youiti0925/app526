@@ -1508,3 +1508,50 @@ test("イラストは工程表を持つが、試作の結果で割に合わな�
   const y = yt.yourTime(e, "disproven");
   assert.equal(y.lowHours, y.manualHours);
 });
+
+// --- 本文抽出: ページ冒頭のメニューと応募者一覧 -----------------------------
+
+test("ページ冒頭のメニューを本文として読まない", () => {
+  // dropRepeatedShortLines は「何度も出てくる短い行」しか落とせないので、
+  // 1回しか出てこないメニュー項目が本文の先頭に残っていた。
+  // 実際、ココナラのメニュー「仕事・求人を投稿して募集」に当たって、
+  // 電話対応の求人をSNS投稿の案件と誤判定した。
+  const lines = [
+    "購入・発注したい方",
+    "仕事・求人を投稿して募集",
+    "エージェントに人材を紹介してもらう",
+    "受注・働きたい方",
+    "単発の仕事を探す",
+    "ログイン",
+    "会員登録",
+    "ブログを投稿",
+    "お問い合わせ対応スタッフを募集します。通知から5分以内に電話をお願いします。",
+  ];
+  const out = sources.dropLeadingChrome(lines);
+  assert.equal(out.length, 1, out.join(" / "));
+  assert.match(out[0], /お問い合わせ対応/);
+});
+
+test("全部が短い行なら、判断を誤っているので落とさない", () => {
+  const lines = ["短い", "行", "ばかり"];
+  assert.deepEqual(sources.dropLeadingChrome(lines), lines);
+});
+
+test("応募者一覧から先を切り落とす", () => {
+  // 応募者のハンドル名が募集文として読まれる。
+  // 「nachuho_イラスト・動画・広報」という応募者名のせいで、
+  // アンケートの募集をイラスト案件と誤判定した実例がある。
+  const lines = [
+    "アンケートの実施をお願いします。".repeat(3),
+    "報酬は3,000円です。",
+    "この案件の詳細はこちら",
+    "特記事項",
+    "初心者OK",
+    "募集内容の追記",
+    "応募者一覧",
+    "nachuho_イラスト・動画・広報",
+    "16:27",
+  ];
+  const out = sources.cutAfterBody(lines);
+  assert.ok(!out.some((l) => /nachuho/.test(l)), out.join(" / "));
+});
