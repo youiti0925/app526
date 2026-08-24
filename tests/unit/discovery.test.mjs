@@ -1468,3 +1468,43 @@ test("公的データの条件も、引用と出典と確認日を持ってい�
     assert.match(l.checkedOn, /^\d{4}-\d{2}-\d{2}$/, `${id}: 確認日が無い`);
   }
 });
+
+// --- 工程表が、実際に来ている案件を覆っているか -----------------------------
+
+test("実際に多いジャンル（記事・SNS・データ・動画・Web）の工程表がある", () => {
+  // 製造業ドキュメントだけの工程表にしていたので、実サイトから取れた
+  // 42件のうち該当が0件だった（当たった2件は自作のテストデータ）。
+  // 工程表が無い案件は「全部あなたの時間」になって却下される。
+  const ids = new Set(WORK_TYPES.map((w) => w.id));
+  for (const id of ["article_writing", "sns_content", "data_entry", "video_edit", "web_build"]) {
+    assert.ok(ids.has(id), `${id} の工程表が無い`);
+  }
+});
+
+test("依頼者の事業内容を、依頼だと読み違えない", () => {
+  // 「法人向けSNS運用支援サービスを提供しており」という会社説明で
+  // 電話対応の求人が sns_content に当たっていた。
+  const e = estimateByWorkType(
+    "弊社は法人向けSNS運用支援サービスを提供しております。" +
+      "今回は、お問い合わせいただいたお客様への電話対応スタッフを募集します。".repeat(3)
+  );
+  assert.ok(e === null || e.workType.id !== "sns_content", `${e && e.workType.id} と判定した`);
+});
+
+test("PR投稿の依頼は SNS の工程表に当たる", () => {
+  const e = estimateByWorkType("アプリのPR投稿をお願いします。X・Instagramで5投稿してください。");
+  assert.ok(e, "工程表に当たっていない");
+  assert.equal(e.workType.id, "sns_content");
+});
+
+test("イラストは工程表を持つが、試作の結果で割に合わないと出る", () => {
+  // 工程表を持つのは「見積もれない」を「見積もれるが割に合わない」に
+  // 変えるためで、作れると主張しているわけではない。
+  const e = estimateByWorkType("女性キャラクターのイラストを3点制作していただけるかた募集");
+  assert.ok(e);
+  assert.equal(e.workType.id, "illustration");
+  assert.match(e.workType.note, /納品できる水準になりませんでした/);
+  // 試作で反証されているので、手作業の時間に戻る
+  const y = yt.yourTime(e, "disproven");
+  assert.equal(y.lowHours, y.manualHours);
+});

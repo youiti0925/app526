@@ -386,6 +386,296 @@ export const WORK_TYPES: WorkType[] = [
     marketRateJpy: { low: 30_000, high: 150_000 },
     note: "審査の指摘対応まで含むかで工数が大きく変わります。範囲を先に文面で区切ってください。",
   },
+  // --- ここから下は、実際に取れている案件から起こした工程表 ---------------
+  //
+  // 上の製造業ドキュメント系は、プロフィールの「製造業の実務経験がある」に
+  // 寄せて作ったもので、実サイトから取れた42件のうち該当は0件だった
+  // （当たった2件は、私が自分で打ち込んだテストデータ）。
+  // 工程表が無い案件は unknownSplit で「全部あなたの時間」になり、
+  // 時給が低く出て却下される。つまり市場の95%を、能力ではなく
+  // 「見積もれないから」という理由で落としていた。
+  //
+  // 実際に来ているのは text 32件 / code 31件。そこの工程表を置く。
+  {
+    id: "article_writing",
+    label: "記事・ブログの執筆",
+    unit: "記事",
+    unitPattern: /([0-9,]{1,4})\s*(?:記事|本|件|ページ|コンテンツ)/,
+    patterns: [
+      /(記事|ブログ|コラム|レビュー記事)[^。\n]{0,10}(作成|執筆|ライティング|書い|制作)/,
+      /(ライター|ライティング)[^。\n]{0,8}(募集|依頼|お願い)/,
+      /(SEO|検索)[^。\n]{0,10}(記事|コンテンツ)/,
+    ],
+    steps: [
+      {
+        name: "検索意図の整理と構成案",
+        by: "auto",
+        minutes: 0,
+        machineMinutes: 2,
+        manualMinutes: 40,
+        how: "対象キーワードから、読者が何を知りたいのかを整理して見出しを組む。",
+      },
+      {
+        name: "一次情報の収集",
+        by: "auto",
+        minutes: 0,
+        machineMinutes: 4,
+        manualMinutes: 45,
+        how: "公的統計・公式サイト・原典に当たって、出典つきで事実を集める。",
+      },
+      { name: "本文の執筆", by: "auto", minutes: 0, machineMinutes: 3, manualMinutes: 90, how: "構成案と収集した事実から書く。" },
+      {
+        name: "事実確認（数字・固有名詞・出典）",
+        by: "approve",
+        minutes: 8,
+        machineMinutes: 1,
+        manualMinutes: 30,
+        how: "本文中の数字・固有名詞・引用に出典を並べて出す。人は出典と本文が合っているかを見る。",
+        why:
+          "生成した文章は、出典が無くても断定調で書けてしまう。" +
+          "ここを飛ばして納品すると、間違いが載ったまま公開される。省けない。",
+      },
+      { name: "体裁・見出し・内部リンク", by: "auto", minutes: 0, machineMinutes: 1, manualMinutes: 20, how: "指定の書式に整える。" },
+      {
+        name: "要求項目との突き合わせ・承認",
+        by: "approve",
+        minutes: 4,
+        machineMinutes: 0,
+        manualMinutes: 15,
+        how: "募集文から抜いた要求項目と成果物を並べて見せる。",
+        why: "実案件の試作で、募集に書いてある項目を黙って飛ばす失敗が全件で起きた。",
+      },
+      {
+        name: "修正対応",
+        by: "approve",
+        minutes: 20,
+        machineMinutes: 2,
+        manualMinutes: 45,
+        perJob: true,
+        how: "修正の差分を生成する。人は差分を見て承認する。",
+      },
+    ],
+    marketRateJpy: { low: 3_000, high: 15_000 },
+    note:
+      "実際に一番数がある仕事。単価は文字数ではなく「調べる量」で決まります。" +
+      "一次情報に当たった記事は単価が上げられるので、そこを売りにしてください。",
+  },
+  {
+    id: "sns_content",
+    label: "SNS投稿文・運用",
+    unit: "投稿",
+    unitPattern: /([0-9,]{1,4})\s*(?:投稿|本|回|件|ポスト|ツイート)/,
+    patterns: [
+      /(SNS|Instagram|インスタ|X\(旧Twitter\)|Twitter|TikTok|Facebook)[^。\n]{0,14}(投稿|発信|集客)[^。\n]{0,10}(作成|制作|代行|依頼|お願い|募集|してくださる|していただ)/,
+      /(投稿文|キャプション|ハッシュタグ|PR投稿|宣伝投稿)[^。\n]{0,10}(作成|制作|考え|依頼|お願い|募集|してくださる|していただ)/,
+      /(SNS|Instagram|インスタ|X\(旧Twitter\)|Twitter|TikTok)[^。\n]{0,8}(戦略|運用)[^。\n]{0,10}(立案|設計|代行|依頼|お願い|募集)/,
+    ],
+    steps: [
+      {
+        name: "対象と訴求の整理",
+        by: "auto",
+        minutes: 0,
+        machineMinutes: 2,
+        manualMinutes: 30,
+        how: "依頼者の商材・過去投稿から、誰に何を言うかを整理する。",
+      },
+      { name: "投稿文とハッシュタグの生成", by: "auto", minutes: 0, machineMinutes: 2, manualMinutes: 25, how: "媒体ごとの文字数と作法に合わせて書く。" },
+      {
+        name: "表現の確認（景表法・薬機法・誇大表現）",
+        by: "approve",
+        minutes: 5,
+        machineMinutes: 1,
+        manualMinutes: 20,
+        how: "「必ず痩せる」「日本一」のような、根拠が要る表現を機械的に洗い出して並べる。",
+        why:
+          "投稿主が責任を負う表現なので、こちらの判断で通してはいけない。" +
+          "効果効能・最上級・体験談は、根拠が無いと法に触れる。",
+      },
+      { name: "投稿カレンダーへの割り付け", by: "auto", minutes: 0, machineMinutes: 1, manualMinutes: 15, how: "曜日・時間帯を割り当てて表にする。" },
+      {
+        name: "要求項目との突き合わせ・承認",
+        by: "approve",
+        minutes: 3,
+        machineMinutes: 0,
+        manualMinutes: 10,
+        how: "募集の指定（本数・媒体・トーン）と成果物を並べる。",
+      },
+      {
+        name: "修正対応",
+        by: "approve",
+        minutes: 20,
+        machineMinutes: 2,
+        manualMinutes: 40,
+        perJob: true,
+        how: "修正の差分を生成する。",
+      },
+    ],
+    marketRateJpy: { low: 1_000, high: 5_000 },
+    note:
+      "1投稿あたりの単価は低いので、本数でまとめないと成立しません。" +
+      "投稿の代行（アカウントを預かる）は各社の規約に触れることがあるので、文面の納品までに留めてください。",
+  },
+  {
+    id: "data_entry",
+    label: "データ入力・リスト作成",
+    unit: "件",
+    unitPattern: /([0-9,]{1,6})\s*(?:件|行|社|レコード|商品|品目)/,
+    patterns: [
+      /(リスト|データ)[^。\n]{0,8}(作成|収集|入力|整理|化)/,
+      /(データ入力|転記|名寄せ|リサーチ業務)/,
+      /(企業|店舗|商品)[^。\n]{0,8}(情報|一覧)[^。\n]{0,8}(収集|作成|まとめ)/,
+    ],
+    steps: [
+      { name: "収集元と項目の確定", by: "auto", minutes: 0, machineMinutes: 5, manualMinutes: 20, perJob: true, how: "どこから何を取るかを決めて、表の列を作る。" },
+      {
+        name: "収集と転記",
+        by: "auto",
+        minutes: 0,
+        machineMinutes: 0.2,
+        manualMinutes: 2,
+        how: "公開情報から機械的に集める。robots.txt を見て、禁止されている先は取らない。",
+      },
+      {
+        name: "名寄せ・重複除去・表記ゆれの統一",
+        by: "auto",
+        minutes: 0,
+        machineMinutes: 10,
+        manualMinutes: 15,
+        perJob: true,
+        how: "住所・社名の表記を揃え、重複を落とす。件数が増えても処理は一括なので、件数には比例しない。",
+      },
+      {
+        name: "抜き取り検査",
+        by: "approve",
+        minutes: 25,
+        machineMinutes: 0,
+        manualMinutes: 25,
+        perJob: true,
+        how: "全件ではなく、無作為に抜いた30行ほどを原典と突き合わせて出す。",
+        why:
+          "全件は見られないが、ゼロ件も見ないのは危ない。抜き取りで誤りの率を出す。" +
+          "**抜き取りなので件数に比例しない。** ここを件数ぶん掛けていたら、" +
+          "500件のリストで「抜き取り検査に16時間」という計算になっていた。",
+      },
+      {
+        name: "納品形式への変換",
+        by: "auto",
+        minutes: 0,
+        machineMinutes: 3,
+        manualMinutes: 10,
+        perJob: true,
+        how: "指定の CSV / Excel / スプレッドシートに落とす。",
+      },
+      { name: "修正対応", by: "approve", minutes: 15, machineMinutes: 1, manualMinutes: 30, perJob: true, how: "指摘のあった行を直して差分を出す。" },
+    ],
+    marketRateJpy: { low: 20, high: 100 },
+    note:
+      "1件あたりの単価が最も低い仕事なので、手作業でやると必ず最低賃金を割ります。" +
+      "機械で集められる案件だけを受けてください。「サイトにログインして取る」ものは規約違反になりがちです。",
+  },
+  {
+    id: "video_edit",
+    label: "動画編集（仕様どおりの書き出し）",
+    unit: "本",
+    unitPattern: /([0-9,]{1,4})\s*(?:本|点|動画|編集)/,
+    patterns: [
+      /(動画|ムービー|映像)[^。\n]{0,10}(編集|制作|作成|カット)/,
+      /(テロップ|字幕|BGM|カット編集)/,
+    ],
+    steps: [
+      { name: "素材の確認と整理", by: "auto", minutes: 0, machineMinutes: 3, manualMinutes: 30, how: "受け取った素材の尺・解像度・音量を調べて一覧にする。" },
+      {
+        name: "構成とテロップの原稿化",
+        by: "auto",
+        minutes: 0,
+        machineMinutes: 3,
+        manualMinutes: 60,
+        how: "音声を文字起こしして、カット位置とテロップを秒単位の表にする。",
+      },
+      { name: "書き出し（ffmpeg）", by: "auto", minutes: 0, machineMinutes: 8, manualMinutes: 90, how: "カット・テロップ焼き込み・BGM合成・音量調整を、表のとおりに実行する。" },
+      {
+        name: "通しでの目視確認",
+        by: "approve",
+        minutes: 25,
+        machineMinutes: 0,
+        manualMinutes: 30,
+        how: "書き出したものを最初から最後まで見る。",
+        why:
+          "音ズレ・テロップの重なり・切り過ぎは、仕様書の上では正しくても目で見ないと分からない。" +
+          "尺のぶんだけ時間がかかるので、ここは短縮できない。",
+      },
+      { name: "修正対応", by: "approve", minutes: 25, machineMinutes: 5, manualMinutes: 60, perJob: true, how: "指示の箇所だけ差し替えて書き出す。" },
+    ],
+    marketRateJpy: { low: 5_000, high: 30_000 },
+    note:
+      "**.prproj（Premiere のプロジェクトファイル）での納品を求める案件は受けられません。** " +
+      "ffmpeg では作れない形式です（gates.ts が先に落とします）。" +
+      "MP4 納品で、かつ演出をこちらに任せない（仕様が決まっている）案件だけが成立します。",
+  },
+  {
+    id: "illustration",
+    label: "イラスト制作",
+    unit: "点",
+    unitPattern: /([0-9,]{1,4})\s*(?:点|枚|カット|体|パターン|案)/,
+    patterns: [
+      /(イラスト|キャラクター|挿絵|アイコン|バナー)[^。\n]{0,12}(制作|作成|描い|お願い|依頼|募集)/,
+      /(絵|作画)[^。\n]{0,8}(描け|制作|依頼)/,
+    ],
+    steps: [
+      { name: "指定の読み取りと参考の整理", by: "auto", minutes: 0, machineMinutes: 2, manualMinutes: 30, how: "指定（構図・服装・表情・用途）を項目に落とす。" },
+      { name: "画像生成（ローカルのSDXL等）", by: "auto", minutes: 0, machineMinutes: 10, manualMinutes: 240, how: "商用可のモデルだけを使う。licenses.ts で禁止しているものは選ばない。" },
+      {
+        name: "指定との突き合わせと選別",
+        by: "approve",
+        minutes: 20,
+        machineMinutes: 0,
+        manualMinutes: 30,
+        how: "生成した候補と、指定の項目を並べて出す。",
+        why:
+          "指の本数・左右の取り違え・指定した小物の欠落は、生成側からは検出できない。" +
+          "実案件の試作では、ここで落ちて納品できる水準にならなかった。",
+      },
+      { name: "修正対応", by: "approve", minutes: 30, machineMinutes: 10, manualMinutes: 90, perJob: true, how: "指摘を反映して再生成する。" },
+    ],
+    marketRateJpy: { low: 3_000, high: 30_000 },
+    note:
+      "**実案件の試作では、そのまま納品できる水準になりませんでした（vector 0点 / art 15点）。** " +
+      "工程表を持っているのは「見積もれない」を「見積もれるが割に合わない」に変えるためで、" +
+      "作れると主張しているわけではありません。試作の結果が変われば自動的に判定も変わります。" +
+      "指定が細かい案件（キャラクターの一貫性・特定の画風）は特に通りません。",
+  },
+  {
+    id: "web_build",
+    label: "小規模なWeb実装・修正",
+    unit: "機能",
+    unitPattern: /([0-9,]{1,3})\s*(?:機能|画面|ページ|箇所|項目)/,
+    patterns: [
+      /(LP|ランディングページ|ホームページ|Webサイト|サイト)[^。\n]{0,10}(制作|作成|修正|改修|コーディング)/,
+      /(HTML|CSS|JavaScript|WordPress|React|Next\.js)[^。\n]{0,12}(実装|修正|対応|作成)/,
+      /(バグ|不具合)[^。\n]{0,8}(修正|対応)/,
+    ],
+    steps: [
+      { name: "要件の整理と受け入れ条件の明文化", by: "auto", minutes: 0, machineMinutes: 2, manualMinutes: 40, how: "「何ができたら完了か」を先に文章にして、依頼者に確認してもらう。" },
+      { name: "実装", by: "auto", minutes: 0, machineMinutes: 6, manualMinutes: 120, how: "受け入れ条件を満たすコードを書く。" },
+      { name: "テストの作成と実行", by: "auto", minutes: 0, machineMinutes: 3, manualMinutes: 45, how: "受け入れ条件をそのままテストにして走らせる。落ちたら直して、通るまで繰り返す。" },
+      {
+        name: "実際に動かしての確認",
+        by: "approve",
+        minutes: 10,
+        machineMinutes: 2,
+        manualMinutes: 30,
+        how: "テストが通っていても、画面を開いて操作する。",
+        why:
+          "テストが通ることと、依頼者が期待した動きになっていることは別。" +
+          "見た目の崩れやスマホでの挙動は、テストでは拾えない。",
+      },
+      { name: "修正対応", by: "approve", minutes: 25, machineMinutes: 5, manualMinutes: 60, perJob: true, how: "指摘を直して、差分とテスト結果を出す。" },
+    ],
+    marketRateJpy: { low: 10_000, high: 80_000 },
+    note:
+      "受け入れ条件を先に文章で固めないと、無限に修正が続きます。" +
+      "「イメージと違う」で戻ってくる案件は、条件を書面にしていないことが原因です。",
+  },
   {
     id: "translation",
     label: "翻訳（機械翻訳＋後編集）",
@@ -584,7 +874,7 @@ const AS_COMPOUND = /^\s*(作成|制作|整備|作り|執筆|代行|支援|実�
  * SAP運用保守の案件を「作業標準書の作成」と判定していた。
  */
 const AS_BACKGROUND =
-  /が\s*[^。\n]{0,10}(整備|完備|用意|存在|あり|ある|ござい|できてい|揃っ)|に\s*(沿っ|従っ|基づ)/;
+  /が\s*[^。\n]{0,10}(整備|完備|用意|存在|あり|ある|ござい|できてい|揃っ)|に\s*(沿っ|従っ|基づ)|(支援)?(サービス|事業|会社|企業)?\s*を\s*(提供|運営|展開|手掛け|行っ)|(サービス|事業)\s*(です|でございます|を営)/;
 
 /**
  * その仕事を「依頼されている」のか、単に言及されているだけなのかを見る。
@@ -670,8 +960,18 @@ export function estimateByWorkType(text: string): WorkTypeEstimate | null {
   if (!workType) return null;
 
   const t = stripNonQuantities(normalized);
-  const m = t.match(workType.unitPattern);
-  const raw = m ? Number(m[1].replace(/,/g, "")) : NaN;
+  // 最初の一致を取ると「1記事3000文字、10本」で 1 を拾ってしまう。
+  // 「1◯◯あたり」という書き方が先に来るのが普通なので、最大値を見る。
+  // ただし「実績5件以上」のような応募条件の数字は数量ではないので外す。
+  const global = new RegExp(workType.unitPattern.source, "g");
+  const found = [...t.matchAll(global)]
+    .filter((mm) => {
+      const before = t.slice(Math.max(0, (mm.index ?? 0) - 12), mm.index);
+      return !/(実績|経験|以上|最低|月間|年間|累計|登録|会員|募集)\s*$/.test(before);
+    })
+    .map((mm) => Number(mm[1].replace(/,/g, "")))
+    .filter((v) => Number.isFinite(v) && v > 0);
+  const raw = found.length ? Math.max(...found) : NaN;
   // 文字単位の仕事だけは桁が大きいので別枠
   const cap = workType.unit === "文字" ? 500_000 : MAX_PLAUSIBLE_UNITS;
   const unitsRead = Number.isFinite(raw) && raw > 0 && raw <= cap;

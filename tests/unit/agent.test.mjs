@@ -9,21 +9,37 @@ import { CallBudget } from "../../dist-test/agent/budget.js";
 
 // --- 作業量の見積もり（AIなしで実効時給を出すための土台）-------------------
 
-test("文字数×本数から作業時間を見積もる", () => {
+test("記事の本数から、工程表で見積もる", () => {
+  // 以前は文字数÷1,200文字/時で30時間と出していた。これは手作業の速度。
+  // いまは工程表（生成は自動、事実確認と突き合わせが人）で数える。
   const e = estimateHours("記事作成をお願いします。1記事3000文字、10本お願いします。");
   assert.ok(e, "見積もれていない");
-  // 30,000文字 ÷ 1,200文字/時 = 25時間。そこに2〜8割の上乗せ。
-  assert.ok(e.lowHours >= 29 && e.lowHours <= 31, `low=${e.lowHours}`);
-  assert.ok(e.highHours >= 44 && e.highHours <= 46, `high=${e.highHours}`);
   assert.ok(e.highHours > e.lowHours);
+  // 「1記事」ではなく「10本」を数量として読めていること
+  const byType = estimateByWorkType("記事作成をお願いします。1記事3000文字、10本お願いします。");
+  assert.equal(byType.workType.id, "article_writing");
+  assert.equal(byType.units, 10, "1記事のほうを数量として読んでいる");
+  // 手作業（10記事）よりは大幅に短い
+  assert.ok(byType.humanHours < byType.manualHours / 5, `${byType.humanHours} / ${byType.manualHours}`);
+});
+
+test("文字数からの素朴な見積もりは、工程表が無いときだけ使う", () => {
+  const e = estimateHours("商品説明文を1商品300文字、100商品分でお願いします。");
+  assert.ok(e);
   assert.match(e.basis, /上乗せ/);
 });
 
-test("データ入力の件数から見積もる", () => {
-  const e = estimateHours("企業リストの作成です。500件の企業情報を入力してください。");
-  assert.ok(e);
-  // 500件 × 2分 = 16.7時間
-  assert.ok(e.lowHours >= 19 && e.lowHours <= 21, `low=${e.lowHours}`);
+test("抜き取り検査を件数ぶん掛けない", () => {
+  // 「抜き取り」なので件数に比例しない。掛けていたので、
+  // 500件のリストで「抜き取り検査に16時間」という計算になっていた。
+  const small = estimateByWorkType("企業リストの作成です。50件の企業情報を入力してください。");
+  const big = estimateByWorkType("企業リストの作成です。500件の企業情報を入力してください。");
+  assert.equal(small.workType.id, "data_entry");
+  const sample = (e) => e.breakdown.find((b) => /抜き取り/.test(b.name)).hours;
+  assert.equal(sample(small), sample(big), "抜き取り検査が件数で増えている");
+  // 人の時間は10倍にはならない（機械の時間だけが増える）
+  assert.ok(big.humanHours < small.humanHours * 2, `${small.humanHours} → ${big.humanHours}`);
+  assert.ok(big.machineHours > small.machineHours);
 });
 
 test("文字起こしは音声時間の4倍で見積もる", () => {
