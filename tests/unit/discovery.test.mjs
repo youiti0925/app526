@@ -1841,3 +1841,60 @@ test("検分待ちを取り出せる", () => {
   ];
   assert.equal(dr.awaitingJudgement(runs).length, 1);
 });
+
+// --- データ入力を最初の収入源にするための関門 --------------------------------
+
+test("個人の連絡先を集める仕事は受けない", () => {
+  const g = gt.checkGates("インフルエンサーのメールアドレスを収集してリスト化してください。".repeat(3));
+  const hit = g.hits.find((h) => h.id === "personal_data");
+  assert.ok(hit, "個人連絡先の収集を検出できていない");
+  assert.equal(hit.negotiable, false);
+});
+
+test("法人の公開情報リストは個人情報の関門に当たらない", () => {
+  const g = gt.checkGates(
+    "国内企業の会社名・住所・代表電話・URLをリスト化してください。100件お願いします。".repeat(3)
+  );
+  assert.ok(!g.hits.some((h) => h.id === "personal_data"), JSON.stringify(g.hits));
+});
+
+test("税務の集計代行は士業の独占業務として落とす", () => {
+  // 実データ: 「楽天証券一般口座の取得単価計算と譲渡損益集計」が募集されていた。
+  // 単なる計算に見えるが、申告のための集計は税理士法52条に踏み込むおそれがある。
+  const g = gt.checkGates("楽天証券一般口座の譲渡損益の集計を代行してください。確定申告に使います。".repeat(2));
+  const hit = g.hits.find((h) => h.id === "restricted_work");
+  assert.ok(hit);
+  assert.equal(hit.negotiable, false);
+});
+
+test("収集元が規約で自動取得を禁じていそうな案件は確認を立てる", () => {
+  const g = gt.checkGates("Instagramから店舗情報を収集してリストにしてください。".repeat(3));
+  const hit = g.hits.find((h) => h.id === "collection_source");
+  assert.ok(hit);
+  assert.equal(hit.negotiable, true, "確認すれば受けられる可能性があるので交渉可");
+});
+
+test("普通のデータ入力は新しい関門のどれにも当たらない", () => {
+  const g = gt.checkGates(
+    "エクセルへのデータ入力をお願いします。PDFの請求書の内容を表に転記してください。500件。".repeat(2)
+  );
+  const ids = g.hits.map((h) => h.id);
+  for (const id of ["personal_data", "restricted_work", "collection_source"]) {
+    assert.ok(!ids.includes(id), `${id} が誤発火: ${JSON.stringify(g.hits)}`);
+  }
+});
+
+test("職種タグ欄の「営業・接客」を現地作業と読み違えない", () => {
+  // ホテル情報のリスト作成（在宅）が、ページの職種タグ「営業・接客」で
+  // onsite 判定されて落ちていた。
+  const d = del.judgeDeliverability(
+    "職種 営業・接客 依頼範囲 市場調査・リサーチ全般 ホテルの施設名・住所・電話番号をリスト化してください。1件200円で、100件作成をお願いいたします。".repeat(2)
+  );
+  assert.ok(!d.matched.includes("onsite"), d.matched.join(","));
+  assert.equal(d.canDeliver, true);
+});
+
+test("本当に接客する仕事は今までどおり落とす", () => {
+  const d = del.judgeDeliverability("店舗での接客をお願いします。お客様への対応が主な業務です。".repeat(3));
+  assert.ok(d.matched.includes("onsite"));
+});
