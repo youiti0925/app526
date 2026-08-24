@@ -15,8 +15,9 @@ import { buildChecklist } from "./coverage";
 import { buildRenegotiation } from "./renegotiate";
 import { buildListing, listableWorkTypes, renderListing } from "./listing";
 import { reviewListing, summarizeListings } from "./listing-tracker";
-import { estimateByWorkType } from "./worktypes";
+import { estimateByWorkType, estimateUnits } from "./worktypes";
 import { unknownSplit, yourTime, type YourTime } from "./yourtime";
+import { readPricing } from "./pricing";
 import { evidenceFor } from "./dryrun-core";
 import { needsEscalation } from "./escalation";
 import { fetchFeed, leadFromParsed } from "./ingest";
@@ -264,7 +265,15 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     // 時給が良くても、納期までに終わらなければ受けられない。
     // 遅延して信用を失うか、無理をして時給が崩れるかのどちらかになる。
     const deadline = readDeadline(lead.rawText);
-    const byTypeEstimate = estimateByWorkType(lead.rawText);
+    let byTypeEstimate = estimateByWorkType(lead.rawText);
+
+    // 「予算」欄には、総額ではなく1件あたりの単価が入っていることがある。
+    // 実データ220件のうち6件で桁が違った（5倍の過小、100倍の過小、5倍の過大）。
+    // 単価欄と数量欄が別々にあるので、そちらを正とする。
+    const pricing = readPricing(lead.rawText);
+    if (pricing.units !== null && byTypeEstimate && pricing.units !== byTypeEstimate.units) {
+      byTypeEstimate = estimateUnits(byTypeEstimate.workType, pricing.units);
+    }
 
     // 週の稼働時間は「あなたの時間」であって、仕事に要る時間の合計ではない。
     // 処理するのはAIなので、ここを混ぜると受けられるはずの仕事を落とす。
@@ -281,7 +290,8 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     const deadlineCheck = checkDeadline(deadline, yours.highHours, weeklyHours);
 
     let estimate: WorkEstimate | null = estimateHours(lead.rawText);
-    let offered = lead.budgetJpy;
+    // 総額が読めていればそれを使う。予算欄は単価のことがある。
+    let offered = pricing.totalJpy ?? lead.budgetJpy;
     let fitNotes = "";
     let estimatedBy: "rule" | "ai" = "rule";
 
@@ -464,6 +474,13 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       estimate,
       estimatedBy,
       hourly,
+      pricing: {
+        totalJpy: pricing.totalJpy,
+        perUnitJpy: pricing.perUnitJpy,
+        units: pricing.units,
+        source: pricing.source,
+        basis: pricing.basis,
+      },
       // あなたが手を動かす時間と、仕事全体の作業量。
       // 時給はこの「あなたの時間」で割ったもの。
       yourTime: {

@@ -1749,3 +1749,44 @@ test("数量が読めていれば、今までどおり時給を出す", () => {
   assert.equal(y.unitsRead, true);
   assert.ok(y.certain);
 });
+
+// --- 単価と総額の取り違え ---------------------------------------------------
+
+const pr = await import("../../dist-test/agent/pricing.js");
+
+test("募集ページの単価欄と数量欄から総額を出す", () => {
+  // 「予算」欄には総額ではなく1件あたりの単価が入っていることがある。
+  // 実データ220件のうち6件で桁が違った。
+  const p = pr.readPricing("記事・ブログ 記事単価 1,500円 記事数 5記事 執筆をお願いします。");
+  assert.equal(p.perUnitJpy, 1500);
+  assert.equal(p.units, 5);
+  assert.equal(p.totalJpy, 7500);
+  assert.equal(p.source, "structured");
+});
+
+test("本文の「1件◯円で、◯件」からも総額を出す", () => {
+  const p = pr.readPricing("下記のリスト作成を依頼いたします。1件200円で、100件作成をお願いいたします。");
+  assert.equal(p.totalJpy, 20000);
+  assert.equal(p.units, 100);
+  assert.equal(p.source, "prose");
+});
+
+test("単価だけ読めて数量が読めないときは、総額を出さない", () => {
+  // 単価をそのまま総額にすると、5記事の案件を1記事ぶんの報酬で判断する。
+  const p = pr.readPricing("記事単価 1,500円 でお願いします。本数はご相談ください。");
+  assert.equal(p.perUnitJpy, 1500);
+  assert.equal(p.totalJpy, null);
+  assert.match(p.basis, /確認してください/);
+});
+
+test("単価も数量も無ければ何も返さない（推測で埋めない）", () => {
+  const p = pr.readPricing("記事の執筆をお願いします。詳細はご相談ください。");
+  assert.equal(p.totalJpy, null);
+  assert.equal(p.perUnitJpy, null);
+  assert.equal(p.source, "none");
+});
+
+test("非現実的な数量・金額は読み違えとして捨てる", () => {
+  const p = pr.readPricing("単価 1000円 作成数 999999");
+  assert.equal(p.totalJpy, null, JSON.stringify(p));
+});
