@@ -1342,10 +1342,12 @@ test("月額の要員募集を試作の対象にしない", () => {
 test("既定で有効なソースは、請負が取れるものだけ", () => {
   // 取り込み実績: ギークス16件・ITプロ16件が全部 月額の準委任、
   // ココナラ10件のうち9件が請負。週10時間では月額の要員募集は受けられない。
+  // 2026-08-24 の実地調査で、ままワークス（請負あり・sitemap準拠ルートあり・
+  // 規約に自動アクセス禁止なし）を追加した。
   const on = sources.SOURCES.filter((s) => s.defaultEnabled).map((s) => s.id);
-  assert.deepEqual(on, ["coconala"], on.join(","));
-  // 無効にしたものも、消さずに残しておく（稼働が増えたら使う）
-  assert.equal(sources.SOURCES.length, 3);
+  assert.deepEqual(on.sort(), ["coconala", "mamaworks"], on.join(","));
+  // 無効にしたもの（月額の要員募集系）も、消さずに残しておく（稼働が増えたら使う）
+  assert.ok(sources.SOURCES.length >= 3);
 });
 
 // --- あなたの時間と、仕事全体の作業量を分ける -------------------------------

@@ -78,6 +78,34 @@ export const SOURCES: SourceDefinition[] = [
     defaultEnabled: false,
   },
   {
+    id: "mamaworks",
+    name: "ままワークス",
+    sitemapUrl: "https://mamaworks.jp/sitemap-jobs.xml",
+    isIndex: false,
+    detailPattern: /\/job\/\d+$/,
+    trackBy: "seen",
+    note:
+      "在宅ワーク特化。sitemap に案件975件（2026-08-24 実測）。1件いくらの請負（案件単価制・文字単価制）と" +
+      "時給のパート求人が混在するので、契約形態の判定（engagement.ts）が働く前提で使う。" +
+      "robots.txt はクエリ付き一覧を禁止・sitemap 経由を許可しているので、必ず sitemap から辿る。" +
+      "規約に自動アクセス禁止条項なし。応募人数は非公開。" +
+      "curl 系クライアントを弾く WAF があるが、このアプリの fetch は通ることを実測済み。",
+    defaultEnabled: true,
+  },
+  {
+    id: "cw_tech",
+    name: "クラウドワークス テック",
+    sitemapUrl: "https://tech.crowdworks.jp/job_opened.xml",
+    isIndex: false,
+    detailPattern: /\/job_offers\/\d+/,
+    trackBy: "seen",
+    note:
+      "募集中の案件だけのサイトマップ（job_opened.xml、実測695件）を提供している唯一のサイト。robots.txt 全面許可。" +
+      "ただし全件が月額の準委任（週4〜5日）なので、週の稼働が20時間を超えるまでは有効にしないこと。" +
+      "親サイト crowdworks.jp は ClaudeBot 拒否だが、このホストは別（2026-08-24 確認）。",
+    defaultEnabled: false,
+  },
+  {
     id: "coconala",
     name: "ココナラ 公開依頼",
     sitemapUrl: "https://coconala.com/sitemaps/category-requests-index.xml",
@@ -96,16 +124,43 @@ export const SOURCES: SourceDefinition[] = [
  */
 export const REJECTED_SOURCES: { name: string; why: string }[] = [
   {
-    name: "レバテックフリーランス",
-    why: "curl では取れるのに、プログラム（Node の fetch）からは全ページ HTTP 403。WAF がクライアントを見て弾いています。ブラウザのふりをすれば通る可能性はありますが、それは回避なのでしません。",
+    name: "ランサーズ",
+    why:
+      "【2026-08-24 再調査で理由を訂正】robots.txt は ClaudeBot を名指しで許可（Crawl-delay: 5）しており、" +
+      "請負案件が主体で、提案数（応募人数）も公開している——条件が揃う唯一のサイト。" +
+      "しかしWAFが未知のUAを405で弾き、このアプリのUAでは robots.txt すら取れない。" +
+      "ClaudeBot を名乗れば通るが、このアプリは Anthropic のクローラではないので、それはUA偽装。やらない。" +
+      "**手動で見る・応募するぶんには何の問題もない**ので、人が使う先としては最有力。",
   },
   {
     name: "クラウドワークス",
-    why: "robots.txt が ClaudeBot / GPTBot を名指しで Disallow: / にしています。このアプリはAIで動かす前提なので、名前を変えて通らず、使いません。",
+    why: "robots.txt が ClaudeBot / GPTBot を名指しで Disallow: /（「AI学習用クローラーのクロールを拒否」とコメント付き）。ただし子サービスの tech.crowdworks.jp は全面許可で、ホスト単位で真逆。ドメインごとに必ず取り直すこと。",
   },
   {
-    name: "ランサーズ",
-    why: "robots.txt からして HTTP 405。AWS WAF がプログラムからのアクセスを弾いています。",
+    name: "Offers",
+    why:
+      "robots.txt は「LLMO optimization」とコメント付きで ClaudeBot を歓迎しているのに、" +
+      "利用規約第20条(16)が「スクレイピング、クローリングその他ロボット、プログラム等のデータ収集」を明示禁止。" +
+      "矛盾しているが、規約を優先して使わない。稼働70〜80h/月の低稼働案件があるので、手動なら見る価値あり。",
+  },
+  {
+    name: "SOKUDAN",
+    why:
+      "sitemapあり・完全SSR・「1案件あたり月額10〜15万円／週7〜8h」という週10時間で受けられる形が実在する、内容的には最有力。" +
+      "しかし規約の禁止行為に「スクレイピング、クローリング…により…本サービスに関する情報を取得する行為」とあり、" +
+      "案件情報まで含む読み方ができる。迷ったら禁止側。運営に確認が取れたら解禁する。",
+  },
+  {
+    name: "Wantedly",
+    why: "robots.txt に ClaudeBot の記載は無い（＝許可）のに、WAFが ClaudeBot UA を403で弾く。robots.txt だけ見ると誤る例。偽装しないので使わない。",
+  },
+  {
+    name: "YOUTRUST",
+    why: "規約が「ロボット、クローラー、スクレイパーその他の自動的手段」を明示禁止。かつ案件本文がSPAでHTMLに無い。",
+  },
+  {
+    name: "レバテックフリーランス",
+    why: "curl では取れるのに、プログラム（Node の fetch）からは全ページ HTTP 403。WAF がクライアントを見て弾いています。ブラウザのふりをすれば通る可能性はありますが、それは回避なのでしません。",
   },
   {
     name: "SKIMA / ストアカ / Green",
@@ -115,26 +170,18 @@ export const REJECTED_SOURCES: { name: string; why: string }[] = [
     name: "クラウディア",
     why: "サイトマップは取れますが、中身の8,233件が出品者プロフィールで、案件ページはほぼありません。",
   },
-  // 【2026-08-24 撤回】以前ここに次のように書いていました。
-  //
-  //   「Indeed / スタンバイ / Workship / Midworks / PE-BANK / フリエン / シュフティ:
-  //     robots.txt は禁止していませんが、機械が読める入口（サイトマップ・RSS・API）が
-  //     見つかりません。1ページずつ辿るのは相手の負荷になるのでしません。」
-  //
-  // これは自分で作った規則で、根拠がありません。robots.txt が許可していて、
-  // 間隔を空けて一覧ページを取るのは、クローラとして普通の行為です。
-  // サイトマップの有無は「取ってよいか」とは関係ありません。
-  //
-  // この規則ひとつで7サイトを落としていました。結果、請負案件が取れるソースが
-  // ココナラ1つだけになり、月220件しか見えない状態が続いていました。
-  // 実測では、あなたの時間は週10時間のうち26時間ぶんが余っていて、
-  // 制約は時間ではなく案件数のほうでした。自分で自分の供給を絞っていたことになります。
-  //
-  // 落とすときは、次のどれかに当たる場合だけにします。
-  //   - robots.txt が該当パスを禁止している
-  //   - 利用規約が自動アクセスを禁止している
-  //   - WAF が弾く（偽装して通そうとはしない）
-  //   - 請負の案件が存在しない（月額の要員募集しか無い等）
+  {
+    name: "lotsful / Anycrew / テックビズ",
+    why: "lotsful は CloudFront がUAに関係なく403（週10h案件を売りにしていて内容的には合うのに届かない）。Anycrew は2025年6月にサービス終了。テックビズは公開案件が存在しない（登録前提）。",
+  },
+  {
+    name: "エージェント系all（ギークス/ITプロ/Midworks/ココナラテック(旧フリエン)/PE-BANK/Workship/Findy/HiPro/Relance）",
+    why:
+      "【2026-08-24 実地再調査】技術的には大半が取得可能（Midworks 32,048件・ココナラテック21,215件は完全SSR、" +
+      "以前の「入口が無い」判定は誤りだった。フリエンは tech.coconala.com への移転を見逃し、Midworks はドメイン取り違え）。" +
+      "しかし実ページで契約形態を確認した結果、17サイト中16サイトが月額の準委任（精算140〜180h/月、週2日でも月60h前後）で、" +
+      "週10時間では1件も受けられない。取れるのに取らないのは負荷をかけないため。稼働が増えたら tech.crowdworks.jp（下記ソース）から順に解禁。",
+  },
 ];
 
 interface SitemapEntry {

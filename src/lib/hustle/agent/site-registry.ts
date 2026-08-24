@@ -48,13 +48,13 @@ export const SITE_CANDIDATES: SiteCandidate[] = [
   // --- クラウドソーシング ---
   { id: "crowdworks", name: "クラウドワークス", origin: "https://crowdworks.jp", category: "crowdsourcing", detailPattern: "/public/jobs/\\d+" },
   { id: "lancers", name: "ランサーズ", origin: "https://www.lancers.jp", category: "crowdsourcing", detailPattern: "/work/detail/\\d+" },
-  { id: "shufti", name: "シュフティ", origin: "https://app.shufti.jp", category: "crowdsourcing" },
-  { id: "craudia", name: "クラウディア", origin: "https://www.craudia.com", category: "crowdsourcing" },
+  { id: "shufti", name: "シュフティ", origin: "https://app.shufti.jp", category: "crowdsourcing", note: "【2026-08-24】完全SPA化で公開入口ゼロ（全ルートが空シェル1,434バイト）。規約に商用2次利用禁止。使えない。" },
+  { id: "craudia", name: "クラウディア", origin: "https://www.craudia.com", category: "crowdsourcing", note: "【2026-08-24】robots実質全許可・参加申請数公開だが、募集中は10件前後しかない（7,289件はほぼアーカイブ）。規約に商用2次利用禁止条項。低頻度の手動確認のみ。" },
 
   // --- スキル出品 ---
   { id: "coconala", name: "ココナラ 公開依頼", origin: "https://coconala.com", category: "skill_market", detailPattern: "/requests/\\d+" },
   { id: "skima", name: "SKIMA", origin: "https://skima.jp", category: "skill_market" },
-  { id: "timeticket", name: "タイムチケット", origin: "https://www.timeticket.jp", category: "skill_market" },
+  { id: "timeticket", name: "タイムチケット", origin: "https://www.timeticket.jp", category: "skill_market", note: "【2026-08-24】全リクエスト403（WAF）。robots.txtすら取れない。そもそも出品型で案件掲載型ではない。" },
   { id: "streetacademy", name: "ストアカ", origin: "https://www.street-academy.com", category: "skill_market" },
 
   // --- フリーランスエージェント ---
