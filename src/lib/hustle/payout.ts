@@ -67,6 +67,29 @@ export const PLATFORM_FEES: PlatformFee[] = [
     payoutLagDays: "月末締め翌月末払いが一般的（最長60日）",
   },
   {
+    id: "fiverr",
+    name: "Fiverr（出品型・海外）",
+    feeRate: 0.2,
+    feeNote:
+      "Payment Terms 原文「credits your account with Earnings equal to 80% of the purchase amount」＝手数料20%。応募という行為が存在しないので、応募人数で割られない（2026-08-24 一次確認）。",
+    withdrawalFeeJpy: 450,
+    withdrawalNote:
+      "Payoneer 経由の Local Bank Transfer が「Available worldwide」で US$3/回（約450円）。日本の銀行口座へ出金可。最低出金 $20。新規は政府発行の身分証の実物での本人確認が必要で、一時金がかかる場合がある。",
+    minPayoutJpy: 3_000,
+    payoutLagDays: "売上確定から14日のクリアリング + 振込1〜3営業日。米ドル建てなので為替の影響を受ける",
+  },
+  {
+    id: "peopleperhour",
+    name: "PeoplePerHour（出品型・海外）",
+    feeRate: 0.2,
+    feeNote:
+      "同一バイヤー累計£250未満は20%、£250〜5000は7.5%、超は3.5%（2026-08-21版の公式ヘルプ原文で確認）。単発中心だとほぼ20%のまま。",
+    withdrawalFeeJpy: 500,
+    withdrawalNote: "PayPal / Payoneer / 銀行振込。GBP・EUR・USD建て。国際送金3〜7営業日。",
+    minPayoutJpy: 1_000,
+    payoutLagDays: "クリアリング約14営業日 + 送金3〜7営業日",
+  },
+  {
     id: "mercari",
     name: "メルカリ",
     feeRate: 0.1,

@@ -103,6 +103,49 @@ export const SITE_CANDIDATES: SiteCandidate[] = [
   { id: "indeed", name: "Indeed", origin: "https://jp.indeed.com", category: "job_board" },
   { id: "stanby", name: "スタンバイ", origin: "https://jp.stanby.com", category: "job_board" },
   { id: "green", name: "Green", origin: "https://www.green-japan.com", category: "job_board" },
+
+  // --- 海外（2026-08-24 実地調査。robots.txt・規約・出金の一次確認済み）-----
+  {
+    id: "fiverr",
+    name: "Fiverr",
+    origin: "https://www.fiverr.com",
+    category: "skill_market",
+    note:
+      "出品型の本命。AI利用を全カテゴリで明示的に許可している唯一のサイト（2026-08-23版ヘルプ）。" +
+      "ただし『生のAI出力そのまま』は品質基準違反でアカウント永久停止までありうる。" +
+      "顧客要件への実質的な作り込みが必須。日本からPayoneer経由で出金可。手数料20%。" +
+      "新規はギグ4本まで・広告不可で、Level 1（5件受注・$400）までが立ち上がりの壁。" +
+      "検索露出は過去の取引実績で決まり、24時間以内返信率80%以上の維持が要る。",
+  },
+  {
+    id: "upwork",
+    name: "Upwork",
+    origin: "https://www.upwork.com",
+    category: "matching",
+    note:
+      "日本が出金の明示サポート対象（$0.99/回・上限$8,500）。手数料0〜15%。" +
+      "出品型のProject Catalogあり（29万件・新規は審査に数週間）。" +
+      "応募型はConnects $0.15/枚の実費。Claude公式コネクタ経由の露出はJSS90%以上が条件で、実績ゼロでは構造的に不可。" +
+      "本体はCloudflareで自動取得不可（robots.txt自体が403）。",
+  },
+  {
+    id: "freelancer_com",
+    name: "Freelancer.com",
+    origin: "https://www.freelancer.com",
+    category: "crowdsourcing",
+    note:
+      "応募型。実測で入札中央値19件（投稿1時間以内）〜33件。ココナラの23人と同水準で、応募型の期待値問題は万国共通と確認。" +
+      "ToS第33条が書面許可のない自動アクセスを（公開APIも含めて）禁止しているため、収集ソースにもしない。",
+  },
+  {
+    id: "codeable",
+    name: "Codeable",
+    origin: "https://www.codeable.io",
+    category: "matching",
+    note:
+      "WordPress特化・時給$80〜120・価格の叩き合いを構造的に排除。日本在住の稼働実績者あり。" +
+      "ただし現在は新規応募の窓口が閉鎖中（waitlistのみ）。再開したら最有力。",
+  },
 ];
 
 export const getCandidate = (id: string): SiteCandidate | undefined =>
