@@ -1636,3 +1636,36 @@ test("除外リストの件数を、作る量として読まない", () => {
   assert.equal(e.workType.id, "data_entry");
   assert.equal(e.units, 100, `${e.units}件と読んでいる`);
 });
+
+// --- 物を作って送る仕事は受けられない ---------------------------------------
+
+test("布・木・樹脂を加工して現物を送る仕事は落とす", () => {
+  // 「現地作業・電話」しか見ていなかったので、扇子・木工ケース・
+  // コスプレ衣装・フィギュア修復・発泡ウレタンの造形・トランプ制作が
+  // 全部「作れる」と判定されていた。データでは納品できない。
+  const cases = [
+    "扇子を作ってください。写真の扇子を作成お願いします。".repeat(4),
+    "アクセサリーの木工ケースの制作をお願いいたします。木工製品の製作経験がある方。".repeat(3),
+    "ゲームキャラクターのコスプレ衣装作製をお願いします。縫製ができる方。".repeat(3),
+    "ガレージキットフィギュア修復出来る方を募集します。塗装と造形をお願いします。".repeat(3),
+    "発泡ウレタンで等身大の女性を製作したいです。造形ができる方。".repeat(3),
+  ];
+  for (const t of cases) {
+    const d = del.judgeDeliverability(t);
+    assert.ok(d.matched.includes("physical_goods"), t.slice(0, 24));
+    assert.equal(d.canDeliver, false, t.slice(0, 24));
+  }
+});
+
+test("データで納品する仕事を、物の製作と読み違えない", () => {
+  const ok = [
+    "ホテルのリスト作成をお願いします。施設名・住所・URLを集めてください。".repeat(4),
+    "記事の執筆をお願いします。1記事3000文字で10本です。".repeat(4),
+    "動画の編集をお願いします。カットとテロップの挿入です。".repeat(4),
+    "訪問看護事業所への研修資料の作成をお願いします。".repeat(4),
+  ];
+  for (const t of ok) {
+    const d = del.judgeDeliverability(t);
+    assert.ok(!d.matched.includes("physical_goods"), `${t.slice(0, 24)} → ${d.matched.join(",")}`);
+  }
+});
