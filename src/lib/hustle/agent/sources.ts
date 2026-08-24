@@ -248,7 +248,7 @@ export function extractText(html: string, maxChars = 6000): string {
     // 閉じ忘れたスタイルブロックの残骸
     .filter((l) => !/[{};]\s*[\w-]+\s*:/.test(l));
 
-  const body = cutAfterBody(dropLeadingChrome(dropRepeatedShortLines(lines))).join("\n").replace(/\n{3,}/g, "\n\n");
+  const body = cutAfterBody(dropLeadingChrome(dropTaxonomyLines(cutToRepeatedTitle(dropRepeatedShortLines(lines))))).join("\n").replace(/\n{3,}/g, "\n\n");
   return (jsonLd ? `${jsonLd}\n\n${body}` : body).slice(0, maxChars);
 }
 
@@ -292,8 +292,66 @@ const BODY_END_MARKERS = [
  *
  * 冒頭から続く短い行の連なりは、本文ではなくメニューとみなして落とす。
  */
+
 /** 本文の始まりを示す行。短くても、ここから先は本文。 */
 const BODY_START = /^[【\[［]|^[■●◆▼]|^(お?仕事|業務|依頼|作業|募集)(内容|範囲|詳細)|^(概要|前提|背景)[:：]?$|[:：]\s*$/;
+
+/**
+ * サイトが付けている分類タグの行を落とす。
+ *
+ * ココナラの案件ページには「職種」「依頼範囲」というラベルの直後に、
+ * サイト共通の分類語がずらりと並ぶ。募集した人が書いた文ではない。
+ *
+ * 実害があった: 10万円の「ホテル情報収集・リスト作成」が、
+ * 職種タグに含まれる「営業・接客」に当たって「現地作業が要る案件」と
+ * 判定され、落とされていた。工程表には当たっていて、あなたの時間は
+ * 0.7時間と出ていたのに、その手前で捨てていた。
+ */
+const TAXONOMY_LABEL = /^(職種|依頼範囲|カテゴリ|タグ|求めるスキル|特記事項)$/;
+
+export function dropTaxonomyLines(lines: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (TAXONOMY_LABEL.test(lines[i].trim())) {
+      // ラベルの直後に続く分類語を落とす。
+      // 1行に「、」で並ぶ場合と、1語1行の場合の両方がある。
+      i++;
+      let dropped = 0;
+      while (
+        i < lines.length &&
+        dropped < 40 &&
+        (lines[i].split(/[、,]/).length >= 3 || lines[i].trim().length < 20) &&
+        !BODY_START.test(lines[i])
+      ) {
+        i++;
+        dropped++;
+      }
+      i--;
+      continue;
+    }
+    out.push(lines[i]);
+  }
+  return out;
+}
+
+/**
+ * 見出しが2回出てくるページは、1回目と2回目の間がメニュー。
+ *
+ * 案件ページは「タイトル → サイトのメニュー → タイトル → 本文」という
+ * 並びになっていることが多い。先頭行が長いタイトルだと、
+ * 短い行を落とす処理が0行目で止まってメニューが素通りしていた。
+ */
+export function cutToRepeatedTitle(lines: string[], maxLook = 80): string[] {
+  const head = lines[0]?.trim();
+  if (!head || head.length < 8) return lines;
+  // 「| サイト名」が付いた形も同じ見出しとみなす
+  const bare = head.replace(/\s*[|｜]\s*[^|｜]{1,20}$/, "").trim();
+  for (let i = 1; i < lines.length && i < maxLook; i++) {
+    const l = lines[i].trim();
+    if (l === head || (bare.length >= 8 && l === bare)) return lines.slice(i);
+  }
+  return lines;
+}
 
 export function dropLeadingChrome(lines: string[], shortLen = 25, maxSkip = 60): string[] {
   let i = 0;

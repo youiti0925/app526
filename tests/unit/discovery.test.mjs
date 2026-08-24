@@ -1555,3 +1555,84 @@ test("応募者一覧から先を切り落とす", () => {
   const out = sources.cutAfterBody(lines);
   assert.ok(!out.some((l) => /nachuho/.test(l)), out.join(" / "));
 });
+
+// --- 実際の募集文を読んで見つけた誤判定（10万円の案件を落としていた）-------
+
+test("「電話番号」を集める仕事を、電話をかける仕事と読まない", () => {
+  // 10万円の「ホテル情報収集・リスト作成」が、集める項目の
+  // 「4.電話番号」に当たって現地作業と判定され、落とされていた。
+  const d = del.judgeDeliverability(
+    "ホテルのリスト作成をお願いします。収集項目は 1.施設名 2.住所 3.URL 4.電話番号 です。".repeat(4)
+  );
+  assert.ok(!d.matched.includes("onsite"), d.matched.join(","));
+});
+
+test("「訪問看護」を現地作業と読まない", () => {
+  const d = del.judgeDeliverability("訪問看護事業所への研修資料の作成をお願いします。".repeat(6));
+  assert.ok(!d.matched.includes("onsite"), d.matched.join(","));
+});
+
+test("依頼者が架電する案件を、こちらの電話業務と読まない", () => {
+  const d = del.judgeDeliverability(
+    "リスト作成の代行をお願いします。弊社側で架電前に目視確認しやすい候補リストを作りたいです。".repeat(4)
+  );
+  assert.ok(!d.matched.includes("onsite"), d.matched.join(","));
+});
+
+test("選択肢として並ぶ「撮影」を、撮影必須と読まない", () => {
+  const optional = del.judgeDeliverability("画像の用意（選定/撮影）、構成・編集・リライトをお願いします。".repeat(5));
+  assert.ok(!optional.matched.includes("onsite"), optional.matched.join(","));
+  // 本当に撮影が要る案件は今までどおり落とす
+  const real = del.judgeDeliverability("車の駐車シーンの動画撮影をお願いします。".repeat(6));
+  assert.ok(real.matched.includes("onsite"));
+});
+
+test("電話対応そのものの仕事は、今までどおり現地作業として落とす", () => {
+  const d = del.judgeDeliverability(
+    "お問い合わせが入ったら、通知から5分以内にお客様へ電話してください。".repeat(4)
+  );
+  assert.ok(d.matched.includes("onsite"), d.matched.join(","));
+});
+
+test("タイトルが2回出てくるページは、その間のメニューを落とす", () => {
+  const lines = [
+    "大阪府内ホテル情報収集・リスト作成担当者を募集します | ココナラ",
+    "購入・発注したい方",
+    "ログイン",
+    "会員登録",
+    "大阪府内ホテル情報収集・リスト作成担当者を募集します",
+    "1件200円で、100件作成をお願いいたします。",
+  ];
+  const out = sources.cutToRepeatedTitle(lines);
+  assert.equal(out.length, 2, out.join(" / "));
+  assert.ok(!out.some((l) => /ログイン/.test(l)));
+});
+
+test("サイトの分類タグを募集文として読まない", () => {
+  // 「営業・接客」はココナラの職種タグ。これに当たって
+  // リスト作成の案件が「接客が要る」と判定されていた。
+  const lines = [
+    "リスト作成をお願いします。",
+    "職種",
+    "経営者・経営企画",
+    "マーケティング・広報",
+    "営業・接客",
+    "エンジニア",
+    "具体的な内容ですが、下記のリスト作成を依頼いたします。",
+  ];
+  const out = sources.dropTaxonomyLines(lines);
+  assert.ok(!out.some((l) => /営業・接客/.test(l)), out.join(" / "));
+  assert.ok(out.some((l) => /具体的な内容/.test(l)), "本文まで落としている");
+});
+
+test("除外リストの件数を、作る量として読まない", () => {
+  // 「すでにリストアップ済み（約300件）」の300を作業量として読み、
+  // 実際の「100件作成」を無視していた。
+  const e = estimateByWorkType(
+    "下記のリスト作成を依頼いたします。1件200円で、100件作成をお願いいたします。" +
+      "作成にあたり、すでにリストアップ済み（約300件）をお伝えします。重複しないようお願いします。"
+  );
+  assert.ok(e, "工程表に当たっていない");
+  assert.equal(e.workType.id, "data_entry");
+  assert.equal(e.units, 100, `${e.units}件と読んでいる`);
+});

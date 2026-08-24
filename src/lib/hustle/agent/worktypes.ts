@@ -964,14 +964,25 @@ export function estimateByWorkType(text: string): WorkTypeEstimate | null {
   // 「1◯◯あたり」という書き方が先に来るのが普通なので、最大値を見る。
   // ただし「実績5件以上」のような応募条件の数字は数量ではないので外す。
   const global = new RegExp(workType.unitPattern.source, "g");
-  const found = [...t.matchAll(global)]
-    .filter((mm) => {
-      const before = t.slice(Math.max(0, (mm.index ?? 0) - 12), mm.index);
-      return !/(実績|経験|以上|最低|月間|年間|累計|登録|会員|募集)\s*$/.test(before);
-    })
-    .map((mm) => Number(mm[1].replace(/,/g, "")))
-    .filter((v) => Number.isFinite(v) && v > 0);
-  const raw = found.length ? Math.max(...found) : NaN;
+  // 応募条件や、除外リストの件数は「作る量」ではない。
+  // 実データ:「すでにリストアップ済み（約300件）をお伝えします」の300を
+  // 作業量として読み、実際の「100件作成」を無視していた。
+  const NOT_QUANTITY = /(実績|経験|以上|最低|月間|年間|累計|登録|会員|募集|済み?|除く|以外|重複|NG|不可)[^。\n]{0,6}$/;
+  // 数量のすぐ後ろに作業の動詞が来るものが、一番確かな「作る量」。
+  const IS_WORK = /^\s*(?:を|は|ほど|程度|分)?\s*(作成|制作|入力|収集|執筆|編集|翻訳|納品|対応|お願い|依頼)/;
+
+  const cands = [...t.matchAll(global)]
+    .filter((mm) => !NOT_QUANTITY.test(t.slice(Math.max(0, (mm.index ?? 0) - 14), mm.index)))
+    .map((mm) => ({
+      value: Number(mm[1].replace(/,/g, "")),
+      work: IS_WORK.test(t.slice((mm.index ?? 0) + mm[0].length, (mm.index ?? 0) + mm[0].length + 12)),
+    }))
+    .filter((c) => Number.isFinite(c.value) && c.value > 0);
+
+  // 動詞が続くものがあれば、その中の最大値。無ければ全体の最大値。
+  const worked = cands.filter((c) => c.work);
+  const pool = worked.length ? worked : cands;
+  const raw = pool.length ? Math.max(...pool.map((c) => c.value)) : NaN;
   // 文字単位の仕事だけは桁が大きいので別枠
   const cap = workType.unit === "文字" ? 500_000 : MAX_PLAUSIBLE_UNITS;
   const unitsRead = Number.isFinite(raw) && raw > 0 && raw <= cap;
