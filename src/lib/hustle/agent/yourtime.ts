@@ -47,6 +47,8 @@ export interface YourTime {
   speedup: number;
   /** 幅が確定しているか。false のときは「分からない」と読む。 */
   certain: boolean;
+  /** 募集文から数量を読み取れたか。false なら時給の判断に使ってはいけない。 */
+  unitsRead: boolean;
   /** 人に見せる説明 */
   basis: string;
 }
@@ -79,6 +81,27 @@ const OVERRUN: Record<Evidence, number> = {
  * @param evidence そのジャンルを実際に試した結果。試していなければ "untested"。
  */
 export function yourTime(estimate: WorkTypeEstimate, evidence: Evidence): YourTime {
+  // 数量が読めていないときは1単位として計算している。その数字で時給を出すと、
+  // 5万円の案件が「0.5時間 → 時給3万円」のように化ける。
+  // 月額契約で同じ間違いをして直したのに、請負で再発していた。
+  // 分からないものは分からないと返す。
+  if (!estimate.unitsRead) {
+    const one = round(estimate.humanHours);
+    return {
+      lowHours: one,
+      highHours: one,
+      machineHours: round(estimate.machineHours),
+      manualHours: round(estimate.manualHours),
+      speedup: 1,
+      certain: false,
+      unitsRead: false,
+      basis:
+        `募集文から数量（${estimate.workType.unit}数）を読み取れませんでした。` +
+        `1${estimate.workType.unit}として ${one}時間 と置いていますが、これは仮の数字です。` +
+        `**この見積りで時給を判断しないでください。** 何${estimate.workType.unit}かを先方に確認してください。`,
+    };
+  }
+
   const approve = round(estimate.humanHours);
   const manual = round(estimate.manualHours);
   const machine = round(estimate.machineHours);
@@ -93,6 +116,7 @@ export function yourTime(estimate: WorkTypeEstimate, evidence: Evidence): YourTi
       manualHours: manual,
       speedup: 1,
       certain: true,
+      unitsRead: true,
       basis:
         `このジャンルは実案件の試作で「納品できる水準にならなかった」という結果でした。` +
         `AIの出力を承認して出す、という前提が成り立たないので、手作業と同じ ${manual}時間 で見ています。`,
@@ -107,6 +131,7 @@ export function yourTime(estimate: WorkTypeEstimate, evidence: Evidence): YourTi
       manualHours: manual,
       speedup: speed(round(Math.min(manual, approve * OVERRUN.needs_human))),
       certain: false,
+      unitsRead: true,
       basis:
         `工程表では、あなたがやるのは承認と確認だけで ${approve}時間 です` +
         `（機械が動くのは別に ${machine}時間。あなたのカレンダーは埋めません）。` +
@@ -123,6 +148,7 @@ export function yourTime(estimate: WorkTypeEstimate, evidence: Evidence): YourTi
     manualHours: manual,
     speedup: speed(high),
     certain: true,
+    unitsRead: true,
     basis:
       `工程表では、あなたがやるのは承認と確認だけで ${approve}時間 です` +
       `（機械が動くのは別に ${machine}時間）。` +
@@ -148,6 +174,7 @@ export function unknownSplit(totalHours: number): YourTime {
     manualHours: total,
     speedup: 1,
     certain: false,
+    unitsRead: false,
     basis:
       `${total}時間の見積りですが、この仕事は工程の内訳を持っていないので、` +
       `どこまで機械に任せられるかが分かりません。全部あなたの時間として計算しています。` +

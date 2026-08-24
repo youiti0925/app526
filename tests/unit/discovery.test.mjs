@@ -1727,3 +1727,25 @@ test("教材・原稿・校正が記事の工程表に当たる", () => {
     assert.equal(e.workType.id, "article_writing");
   }
 });
+
+test("数量が読めていないのに時給を出さない", () => {
+  // 5万円の「Booking.com設定/連携修正」が、数量を読めていないのに
+  // 1単位＝0.5時間として計算され、時給29,877円と表示されていた。
+  // 月額契約で同じ間違いを直したのに、請負で再発していた。
+  const vague = estimateByWorkType("Webサイトの修正をお願いします。".repeat(8));
+  assert.ok(vague, "工程表に当たっていない");
+  assert.equal(vague.unitsRead, false);
+  const y = yt.yourTime(vague, "proven");
+  assert.equal(y.unitsRead, false);
+  assert.equal(y.certain, false);
+  assert.match(y.basis, /時給を判断しないでください/);
+});
+
+test("数量が読めていれば、今までどおり時給を出す", () => {
+  const clear = estimateByWorkType("リスト作成をお願いします。100件作成をお願いいたします。".repeat(3));
+  assert.ok(clear);
+  assert.equal(clear.unitsRead, true);
+  const y = yt.yourTime(clear, "proven");
+  assert.equal(y.unitsRead, true);
+  assert.ok(y.certain);
+});

@@ -334,11 +334,17 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       // 悪いほう（時間が長い側）を low、良いほうを high に置く。
       // 試作で「作れなかった」ジャンルは yourTime が全時間を返すので、
       // 従来どおり厳しい数字になる。
-      const payout = computePayout(offered, platform, yours.highHours);
-      hourly = {
-        low: Math.round(payout.netJpy / Math.max(0.5, yours.highHours)),
-        high: Math.round(payout.netJpy / Math.max(0.5, yours.lowHours)),
-      };
+      if (!yours.unitsRead) {
+        // 数量が読めていないのに時給を出すと、5万円の案件が
+        // 「0.5時間 → 時給3万円」に化ける。出さない。
+        hourly = null;
+      } else {
+        const payout = computePayout(offered, platform, yours.highHours);
+        hourly = {
+          low: Math.round(payout.netJpy / Math.max(0.5, yours.highHours)),
+          high: Math.round(payout.netJpy / Math.max(0.5, yours.lowHours)),
+        };
+      }
     }
 
     // 提案文を書く時間も原価。取れなければ丸ごと損になる。
@@ -347,9 +353,10 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     if (engagement.kind === "monthly") {
       // 月額契約は応募人数が公開されないことが多く、期待値も出せない
       expected = null;
-    } else if (offered && offered > 0) {
+    } else if (offered && offered > 0 && yours.unitsRead) {
       // 期待値も、あなたの時間で割る。落選したときに失うのは
       // 提案文を書いた時間（あなたの時間）なので、単位を揃える。
+      // 数量が読めていないなら期待値も出さない。
       const payout = computePayout(offered, platform, yours.highHours);
       expected = expectedHourly(
         payout.netJpy,
@@ -383,6 +390,12 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     } else if (!deadlineCheck.fits) {
       verdict = "reject";
       reason = deadlineCheck.reason;
+    } else if (!yours.unitsRead && offered && offered > 0) {
+      // 落とすのでも通すのでもなく、確認を先に立てる。
+      verdict = "verify_first";
+      reason =
+        `${offered.toLocaleString()}円 の提示ですが、募集文から数量（${byTypeEstimate?.workType.unit ?? "件"}数）を` +
+        `読み取れないので、時給を計算できません。何${byTypeEstimate?.workType.unit ?? "件"}かを先に確認してください。`;
     } else if (hourly && hourly.high < minHourly) {
       verdict = "reject";
       // 良いほうの端でも基準に届かないときだけ落とす。
