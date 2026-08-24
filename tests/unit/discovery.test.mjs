@@ -1669,3 +1669,61 @@ test("データで納品する仕事を、物の製作と読み違えない", ()
     assert.ok(!d.matched.includes("physical_goods"), `${t.slice(0, 24)} → ${d.matched.join(",")}`);
   }
 });
+
+// --- 本人であることが要る仕事 -----------------------------------------------
+
+test("本人の声・顔・実績・アカウントが要る仕事は落とす", () => {
+  // 30万円の「SNS運用教材制作」は、自分の声で画面録画して収録し、
+  // 自己紹介動画とインスタのアカウントURLを出す仕事だった。
+  // 代わりに作れないし、名前を借りて出すのは依頼者を欺くことになる。
+  const cases = [
+    "ご自身のPC画面を録画＋音声解説をお願いします。ご自身のインスタグラムのアカウントURLを教えてください。".repeat(2),
+    "インタビューを受けていただけるフリーランスエンジニアを募集します。".repeat(4),
+    "【実体験者限定】結婚相談所の費用と活動の体験談を2000文字でお願いします。".repeat(3),
+    "保険業界の覆面調査業務ができる方を募集します。実際に店舗で体験していただきます。".repeat(3),
+    "月々手離れよく得ている収益について、お話を聞かせてください。".repeat(4),
+  ];
+  for (const t of cases) {
+    const d = del.judgeDeliverability(t);
+    assert.ok(d.matched.includes("personal_identity"), t.slice(0, 26));
+    assert.equal(d.canDeliver, false, t.slice(0, 26));
+  }
+});
+
+test("普通の納品案件を「本人が要る」と読み違えない", () => {
+  const ok = [
+    "ホテルのリスト作成をお願いします。施設名・住所・URLを集めてください。".repeat(4),
+    "FX教材のテキスト作成・校正をお願いします。".repeat(4),
+    "求人媒体の原稿作成を担当していただける方を募集します。".repeat(4),
+    "動画のカット編集とテロップ挿入をお願いします。素材は支給します。".repeat(4),
+  ];
+  for (const t of ok) {
+    const d = del.judgeDeliverability(t);
+    assert.ok(!d.matched.includes("personal_identity"), `${t.slice(0, 24)} → ${d.matched.join(",")}`);
+  }
+});
+
+test("システム・ツール・ボットの開発が工程表に当たる", () => {
+  // 5万円の自動購入ツール開発、LINEチャットボット開発、進捗管理システムが
+  // どの工程表にも当たらず「見積もれない」で落ちていた。
+  for (const t of [
+    "自動購入ツール開発をお願いします。既に運用済みのものでも可です。".repeat(3),
+    "AI連携LINEチャットボット開発ができる方を募集します。".repeat(3),
+    "製造業向け進捗管理システムの企画・開発をお願いします。".repeat(3),
+  ]) {
+    const e = estimateByWorkType(t);
+    assert.ok(e, t.slice(0, 26));
+    assert.equal(e.workType.id, "web_build", `${t.slice(0, 20)} → ${e.workType.id}`);
+  }
+});
+
+test("教材・原稿・校正が記事の工程表に当たる", () => {
+  for (const t of [
+    "FX教材のテキスト作成・校正ができる方を募集します。".repeat(3),
+    "求人媒体の原稿作成を担当する方を募集します。".repeat(3),
+  ]) {
+    const e = estimateByWorkType(t);
+    assert.ok(e, t.slice(0, 24));
+    assert.equal(e.workType.id, "article_writing");
+  }
+});
