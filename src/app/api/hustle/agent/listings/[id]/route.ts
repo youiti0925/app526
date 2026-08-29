@@ -7,7 +7,7 @@ const clamp = (n: number | undefined, min: number): number | undefined =>
   n === undefined ? undefined : Math.max(min, Math.round(n));
 import type { ListingStatus } from "@/lib/hustle/agent/listing-tracker";
 
-const STATUSES = ["published", "paused", "closed"] as const satisfies readonly ListingStatus[];
+const STATUSES = ["approved", "published", "paused", "closed"] as const satisfies readonly ListingStatus[];
 
 /**
  * 出品の実績を更新する。
@@ -26,14 +26,21 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
     const existing = readPublishedListing(id);
     if (!existing) return NextResponse.json({ error: "見つかりません" }, { status: 404 });
 
+    const nextStatus = oneOf(body.status, STATUSES) ?? existing.status;
+    // 「承認済み→出品中」に切り替えた日を出品日として記録する。
+    const publishedAt =
+      nextStatus === "published" && !existing.publishedAt
+        ? new Date().toISOString().slice(0, 10)
+        : existing.publishedAt;
     const listing = upsertPublishedListing({
       ...existing,
+      publishedAt,
       url: str(body.url, 500) ?? existing.url,
       views: clamp(num(body.views), 0) ?? existing.views,
       inquiries: clamp(num(body.inquiries), 0) ?? existing.inquiries,
       orders: clamp(num(body.orders), 0) ?? existing.orders,
       priceJpy: clamp(num(body.priceJpy), 0) ?? existing.priceJpy,
-      status: oneOf(body.status, STATUSES) ?? existing.status,
+      status: nextStatus,
       lastCheckedAt: new Date().toISOString(),
     });
 

@@ -124,7 +124,7 @@ export default function ListingsPage() {
                 <div className="min-w-0">
                   <h2 className="font-medium text-sm truncate">{l.title}</h2>
                   <p className="text-xs text-slate-500">
-                    {l.publishedAt} に出品 / 標準 {l.priceJpy.toLocaleString()}円
+                    {l.publishedAt ? `${l.publishedAt} に出品` : "未出品（承認済み）"} / 標準 {l.priceJpy.toLocaleString()}円
                     {review && ` / ${review.ageDays}日経過`}
                   </p>
                 </div>
@@ -210,6 +210,7 @@ export default function ListingsPage() {
                     className="rounded border px-1.5 py-1"
                     style={{ borderColor: "var(--card-border)" }}
                   >
+                    <option value="approved">承認済み（未出品）</option>
                     <option value="published">出品中</option>
                     <option value="paused">停止中</option>
                     <option value="closed">取り下げ</option>

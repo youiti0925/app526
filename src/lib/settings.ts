@@ -5,6 +5,8 @@ import { defaultFeatureToggles } from "@/types";
 
 export interface AppSettings {
   geminiApiKey: string;
+  /** サーバーにキーが保存済みか。GET はキーの実物を返さない。 */
+  hasGeminiApiKey?: boolean;
 }
 
 const defaultSettings: AppSettings = {
@@ -58,7 +60,7 @@ export async function fetchSettings(): Promise<AppSettings> {
     const res = await fetch("/api/settings");
     if (!res.ok) return { ...defaultSettings };
     const data = await res.json();
-    const settings = { ...defaultSettings, geminiApiKey: data.geminiApiKey ?? "" };
+    const settings = { ...defaultSettings, geminiApiKey: data.geminiApiKey ?? "", hasGeminiApiKey: data.hasGeminiApiKey === true };
     settingsCache = settings;
     return settings;
   } catch {

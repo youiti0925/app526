@@ -93,7 +93,10 @@ ${item.body.slice(0, 8000)}`,
     // これを却下しても案件を「落選」にしてはいけない。
     const advancesLead = ["proposal", "outreach", "listing", "deliverable"].includes(item.kind);
     if (item.leadId && advancesLead) {
-      updateLead(item.leadId, { status: status === "approved" ? "applied" : "lost" });
+      // 承認は「この内容で出す」という意思表示であって、応募はまだ済んでいない。
+      // 実際に送ったら leads の状態を applied に進める（/api/hustle/agent/leads/[id]）。
+      // 却下は「出さない」なので rejected。lost は応募後に返事が無かったときに使う。
+      updateLead(item.leadId, { status: status === "approved" ? "approved" : "rejected" });
     }
 
     // 出品案を承認したら、出品として記録する。
@@ -113,10 +116,12 @@ ${item.body.slice(0, 8000)}`,
           title: item.title.replace(/^出品案:\s*/, "").replace(/（.*$/, ""),
           platformId: "coconala",
           priceJpy: typeof meta.priceJpy === "number" ? meta.priceJpy : 0,
-          publishedAt: new Date().toISOString().slice(0, 10),
-          status: "published",
+          // まだ出品していないので、出品日は空。実際に出したら
+          // 出品ページで「出品中」に切り替えた日を出品日として記録する。
+          publishedAt: "",
+          status: "approved",
         });
-        logEvent(item.runId || "manual", "listing", "action", `出品として記録しました: ${listing.title}`, {
+        logEvent(item.runId || "manual", "listing", "action", `出品内容を確定として記録しました（まだ未出品）: ${listing.title}`, {
           listingId: listing.id,
           workTypeId: meta.workTypeId,
         });

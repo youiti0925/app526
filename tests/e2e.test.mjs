@@ -104,7 +104,7 @@ test("取り込み元は、入れたばかりの状態でも既定で有効に�
   const on = Object.entries(config.sources)
     .filter(([, v]) => v.enabled)
     .map(([id]) => id);
-  assert.deepEqual(on, ["coconala"], JSON.stringify(config.sources));
+  assert.deepEqual(on, ["mamaworks", "coconala"], JSON.stringify(config.sources));
 });
 
 test("承認待ちも出品も、件数が上限を超えても id で引ける", () => {

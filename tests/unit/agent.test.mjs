@@ -408,3 +408,51 @@ test("相場を1単位あたりのまま案件全体の相場として書かな�
   assert.match(r.message, /1物質あたり/, r.message);
   assert.match(r.message, /300,000/, r.message);
 });
+
+// --- 出品の状態（承認は出品ではない）---------------------------------------
+
+test("承認しただけの出品は「未出品」であって、経過日数の判定を始めない", async () => {
+  const { reviewListing } = await import("../../dist-test/agent/listing-tracker.js");
+  // 承認直後の記録: 出品日は空、状態は approved
+  const listing = {
+    id: "t1",
+    workTypeId: "sds",
+    title: "テスト出品",
+    platformId: "coconala",
+    priceJpy: 45000,
+    url: "",
+    publishedAt: "",
+    status: "approved",
+    views: 0,
+    inquiries: 0,
+    orders: 0,
+    lastCheckedAt: "",
+  };
+  const r = reviewListing(listing, "2026-08-30");
+  assert.equal(r.verdict, "too_early");
+  assert.match(r.reason, /まだ出品されていません/);
+  // 以前はここが publishedAt=承認日・status=published で保存され、
+  // 出してもいない出品の「60日問い合わせゼロ」判定が動く恐れがあった。
+});
+
+test("出品日が空でも経過日数の計算が暴走しない", async () => {
+  const { reviewListing } = await import("../../dist-test/agent/listing-tracker.js");
+  const listing = {
+    id: "t2",
+    workTypeId: "sds",
+    title: "テスト出品2",
+    platformId: "coconala",
+    priceJpy: 1000,
+    url: "",
+    publishedAt: "",
+    status: "published",
+    views: 0,
+    inquiries: 0,
+    orders: 0,
+    lastCheckedAt: "",
+  };
+  const r = reviewListing(listing, "2026-08-30");
+  assert.equal(r.ageDays, 0);
+  assert.equal(r.verdict, "too_early");
+  assert.match(r.nextAction, /出品日/);
+});

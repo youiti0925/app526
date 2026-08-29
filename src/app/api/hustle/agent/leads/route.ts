@@ -4,7 +4,7 @@ import { cleanEmail, leadFromParsed, parsePasted } from "@/lib/hustle/agent/inge
 import { guard, oneOf, readJsonObject } from "@/lib/hustle/http";
 import type { LeadSource, LeadStatus } from "@/lib/hustle/agent/types";
 
-const STATUSES = ["new", "triaged", "drafted", "rejected", "applied", "won", "lost", "archived"] as const;
+const STATUSES = ["new", "triaged", "drafted", "rejected", "approved", "applied", "won", "lost", "archived"] as const;
 const SOURCES = ["manual", "paste", "rss", "email"] as const satisfies readonly LeadSource[];
 
 export async function GET(request: NextRequest) {

@@ -23,6 +23,7 @@ export default function SettingsPage() {
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [hasSavedKey, setHasSavedKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [glossary, setGlossary] = useState<GlossaryEntry[]>([]);
@@ -35,7 +36,10 @@ export default function SettingsPage() {
   });
 
   useEffect(() => {
-    fetchSettings().then((s) => setApiKey(s.geminiApiKey));
+    fetchSettings().then((s) => {
+      setApiKey(s.geminiApiKey);
+      setHasSavedKey(s.hasGeminiApiKey === true);
+    });
     fetchGlossary().then(setGlossary);
     fetchFeatureToggles().then(setFeatures);
   }, []);
@@ -47,14 +51,16 @@ export default function SettingsPage() {
   };
 
   const handleSave = () => {
+    // 空のまま保存しても、サーバー側の保存済みキーは消えない（PUT が空文字を無視する）
     saveSettings({ geminiApiKey: apiKey.trim() });
+    if (apiKey.trim()) setHasSavedKey(true);
     setSaved(true);
     setTestResult(null);
     setTimeout(() => setSaved(false), 3000);
   };
 
   const handleTest = async () => {
-    if (!apiKey.trim()) {
+    if (!apiKey.trim() && !hasSavedKey) {
       setTestResult({ success: false, message: "APIキーを入力してください" });
       return;
     }
@@ -156,7 +162,7 @@ export default function SettingsPage() {
                       type={showKey ? "text" : "password"}
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="AIza..."
+                      placeholder={hasSavedKey ? "保存済み（変更するときだけ入力）" : "AIza..."}
                       className="w-full px-4 py-2 pr-10 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono text-sm"
                       style={{ borderColor: "var(--card-border)" }}
                     />

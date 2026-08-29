@@ -40,8 +40,20 @@ export function hasApiKey(): boolean {
 /**
  * 無料枠があり、分類・抽出の大量処理に向く安価な安定版。
  * gemini-2.0-flash は 2026-06-01 に停止済みなので使わない。
+ * モデルの世代交代でまた止まったとき、デプロイなしで差し替えられるよう
+ * 環境変数と設定で上書きできる。
  */
-const MODEL = "gemini-3.5-flash-lite";
+const DEFAULT_MODEL = "gemini-3.5-flash-lite";
+
+export function getModel(): string {
+  const fromEnv = process.env.GEMINI_MODEL?.trim();
+  if (fromEnv) return fromEnv;
+  const db = getDb();
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'geminiModel'").get() as
+    | { value: string }
+    | undefined;
+  return row?.value?.trim() || DEFAULT_MODEL;
+}
 
 export interface GenerateOptions {
   /** JSON だけを返させたいとき true */
@@ -56,7 +68,7 @@ export async function generate(prompt: string, opts: GenerateOptions = {}): Prom
 
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({
-    model: MODEL,
+    model: getModel(),
     generationConfig: {
       temperature: opts.temperature ?? 0.7,
       maxOutputTokens: opts.maxOutputTokens ?? 4096,

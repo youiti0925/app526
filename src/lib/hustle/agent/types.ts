@@ -72,7 +72,8 @@ export type LeadStatus =
   | "triaged" // 判定済み
   | "drafted" // 下書きを作って承認待ちに積んだ
   | "rejected" // 判定で落とした
-  | "applied" // 人が応募した
+  | "approved" // 人が「出す」と決めた（まだ応募・送信はしていない）
+  | "applied" // 人が実際に応募した
   | "won" // 受注できた
   | "lost" // 返事がなかった / 落ちた
   | "archived";

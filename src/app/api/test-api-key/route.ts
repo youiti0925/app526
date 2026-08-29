@@ -1,16 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { getApiKey, getModel } from "@/lib/hustle/ai";
 
 export async function POST(request: NextRequest) {
   try {
     const { apiKey } = await request.json();
 
-    if (!apiKey) {
+    // 入力が空なら保存済みキーを試す（GET がキーを返さなくなったため、
+    // 画面のキー欄は保存済みでも空のことがある）。
+    const key = (typeof apiKey === "string" && apiKey.trim()) || getApiKey();
+    if (!key) {
       return NextResponse.json({ error: "APIキーが必要です" }, { status: 400 });
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const genAI = new GoogleGenerativeAI(key);
+    const model = genAI.getGenerativeModel({ model: getModel() });
 
     // Simple test request
     const result = await model.generateContent("Reply with: OK");

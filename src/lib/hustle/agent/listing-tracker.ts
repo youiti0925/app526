@@ -12,7 +12,7 @@
  * 判定の境目を数字で決めておく。
  */
 
-export type ListingStatus = "published" | "paused" | "closed";
+export type ListingStatus = "approved" | "published" | "paused" | "closed";
 
 export type ListingVerdict =
   | "too_early" // まだ判断できない
@@ -86,6 +86,15 @@ export function daysBetween(from: string, to: string): number | null {
 export function reviewListing(listing: PublishedListing, today: string): ListingReview {
   const ageDays = daysBetween(listing.publishedAt, today);
   const base = { listingId: listing.id, title: listing.title, ageDays: ageDays ?? 0 };
+
+  if (listing.status === "approved") {
+    return {
+      ...base,
+      verdict: "too_early",
+      reason: "内容は承認済みですが、まだ出品されていません。経過日数の判断はここから始まりません。",
+      nextAction: "出品先に自分で出品し、このページで状態を「出品中」に変えてください（その日を出品日として記録します）。",
+    };
+  }
 
   if (ageDays === null) {
     return {
