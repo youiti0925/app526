@@ -47,6 +47,9 @@ export async function runAgent(options: RunOptions): Promise<RunOutcome> {
     if (!config.enabled) {
       return { ran: false, reason: "自律運転がオフになっています" };
     }
+    if (options.trigger === "auto_open" && !config.runOnOpen) {
+      return { ran: false, reason: "画面を開いたときの自動実行がオフになっています" };
+    }
     if (hasRunningRun()) {
       return { ran: false, reason: "すでに実行中です" };
     }

@@ -37,8 +37,11 @@ export function hasApiKey(): boolean {
   return getApiKey().length > 0;
 }
 
-/** 無料枠で十分に速く、日本語も扱えるモデル。 */
-const MODEL = "gemini-2.0-flash";
+/**
+ * 無料枠があり、分類・抽出の大量処理に向く安価な安定版。
+ * gemini-2.0-flash は 2026-06-01 に停止済みなので使わない。
+ */
+const MODEL = "gemini-3.5-flash-lite";
 
 export interface GenerateOptions {
   /** JSON だけを返させたいとき true */

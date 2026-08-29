@@ -65,21 +65,21 @@ test("空に近い入力でも例外にならない", () => {
 test("1000円の案件は手数料と振込手数料でほとんど残らない", () => {
   const cw = PLATFORM_FEES.find((p) => p.id === "crowdworks");
   const r = computePayout(1000, cw, 2);
-  // 20% 手数料 → 800円。最低出金額 1000円 に届かないので単独では出金できない。
+  // 公称20% + 手数料の消費税で実効22% → 780円。最低出金額1000円に届かない。
   // 振込手数料は免除されるわけではなく、合算出金のときに引かれるので常に控除する。
-  assert.equal(r.feeJpy, 200);
+  assert.equal(r.feeJpy, 220);
   assert.equal(r.canWithdraw, false);
-  assert.equal(r.netJpy, 300);
+  assert.equal(r.netJpy, 280);
   assert.ok(r.warnings.some((w) => w.includes("最低出金額")));
 });
 
 test("出金できる額なら振込手数料が引かれる", () => {
   const cw = PLATFORM_FEES.find((p) => p.id === "crowdworks");
   const r = computePayout(10000, cw, 5);
-  assert.equal(r.feeJpy, 2000);
+  assert.equal(r.feeJpy, 2200);
   assert.equal(r.canWithdraw, true);
-  assert.equal(r.netJpy, 10000 - 2000 - 500);
-  assert.equal(r.hourlyJpy, Math.round(7500 / 5));
+  assert.equal(r.netJpy, 10000 - 2200 - 500);
+  assert.equal(r.hourlyJpy, Math.round(7300 / 5));
 });
 
 test("最低賃金を割ると警告が出る", () => {
@@ -533,10 +533,10 @@ test("日付が空の記録があっても撤退判定が暴走しない", () =>
 test("最低出金額に届かなくても振込手数料は手取りから引く", () => {
   const cw = PLATFORM_FEES.find((p) => p.id === "crowdworks");
   const r = computePayout(1000, cw, 2);
-  assert.equal(r.feeJpy, 200);
+  assert.equal(r.feeJpy, 220);
   assert.equal(r.canWithdraw, false);
   assert.equal(r.withdrawalFeeJpy, 500);
-  assert.equal(r.netJpy, 300, "1000円 − 手数料200円 − 振込500円 = 300円");
+  assert.equal(r.netJpy, 280, "1000円 − 実効手数料220円 − 振込500円 = 280円");
   assert.ok(r.retentionRate < 0.5);
   assert.ok(r.warnings.some((w) => w.includes("最低出金額")));
   assert.ok(r.warnings.some((w) => w.includes("手元に残りません")));

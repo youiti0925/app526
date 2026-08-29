@@ -18,6 +18,7 @@
     "src/lib/hustle/scam-rules.ts",
     "src/lib/hustle/analytics.ts",
     "src/lib/hustle/payout.ts",
+    "src/lib/hustle/csv-cleaner.ts",
     "src/lib/hustle/diagnose.ts",
     "src/lib/hustle/templates.ts",
     "src/lib/hustle/agent/worktypes.ts",
