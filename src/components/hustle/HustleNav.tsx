@@ -24,7 +24,7 @@ import {
 
 const items = [
   { href: "/hustle", label: "今日やること", icon: ListChecks, exact: true },
-  { href: "/hustle/data-work", label: "CSV整形・納品", icon: FileSpreadsheet },
+  { href: "/hustle/data-work", label: "データ作業エンジン", icon: FileSpreadsheet },
   { href: "/hustle/inbox", label: "承認キュー", icon: Inbox, badge: true },
   { href: "/hustle/agent", label: "自律運転", icon: Bot },
   { href: "/hustle/discovery", label: "市場を探す", icon: Telescope },

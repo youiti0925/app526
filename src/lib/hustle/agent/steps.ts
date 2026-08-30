@@ -18,6 +18,7 @@ import { reviewListing, summarizeListings } from "./listing-tracker";
 import { estimateByWorkType, estimateUnits } from "./worktypes";
 import { unknownSplit, yourTime, type YourTime } from "./yourtime";
 import { readPricing } from "./pricing";
+import { matchDataOpsPatterns } from "../dataops/registry";
 import { evidenceFor } from "./dryrun-core";
 import { needsEscalation } from "./escalation";
 import { fetchFeed, leadFromParsed } from "./ingest";
@@ -773,8 +774,19 @@ export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
       angle = "雛形（AI未使用）";
     }
 
+    // データ作業エンジンに当たる案件なら、受けた瞬間から自動処理できることを添える。
+    // 「この案件は道具が既にある」が分かると、承認判断が速くなる。
+    const engineMatches = matchDataOpsPatterns(`${lead.title}\n${lead.rawText}`.slice(0, 8000));
+    const engineLine = engineMatches.length
+      ? `【エンジン対応】${engineMatches
+          .slice(0, 2)
+          .map((m) => `${m.pattern.name}（自動: ${m.pattern.autoParts.slice(0, 3).join("・")} / 人: ${m.pattern.humanParts[0]}）`)
+          .join(" / ")} — /hustle/data-work で即実行できます`
+      : "";
+
     const header = [
       `【この案件の判定】${triage.reason ?? ""}`,
+      engineLine,
       triage.hourly
         ? `【あなたの時間あたりの手取り】${triage.hourly.low.toLocaleString()}〜${triage.hourly.high.toLocaleString()}円（手数料控除後）`
         : "【時給】判定できていません。送る前に手取り計算を通してください。",

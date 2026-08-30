@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Download, FileSpreadsheet, ShieldCheck, Sparkles } from "lucide-react";
 import StorageNotice from "@/components/hustle/StorageNotice";
+import DataOpsEngine from "@/components/hustle/DataOpsEngine";
 import {
   cleanCsv,
   DEFAULT_CSV_CLEAN_OPTIONS,
@@ -151,6 +152,8 @@ export default function DataWorkPage() {
           </div>
         </section>
       )}
+
+      <DataOpsEngine />
     </div>
   );
 }
