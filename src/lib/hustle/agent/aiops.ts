@@ -13,6 +13,7 @@ import {
   CLASSIFY_BATCH, type Classified, buildClassifyPrompt, parseClassifyResponse,
   type FieldSpec, type ExtractedField, buildFieldExtractPrompt, parseFieldExtractResponse,
   type RewriteMode, type RewriteResult, buildRewritePrompt, parseRewriteResponse,
+  REWRITE_PROMPT_MAX,
 } from "../dataops/aiops-core";
 
 export interface AiRunMeta {
@@ -90,14 +91,50 @@ export async function aiExtractFields(text: string, fields: FieldSpec[], budget:
   return { fields: parseFieldExtractResponse(raw, text, fields), meta: { callsUsed: 1, callsBudget: budget.spent + budget.remaining, degraded: false } };
 }
 
-/** 整文・ケバ取り・言い換え（1テキスト=1呼び出し）。 */
+/**
+ * 整文・ケバ取り・言い換え。
+ * プロンプトに入る上限（8,000字）を超える原文は分割して順に処理する。
+ * 以前は先頭だけ処理して後半が黙って消えていた（レビューで実証）。
+ * 枠が尽きた分は原文のまま残し、未処理と明示する。
+ */
 export async function aiRewrite(text: string, mode: RewriteMode, budget: CallBudget): Promise<{ result: RewriteResult; meta: AiRunMeta }> {
-  if (!budget.take()) {
-    return {
-      result: { text: "", needsHuman: true, reason: exhausted("AI枠切れ") },
-      meta: { callsUsed: 0, callsBudget: budget.spent + budget.remaining, degraded: true },
-    };
+  const pieces = chunk([...segmentByLength(text, REWRITE_PROMPT_MAX)], 1).map((p) => p[0]);
+  const outputs: string[] = [];
+  const reasons = new Set<string>();
+  let used = 0;
+  let degraded = false;
+  for (const piece of pieces) {
+    if (!budget.take()) {
+      degraded = true;
+      outputs.push(piece);
+      reasons.add(exhausted("AI枠切れ。以降は原文のまま未処理"));
+      continue;
+    }
+    used++;
+    const raw = await generateJson<unknown>(buildRewritePrompt(piece, mode), { temperature: mode === "paraphrase" ? 0.7 : 0.2, maxOutputTokens: 8192 });
+    const parsed = parseRewriteResponse(raw, piece, mode);
+    outputs.push(parsed.text || piece);
+    if (parsed.reason) reasons.add(parsed.reason);
+    if (!parsed.text) reasons.add("一部の区間で応答が空だったため原文のまま残した");
   }
-  const raw = await generateJson<unknown>(buildRewritePrompt(text, mode), { temperature: mode === "paraphrase" ? 0.7 : 0.2, maxOutputTokens: 8192 });
-  return { result: parseRewriteResponse(raw, text, mode), meta: { callsUsed: 1, callsBudget: budget.spent + budget.remaining, degraded: false } };
+  if (pieces.length > 1) reasons.add(`原文が長いため${pieces.length}分割で処理した。つなぎ目を確認すること`);
+  return {
+    result: { text: outputs.join("\n"), needsHuman: true, reason: [...reasons].join(" / ") },
+    meta: { callsUsed: used, callsBudget: budget.spent + budget.remaining, degraded },
+  };
+}
+
+/** 改行をなるべく尊重して maxLen 以下の断片に切る。 */
+function segmentByLength(text: string, maxLen: number): string[] {
+  const out: string[] = [];
+  let rest = text;
+  while (rest.length > maxLen) {
+    const window = rest.slice(0, maxLen);
+    const cut = Math.max(window.lastIndexOf("\n"), window.lastIndexOf("。"));
+    const at = cut > maxLen * 0.5 ? cut + 1 : maxLen;
+    out.push(rest.slice(0, at));
+    rest = rest.slice(at);
+  }
+  if (rest) out.push(rest);
+  return out;
 }

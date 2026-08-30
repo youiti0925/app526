@@ -32,7 +32,8 @@ export async function POST(request: NextRequest) {
 
     try {
       if (task === "match_pairs") {
-        const rawPairs = Array.isArray(body.pairs) ? body.pairs.slice(0, 300) : [];
+        const allPairs = Array.isArray(body.pairs) ? body.pairs : [];
+        const rawPairs = allPairs.slice(0, 300);
         const pairs: MatchPair[] = rawPairs
           .map((p: unknown) => ({
             a: str((p as { a?: unknown })?.a, 200) ?? "",
@@ -42,18 +43,29 @@ export async function POST(request: NextRequest) {
         if (pairs.length === 0) return NextResponse.json({ error: "pairs が空です" }, { status: 400 });
         const out = await aiMatchPairs(pairs, budget);
         logEvent("manual", "runner", "action", `AI同一判定: ${pairs.length}組（呼び出し${out.meta.callsUsed}回）`, {});
-        return NextResponse.json(out);
+        // 上限で切り詰めた事実を隠さない。UIはこの値で件数を報告する
+        return NextResponse.json({ ...out, accepted: pairs.length, truncated: Math.max(0, allPairs.length - rawPairs.length) });
       }
 
       if (task === "classify") {
-        const texts = (Array.isArray(body.texts) ? body.texts : []).map((t: unknown) => str(t, 500) ?? "").filter(Boolean).slice(0, 600);
+        // index は呼び出し元の配列位置と1対1で保つ。空欄を filter で詰めると、
+        // 返した index が別の回答に付き、納品データが黙ってズレる（レビューで実証）。
+        const allTexts = (Array.isArray(body.texts) ? body.texts : []).map((t: unknown) => str(t, 500) ?? "");
+        const texts = allTexts.slice(0, 600);
         const categories = (Array.isArray(body.categories) ? body.categories : []).map((c: unknown) => str(c, 40) ?? "").filter(Boolean).slice(0, 20);
-        if (texts.length === 0 || categories.length < 2) {
+        if (texts.filter(Boolean).length === 0 || categories.length < 2) {
           return NextResponse.json({ error: "texts と、2つ以上の categories が必要です" }, { status: 400 });
         }
-        const out = await aiClassify(texts, categories, budget);
-        logEvent("manual", "runner", "action", `AI分類: ${texts.length}件（呼び出し${out.meta.callsUsed}回）`, {});
-        return NextResponse.json(out);
+        const nonEmpty = texts.map((t, i) => ({ t, i })).filter((x) => x.t.trim());
+        const out = await aiClassify(nonEmpty.map((x) => x.t), categories, budget);
+        // aiClassify は圧縮後の並びに対する index を返すので、元の行位置へ戻す
+        const items = texts.map((_, i) => ({ index: i, category: "(空欄)", quote: "", needsHuman: false, reason: "空欄のため対象外" }));
+        for (const it of out.items) {
+          const original = nonEmpty[it.index]?.i;
+          if (original !== undefined) items[original] = { ...it, index: original };
+        }
+        logEvent("manual", "runner", "action", `AI分類: ${nonEmpty.length}件（呼び出し${out.meta.callsUsed}回）`, {});
+        return NextResponse.json({ items, meta: out.meta, accepted: texts.length, truncated: Math.max(0, allTexts.length - texts.length) });
       }
 
       if (task === "extract_fields") {
@@ -73,8 +85,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(out);
       }
 
-      // rewrite
-      const text = str(body.text, 30000) ?? "";
+      // rewrite（str の実上限は 20,000字。超過分は分割処理される）
+      const text = str(body.text, 20000) ?? "";
       const MODES = ["kebatori", "seibun", "paraphrase"] as const;
       const mode: RewriteMode = oneOf(body.mode, MODES) ?? "seibun";
       if (!text.trim()) return NextResponse.json({ error: "text が必要です" }, { status: 400 });

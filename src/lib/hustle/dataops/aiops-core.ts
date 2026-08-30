@@ -11,6 +11,22 @@
  * - 範囲外・欠落・不正な値 → 人へ
  */
 import { isValidJpPhone, isDummyPhone, isHttpUrl, isEmail } from "./validate";
+import { normalizeWidth } from "./normalize";
+
+/** プロンプトに入れる原文の上限。これを超えた部分はAIから見えない。 */
+export const REWRITE_PROMPT_MAX = 8000;
+export const EXTRACT_PROMPT_MAX = 6000;
+
+/**
+ * 引用・値の実在確認用の正規化照合。
+ * プロンプト側で空白を潰して見せているので、検品側も同じ目で照合しないと
+ * 「AIは正しく引用したのに検品が落とす」が起きる（改行入り回答で多発する）。
+ */
+export function normalizedIncludes(haystack: string, needle: string): boolean {
+  const norm = (t: string) => normalizeWidth(t).replace(/\s+/g, " ").trim();
+  const n = norm(needle);
+  return n.length > 0 && norm(haystack).includes(n);
+}
 
 /** バッチ分割。1回の呼び出しに詰める件数でコストが決まる。 */
 export function chunk<T>(items: T[], size: number): T[][] {
@@ -121,8 +137,8 @@ export function parseClassifyResponse(raw: unknown, texts: string[], categories:
     if (!categories.includes(category)) {
       return { index: i, category: "分類不能", quote, needsHuman: true, reason: "カテゴリ一覧に無い分類が返った" };
     }
-    // 幻覚ガード: 引用が元テキストに実在するか
-    if (!quote || !text.includes(quote)) {
+    // 幻覚ガード: 引用が元テキストに実在するか（プロンプトと同じ空白正規化で照合）
+    if (!quote || !normalizedIncludes(text, quote)) {
       return { index: i, category, quote, needsHuman: true, reason: "根拠の引用が回答本文に見つからない" };
     }
     return { index: i, category, quote, needsHuman: false, reason: "" };
@@ -170,13 +186,24 @@ export function parseFieldExtractResponse(raw: unknown, text: string, fields: Fi
       if (typeof name === "string") byName.set(name, it as { value?: unknown; quote?: unknown });
     }
   }
+  const truncated = text.length > EXTRACT_PROMPT_MAX;
   return fields.map((spec) => {
     const it = byName.get(spec.name);
     const value = typeof it?.value === "string" ? it.value.trim() : "";
     const quote = typeof it?.quote === "string" ? it.quote : "";
-    if (!value) return { name: spec.name, value: "", quote, needsHuman: true, reason: "テキスト中に見つからなかった" };
-    if (!quote || !text.includes(quote)) {
-      return { name: spec.name, value, quote, needsHuman: true, reason: "根拠の引用が元テキストに無い（幻覚の疑い）" };
+    if (!value) {
+      return {
+        name: spec.name, value: "", quote, needsHuman: true,
+        reason: truncated ? `先頭${EXTRACT_PROMPT_MAX.toLocaleString()}字に見つからなかった（それ以降は未探索）` : "テキスト中に見つからなかった",
+      };
+    }
+    // 値そのものが元テキストに実在するか。引用だけの確認では、実在する2文字の引用に
+    // 捏造した値を添えるだけで通ってしまう（レビューで実証された抜け道）。
+    if (!normalizedIncludes(text, value)) {
+      return { name: spec.name, value, quote, needsHuman: true, reason: "値が元テキストに見つからない（幻覚の疑い）" };
+    }
+    if (!quote || (quote.length < 4 && quote !== value) || !normalizedIncludes(text, quote)) {
+      return { name: spec.name, value, quote, needsHuman: true, reason: "根拠の引用が元テキストに無いか短すぎる（幻覚の疑い）" };
     }
     if (spec.kind === "phone" && (!isValidJpPhone(value) || isDummyPhone(value))) {
       return { name: spec.name, value, quote, needsHuman: true, reason: "電話番号の決定的検証を通らない" };
@@ -207,7 +234,7 @@ export function buildRewritePrompt(text: string, mode: RewriteMode): string {
     instruction,
     "",
     "--- 原文 ---",
-    text.slice(0, 8000),
+    text.slice(0, REWRITE_PROMPT_MAX),
     "--- ここまで ---",
     "",
     'JSONのみで回答: {"text":"整形後の全文"}',

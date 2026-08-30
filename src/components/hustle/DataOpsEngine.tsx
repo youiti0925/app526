@@ -219,19 +219,31 @@ async function callAi(payload: Record<string, unknown>): Promise<Record<string, 
 
 async function runAiTool(tool: ToolId, main: string, param: string): Promise<RunResult> {
   if (tool === "ai_match") {
-    const pairs = main
-      .split(/\n/)
-      .map((line) => line.split(/⇔|<=>|,|\t/).map((s) => s.trim()))
-      .filter((p) => p.length >= 2 && p[0] && p[1])
-      .map((p) => ({ a: p[0], b: p[1] }));
+    // 「⇔」を最優先で区切る。カンマは英字社名（Solare Hotels, Inc.）に普通に
+    // 含まれるので、⇔もタブも無い行だけの最後の手段。2つに割れない行は
+    // 黙って捨てずに警告へ（社名の後半が消えたまま判定される事故の防止）。
+    const pairs: { a: string; b: string }[] = [];
+    const unreadable: string[] = [];
+    for (const line of main.split(/\n/)) {
+      if (!line.trim()) continue;
+      let parts = line.split(/⇔|<=>/);
+      if (parts.length === 1) parts = line.split(/\t/);
+      if (parts.length === 1) parts = line.split(",");
+      const cleaned = parts.map((s) => s.trim()).filter(Boolean);
+      if (cleaned.length === 2) pairs.push({ a: cleaned[0], b: cleaned[1] });
+      else unreadable.push(line.trim());
+    }
     if (pairs.length === 0) return { summary: ["ペアを読めませんでした。1行に「A ⇔ B」の形で入れてください。"] };
     const out = await callAi({ task: "match_pairs", pairs });
     const verdicts = out.verdicts as { index: number; verdict: string; reason: string; needsHuman: boolean }[];
     const meta = out.meta as { callsUsed: number; degraded: boolean };
     const label: Record<string, string> = { same: "同一", different: "別物", unsure: "不明→人へ" };
+    const truncated = typeof out.truncated === "number" ? out.truncated : 0;
     return {
       summary: [
-        `${pairs.length}組を判定（AI呼び出し ${meta.callsUsed}回）。同一 ${verdicts.filter((v) => v.verdict === "same").length} / 別物 ${verdicts.filter((v) => v.verdict === "different").length} / 人へ ${verdicts.filter((v) => v.needsHuman).length}`,
+        `${verdicts.length}組を判定（AI呼び出し ${meta.callsUsed}回）。同一 ${verdicts.filter((v) => v.verdict === "same").length} / 別物 ${verdicts.filter((v) => v.verdict === "different").length} / 人へ ${verdicts.filter((v) => v.needsHuman).length}`,
+        ...(truncated > 0 ? [`注意: 上限300組を超えた ${truncated}組 は未判定です。分けて実行してください。`] : []),
+        ...(unreadable.length > 0 ? [`読めなかった行 ${unreadable.length}件（「A ⇔ B」の形になっていない）: ${unreadable.slice(0, 3).join(" / ")}`] : []),
         ...(meta.degraded ? ["注意: 呼び出し上限に達したため、一部は判定せず「人へ」に回しています。"] : []),
       ],
       rows: verdicts.map((v) => ({ A: pairs[v.index].a, B: pairs[v.index].b, 判定: label[v.verdict] ?? v.verdict, 根拠: v.reason })),
@@ -251,9 +263,11 @@ async function runAiTool(tool: ToolId, main: string, param: string): Promise<Run
     const meta = out.meta as { callsUsed: number; degraded: boolean };
     const counts = new Map<string, number>();
     for (const it of items) counts.set(it.category, (counts.get(it.category) ?? 0) + 1);
+    const truncated = typeof out.truncated === "number" ? out.truncated : 0;
     return {
       summary: [
-        `${texts.length}件を分類（AI呼び出し ${meta.callsUsed}回）。人の確認へ ${items.filter((i) => i.needsHuman).length}件`,
+        `${items.length}件を分類（AI呼び出し ${meta.callsUsed}回）。人の確認へ ${items.filter((i) => i.needsHuman).length}件`,
+        ...(truncated > 0 ? [`注意: 上限600件を超えた ${truncated}件 は未分類です。分けて実行してください。`] : []),
         [...counts.entries()].map(([k, v]) => `${k}: ${v}`).join(" / "),
         ...(meta.degraded ? ["注意: 呼び出し上限に達したため、一部は未分類のまま「人へ」です。"] : []),
       ],
@@ -335,6 +349,7 @@ export default function DataOpsEngine() {
           {TOOLS.map((t) => (
             <button
               key={t.id}
+              disabled={running}
               onClick={() => { setTool(t.id); setResult(null); }}
               className={`text-xs rounded-full px-3 py-1.5 border ${t.id === tool ? "bg-indigo-600 text-white border-indigo-600" : "hover:bg-slate-100"}`}
               style={t.id === tool ? undefined : { borderColor: "var(--card-border)" }}
@@ -376,6 +391,8 @@ export default function DataOpsEngine() {
             if (!main.trim()) { setResult({ summary: ["入力が空です。"] }); return; }
             if (!def.ai) { setResult(runTool(tool, main, param)); return; }
             setRunning(true);
+            // 実行中はツール切替ボタンを無効化しているので、
+            // 古い結果が別ツールの画面に出る競合はここでは起きない
             runAiTool(tool, main, param)
               .then(setResult)
               .catch((e) => setResult({ summary: [e instanceof Error ? e.message : "AI呼び出しに失敗しました"] }))

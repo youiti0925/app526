@@ -369,3 +369,49 @@ test("整文: 長さの激変は省略/水増しとして検知し、意味の�
   const empty = parseRewriteResponse({}, original, "seibun");
   assert.equal(empty.reason, "応答が空");
 });
+
+// --- レビューで実証された抜け道の再発防止 -------------------------------------
+
+import { normalizedIncludes } from "../../dist-test/dataops/aiops-core.js";
+
+test("抽出の検品: 実在する引用に捏造した値を添えても通らない", () => {
+  const text = "大阪本社の連絡先は 06-6942-2401 です。";
+  const parsed = parseFieldExtractResponse(
+    { fields: [
+      { name: "運営会社", value: "株式会社デタラメ商事", quote: "大阪本社" }, // 値が本文に無い
+      { name: "電話番号", value: "03-5555-1234", quote: "連絡先" }, // 形式は正しいが本文に無い番号
+      { name: "本物", value: "06-6942-2401", quote: "06-6942-2401" },
+    ] },
+    text,
+    [
+      { name: "運営会社", kind: "text" },
+      { name: "電話番号", kind: "phone" },
+      { name: "本物", kind: "phone" },
+    ]
+  );
+  assert.equal(parsed[0].needsHuman, true, "値そのものの実在確認が要る");
+  assert.equal(parsed[1].needsHuman, true, "整形式でも本文に無い番号は通さない");
+  assert.equal(parsed[2].needsHuman, false);
+});
+
+test("分類の検品: 改行をまたぐ正しい引用は落とさない（正規化照合）", () => {
+  const texts = ["配送が遅い。\nそれと 梱包が雑だった"];
+  const parsed = parseClassifyResponse(
+    { items: [{ index: 0, category: "配送", quote: "遅い。 それと 梱包" }] },
+    texts, ["品質", "配送"]
+  );
+  assert.equal(parsed[0].needsHuman, false, "プロンプトと同じ空白正規化で照合する");
+  assert.ok(normalizedIncludes("Ａ　Ｂ\nＣ", "A B C"));
+  assert.equal(normalizedIncludes("abc", ""), false);
+});
+
+test("抽出の検品: 元テキストがプロンプト上限を超えるときは未探索と明示する", () => {
+  const longText = "前置き。".repeat(2000) + " TEL: 06-6942-2401";
+  const parsed = parseFieldExtractResponse(
+    { fields: [{ name: "電話番号", value: "", quote: "" }] },
+    longText,
+    [{ name: "電話番号", kind: "phone" }]
+  );
+  assert.equal(parsed[0].needsHuman, true);
+  assert.ok(parsed[0].reason.includes("未探索"), parsed[0].reason);
+});
