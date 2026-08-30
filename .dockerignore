@@ -1,0 +1,8 @@
+node_modules
+.next
+dist-test
+dist-e2e
+data
+xr20_tool
+*.log
+.git

@@ -11,6 +11,10 @@
  */
 
 const BASE = (process.env.AGENT_URL ?? "http://localhost:3000").replace(/\/$/, "");
+// 合言葉ロック(APP_PASSWORD)が掛かった公開デプロイでも、デーモンが自分で通れるように
+const AUTH = process.env.APP_PASSWORD
+  ? { Authorization: `Basic ${Buffer.from(`agent:${process.env.APP_PASSWORD}`).toString("base64")}` }
+  : {};
 const INTERVAL_MIN = Math.max(5, Number(process.env.AGENT_INTERVAL_MIN ?? 30));
 const FORCE = process.env.AGENT_FORCE === "1";
 
@@ -20,7 +24,7 @@ async function tick() {
   try {
     const res = await fetch(`${BASE}/api/hustle/agent/run`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...AUTH },
       body: JSON.stringify({ trigger: "daemon", force: FORCE }),
     });
 
