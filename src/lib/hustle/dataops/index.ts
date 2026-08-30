@@ -7,3 +7,4 @@ export * from "./tabulate";
 export * from "./template";
 export * from "./table";
 export * from "./registry";
+export * from "./aiops-core";

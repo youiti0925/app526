@@ -278,3 +278,94 @@ test("台帳の全パターンが必須情報を持つ", () => {
     ids.add(p.id);
   }
 });
+
+// --- AI併用エンジンの検品（aiops-core）---------------------------------------
+// ネットワークは触らない。プロンプト組み立てと「AIの答えを信用しない」検品を固定する。
+
+import {
+  chunk, estimateCalls,
+  buildMatchPrompt, parseMatchResponse,
+  buildClassifyPrompt, parseClassifyResponse,
+  buildFieldExtractPrompt, parseFieldExtractResponse,
+  buildRewritePrompt, parseRewriteResponse,
+} from "../../dist-test/dataops/aiops-core.js";
+
+test("バッチ分割とコスト見積り", () => {
+  assert.deepEqual(chunk([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
+  assert.equal(estimateCalls(51, 25), 3);
+  assert.equal(estimateCalls(0, 25), 0);
+});
+
+test("同一判定: 欠落・不正な応答は unsure=人へ に倒れる", () => {
+  const pairs = [
+    { a: "ソラーレ・ホテルズ", b: "Solare Hotels and Resorts" },
+    { a: "アパホテル", b: "APA Hotel" },
+    { a: "東横イン", b: "全然別の会社" },
+  ];
+  const prompt = buildMatchPrompt(pairs);
+  assert.ok(prompt.includes("unsure"), "不確実なら unsure にせよ、が入っている");
+  const parsed = parseMatchResponse(
+    { items: [
+      { index: 0, verdict: "same", reason: "カナ/英字表記" },
+      { index: 2, verdict: "maybe", reason: "壊れた値" },
+      { index: 99, verdict: "same", reason: "範囲外" },
+    ] },
+    pairs.length
+  );
+  assert.equal(parsed.length, 3, "応答が欠けても全ペア分返る");
+  assert.equal(parsed[0].verdict, "same");
+  assert.equal(parsed[0].needsHuman, false);
+  assert.equal(parsed[1].verdict, "unsure", "応答が無いペアは人へ");
+  assert.equal(parsed[2].verdict, "unsure", "不正な verdict は人へ");
+  assert.ok(parsed.every((v) => v.verdict !== "same" || !v.needsHuman));
+});
+
+test("分類: 引用が回答本文に実在しなければ幻覚扱いで人へ", () => {
+  const texts = ["配送が遅かったが品質は良い", "値段が高い"];
+  const categories = ["品質", "価格", "配送"];
+  assert.ok(buildClassifyPrompt(texts, categories).includes("分類不能"));
+  const parsed = parseClassifyResponse(
+    { items: [
+      { index: 0, category: "配送", quote: "配送が遅かった" },
+      { index: 1, category: "価格", quote: "配送料が高い" }, // 元テキストに無い引用
+    ] },
+    texts, categories
+  );
+  assert.equal(parsed[0].needsHuman, false);
+  assert.equal(parsed[1].needsHuman, true, "実在しない引用は信用しない");
+  const badCat = parseClassifyResponse({ items: [{ index: 0, category: "その他", quote: "品質" }] }, texts, categories);
+  assert.equal(badCat[0].category, "分類不能", "一覧外のカテゴリは受け付けない");
+  assert.equal(badCat[0].needsHuman, true);
+});
+
+test("項目抽出: AIの答えも決定的検証を再通過させる", () => {
+  const text = "お問い合わせ: 06-0000-0000 / 公式 https://example.co.jp";
+  const fields = [
+    { name: "電話番号", kind: "phone" },
+    { name: "HP", kind: "url" },
+    { name: "FAX", kind: "phone" },
+  ];
+  assert.ok(buildFieldExtractPrompt(text, fields).includes("推測で補完しない"));
+  const parsed = parseFieldExtractResponse(
+    { fields: [
+      { name: "電話番号", value: "06-0000-0000", quote: "06-0000-0000" },
+      { name: "HP", value: "https://example.co.jp", quote: "https://example.co.jp" },
+    ] },
+    text, fields
+  );
+  assert.equal(parsed[0].needsHuman, true, "ダミー電話はAIが返しても弾く");
+  assert.equal(parsed[1].needsHuman, false);
+  assert.equal(parsed[2].needsHuman, true, "見つからない項目は空のまま人へ（勝手に埋めない）");
+  assert.equal(parsed[2].value, "");
+});
+
+test("整文: 長さの激変は省略/水増しとして検知し、意味の確認は常に人", () => {
+  const original = "えーと、本日はですね、あのー、次回の納期について話します。".repeat(10);
+  assert.ok(buildRewritePrompt(original, "kebatori").includes("禁止"));
+  const ok = parseRewriteResponse({ text: original.replace(/えーと、|あのー、/g, "") }, original, "kebatori");
+  assert.equal(ok.needsHuman, true, "整文は必ず人が読む前提で返す");
+  const tooShort = parseRewriteResponse({ text: "納期の話。" }, original, "kebatori");
+  assert.ok(tooShort.reason.includes("省略か水増し"));
+  const empty = parseRewriteResponse({}, original, "seibun");
+  assert.equal(empty.reason, "応答が空");
+});

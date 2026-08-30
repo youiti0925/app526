@@ -18,7 +18,9 @@ import {
   DATAOPS_PATTERNS, matchDataOpsPatterns,
 } from "@/lib/hustle/dataops";
 
-type ToolId = "pattern" | "extract" | "inspect" | "dedupe" | "ng_filter" | "diff" | "tabulate" | "mail_merge";
+type ToolId =
+  | "pattern" | "extract" | "inspect" | "dedupe" | "ng_filter" | "diff" | "tabulate" | "mail_merge"
+  | "ai_match" | "ai_classify" | "ai_extract" | "ai_rewrite";
 
 interface ToolDef {
   id: ToolId;
@@ -26,6 +28,8 @@ interface ToolDef {
   mainLabel: string;
   paramLabel: string | null;
   hint: string;
+  /** AI呼び出しを伴うツール（APIキー必須・無料枠を消費） */
+  ai?: boolean;
 }
 
 const TOOLS: ToolDef[] = [
@@ -37,6 +41,10 @@ const TOOLS: ToolDef[] = [
   { id: "diff", label: "⑥ 既存リストとの差分", mainLabel: "新しく集めたCSV", paramLabel: "既存リストのCSV", hint: "「既存と重複しないこと」という定番要件に。重複納品を防ぎます。" },
   { id: "tabulate", label: "⑦ アンケート集計", mainLabel: "回答CSV（1行目=見出し）", paramLabel: "集計する列名（2行目にクロス集計の列名・任意）", hint: "度数分布・複数回答の分解・クロス集計・数値要約。" },
   { id: "mail_merge", label: "⑧ 差し込み書類の量産", mainLabel: "データCSV（1行目=見出し）", paramLabel: "テンプレート（{{列名}} が差し込み位置）", hint: "全件差し込み、埋まらない穴と未使用列を必ず報告します。" },
+  { id: "ai_match", label: "⑨ AI: 表記ゆれ同一判定", mainLabel: "1行1ペア（例: ソラーレ・ホテルズ ⇔ Solare Hotels）", paramLabel: null, hint: "④⑤で「人の確認へ」に回った カナ⇔英字・略称のペアをAIが判定。確信が無いものは unsure=人へ。25組=呼び出し1回。", ai: true },
+  { id: "ai_classify", label: "⑩ AI: 自由記述の分類", mainLabel: "回答CSV（1行目=見出し）", paramLabel: "1行目: 対象の列名 / 2行目以降: カテゴリ（1行1つ）", hint: "回答内の引用を根拠に要求し、引用が実在しない分類は「人へ」。30件=呼び出し1回。", ai: true },
+  { id: "ai_extract", label: "⑪ AI: 非定型テキストから項目抽出", mainLabel: "元テキスト", paramLabel: "欲しい項目（1行1つ。「電話番号:phone」「HP:url」のように種別を付けると決定的検証も掛かる）", hint: "正規表現で拾えないレイアウト向け。抽出値は根拠引用の実在確認と形式検証を通過したものだけ確定。1テキスト=呼び出し1回。", ai: true },
+  { id: "ai_rewrite", label: "⑫ AI: 整文・ケバ取り・言い換え", mainLabel: "原文", paramLabel: "モード（ケバ取り / 整文 / 言い換え のどれか1語）", hint: "文字起こしの整形と転載回避の言い換え。長さの激変は機械検品で弾きますが、意味の確認は必ず人が読んでから。1テキスト=呼び出し1回。", ai: true },
 ];
 
 const PHONE_COL = /電話|TEL/i;
@@ -198,11 +206,102 @@ function runTool(tool: ToolId, main: string, param: string): RunResult {
   };
 }
 
+async function callAi(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const res = await fetch("/api/hustle/agent/dataops-ai", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error ?? "AI呼び出しに失敗しました");
+  return json;
+}
+
+async function runAiTool(tool: ToolId, main: string, param: string): Promise<RunResult> {
+  if (tool === "ai_match") {
+    const pairs = main
+      .split(/\n/)
+      .map((line) => line.split(/⇔|<=>|,|\t/).map((s) => s.trim()))
+      .filter((p) => p.length >= 2 && p[0] && p[1])
+      .map((p) => ({ a: p[0], b: p[1] }));
+    if (pairs.length === 0) return { summary: ["ペアを読めませんでした。1行に「A ⇔ B」の形で入れてください。"] };
+    const out = await callAi({ task: "match_pairs", pairs });
+    const verdicts = out.verdicts as { index: number; verdict: string; reason: string; needsHuman: boolean }[];
+    const meta = out.meta as { callsUsed: number; degraded: boolean };
+    const label: Record<string, string> = { same: "同一", different: "別物", unsure: "不明→人へ" };
+    return {
+      summary: [
+        `${pairs.length}組を判定（AI呼び出し ${meta.callsUsed}回）。同一 ${verdicts.filter((v) => v.verdict === "same").length} / 別物 ${verdicts.filter((v) => v.verdict === "different").length} / 人へ ${verdicts.filter((v) => v.needsHuman).length}`,
+        ...(meta.degraded ? ["注意: 呼び出し上限に達したため、一部は判定せず「人へ」に回しています。"] : []),
+      ],
+      rows: verdicts.map((v) => ({ A: pairs[v.index].a, B: pairs[v.index].b, 判定: label[v.verdict] ?? v.verdict, 根拠: v.reason })),
+      headers: ["A", "B", "判定", "根拠"],
+    };
+  }
+
+  if (tool === "ai_classify") {
+    const lines = param.split(/\n/).map((s) => s.trim()).filter(Boolean);
+    const [col, ...categories] = lines;
+    const table = parseTable(main);
+    if (!col || !table.headers.includes(col)) return { summary: [`対象の列名を1行目に。候補: ${table.headers.join(" / ")}`] };
+    if (categories.length < 2) return { summary: ["カテゴリを2つ以上、2行目以降に入れてください。"] };
+    const texts = table.rows.map((r) => r[col] ?? "");
+    const out = await callAi({ task: "classify", texts, categories });
+    const items = out.items as { index: number; category: string; quote: string; needsHuman: boolean; reason: string }[];
+    const meta = out.meta as { callsUsed: number; degraded: boolean };
+    const counts = new Map<string, number>();
+    for (const it of items) counts.set(it.category, (counts.get(it.category) ?? 0) + 1);
+    return {
+      summary: [
+        `${texts.length}件を分類（AI呼び出し ${meta.callsUsed}回）。人の確認へ ${items.filter((i) => i.needsHuman).length}件`,
+        [...counts.entries()].map(([k, v]) => `${k}: ${v}`).join(" / "),
+        ...(meta.degraded ? ["注意: 呼び出し上限に達したため、一部は未分類のまま「人へ」です。"] : []),
+      ],
+      rows: items.map((it) => ({
+        回答: texts[it.index],
+        分類: it.category,
+        根拠: it.quote,
+        確認: it.needsHuman ? `要確認（${it.reason}）` : "",
+      })),
+      headers: ["回答", "分類", "根拠", "確認"],
+    };
+  }
+
+  if (tool === "ai_extract") {
+    const fields = param
+      .split(/\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [name, kind] = line.split(/[:：]/).map((s) => s.trim());
+        return { name, kind: ["phone", "url", "email"].includes(kind) ? kind : "text" };
+      });
+    if (fields.length === 0) return { summary: ["欲しい項目名を1行1つ入れてください。"] };
+    const out = await callAi({ task: "extract_fields", text: main, fields });
+    const got = out.fields as { name: string; value: string; quote: string; needsHuman: boolean; reason: string }[];
+    return {
+      summary: [`${fields.length}項目中、確定 ${got.filter((f) => !f.needsHuman).length} / 要確認 ${got.filter((f) => f.needsHuman).length}`],
+      rows: got.map((f) => ({ 項目: f.name, 値: f.value, 根拠: f.quote, 確認: f.needsHuman ? `要確認（${f.reason}）` : "" })),
+      headers: ["項目", "値", "根拠", "確認"],
+    };
+  }
+
+  // ai_rewrite
+  const mode = /ケバ/.test(param) ? "kebatori" : /言い換え|パラ/.test(param) ? "paraphrase" : "seibun";
+  const out = await callAi({ task: "rewrite", text: main, mode });
+  const r = out.result as { text: string; needsHuman: boolean; reason: string };
+  return {
+    summary: [r.reason || "整形しました。", "納品前に必ず全文を読んでください。"],
+    text: r.text,
+  };
+}
+
 export default function DataOpsEngine() {
   const [tool, setTool] = useState<ToolId>("pattern");
   const [main, setMain] = useState("");
   const [param, setParam] = useState("");
   const [result, setResult] = useState<RunResult | null>(null);
+  const [running, setRunning] = useState(false);
   const def = TOOLS.find((t) => t.id === tool)!;
   const preview = useMemo(() => result?.rows?.slice(0, 12) ?? [], [result]);
 
@@ -272,11 +371,20 @@ export default function DataOpsEngine() {
         </div>
 
         <button
-          onClick={() => setResult(main.trim() ? runTool(tool, main, param) : { summary: ["入力が空です。"] })}
+          disabled={running}
+          onClick={() => {
+            if (!main.trim()) { setResult({ summary: ["入力が空です。"] }); return; }
+            if (!def.ai) { setResult(runTool(tool, main, param)); return; }
+            setRunning(true);
+            runAiTool(tool, main, param)
+              .then(setResult)
+              .catch((e) => setResult({ summary: [e instanceof Error ? e.message : "AI呼び出しに失敗しました"] }))
+              .finally(() => setRunning(false));
+          }}
           className="btn-primary flex items-center gap-2 mt-4"
         >
           <Play className="w-4 h-4" />
-          実行する
+          {running ? "AI実行中…" : def.ai ? "AIで実行する（無料枠を消費）" : "実行する"}
         </button>
       </div>
 
@@ -341,6 +449,7 @@ export default function DataOpsEngine() {
                 <p><span className="font-semibold">実例: </span>{p.marketExample}</p>
                 <p><span className="font-semibold">自動: </span>{p.autoParts.join("・")}</p>
                 <p><span className="font-semibold">人: </span>{p.humanParts.join("・")}</p>
+                {p.aiUpgrade && <p className="text-indigo-700"><span className="font-semibold">AI併用: </span>{p.aiUpgrade}</p>}
                 <p className="text-amber-700"><span className="font-semibold">注意: </span>{p.caution}</p>
               </div>
             </details>

@@ -36,6 +36,8 @@ export interface DataOpsPattern {
   caution: string;
   /** 市場の単価相場（2026-08 調査。出典は調査ログ） */
   priceHint?: string;
+  /** AIを併用すると何が良くなるか。カスケード設計: 決定的処理の残りだけAIへ（コストは曖昧分にのみ比例） */
+  aiUpgrade?: string;
 }
 
 export const DATAOPS_PATTERNS: DataOpsPattern[] = [
@@ -50,6 +52,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["照合で確定できなかった行の目視（1〜2割）", "カナ⇔英字の同一判定", "納品前の抜き打き確認"],
     caution: "個人（個人事業主の自宅等）の連絡先収集は個人情報保護法の要注意類型 → personal_data ゲートで停止。法人公開情報に限る",
     priceHint: "2〜60円/件（検証・付加価値つきは500円/件超も）",
+    aiUpgrade: "英字⇔カナの同一判定と非定型サイトからの項目抽出。決定的処理で確定できなかった行だけAIへ",
   },
   {
     id: "list_cleansing",
@@ -62,6 +65,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["移転・社名変更の最終判断", "電話でしか確認できない項目"],
     caution: "個人リストのクレンジングは受けない（法人リストのみ）",
     priceHint: "1〜10円/件、一式5,000円〜数万円",
+    aiUpgrade: "移転・社名変更の候補判定。新旧の値が同一組織かをAIが判定し、unsureは人へ",
   },
   {
     id: "dedupe_merge",
@@ -73,6 +77,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     autoParts: ["法人格・全半角・スペースの揺れを吸収した同一判定", "先勝ち統合と除外ログ"],
     humanParts: ["カナ⇔英字など機械で同一にできない候補の判定"],
     caution: "個人名簿は個人情報保護法の管理下。取り扱い条件を発注者に確認してから",
+    aiUpgrade: "カナ⇔英字・略称の同一判定（ソラーレ⇔Solare）。曖昧ペアだけAIに掛ける",
   },
   {
     id: "ec_product_entry",
@@ -85,6 +90,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["画像の権利確認（メーカー画像の転載可否は人が確認）", "登録実行"],
     caution: "画像・説明文の転載は著作権と各モール規約の確認が必須。無断転載の代行はしない",
     priceHint: "単純転記10〜30円/商品、説明文込み50〜200円/商品",
+    aiUpgrade: "商品説明文の下書き生成とカテゴリ判定。公開前に人が読む前提",
   },
   {
     id: "survey_tabulation",
@@ -96,6 +102,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     autoParts: ["度数分布", "複数回答の分解", "クロス集計", "数値要約", "報告文の骨組み生成"],
     humanParts: ["自由記述の解釈", "報告書の考察部分"],
     caution: "回答者の個人情報（氏名・連絡先つき生データ）は受領前に匿名化を依頼する",
+    aiUpgrade: "自由記述の分類。回答内の引用を根拠として要求し、引用が実在しない回答は人へ（幻覚検品）",
   },
   {
     id: "transcription_structuring",
@@ -107,6 +114,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     autoParts: ["テキストからの項目抽出", "形式検査", "表への整形"],
     humanParts: ["OCRの読み間違い確認（画像→文字の精度は素材次第）", "判読不能箇所"],
     caution: "名刺・個人宛請求書は個人情報。保管・破棄条件を発注者と合意してから",
+    aiUpgrade: "正規表現で拾えない非定型レイアウトからの項目抽出。抽出値は決定的検証を再通過",
   },
   {
     id: "price_research",
@@ -118,6 +126,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     autoParts: ["価格表記の抽出と円換算", "複数ソースの突き合わせ", "最安/中央値の要約"],
     humanParts: ["状態・真贋など写真でしか判断できない項目"],
     caution: "メルカリ・Amazon等は規約でスクレイピング禁止 → collection_source ゲート。目視収集かAPIの範囲で",
+    aiUpgrade: "同一商品かの判定（型番違い・セット品・色違い）",
   },
   {
     id: "mail_merge_docs",
@@ -129,6 +138,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     autoParts: ["全件差し込み", "埋まらない穴の検出と報告", "使われていない列の報告"],
     humanParts: ["文面の最終確認", "発送・送信"],
     caution: "送信代行（メール一斉送信）は特定電子メール法の同意確認が必要。文書作成までに留める",
+    aiUpgrade: "文面のトーン調整・敬語の統一",
   },
   {
     id: "web_directory_check",
@@ -140,6 +150,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     autoParts: ["URL形式の検査", "到達確認の一覧化（要ネットワーク実行）"],
     humanParts: ["閉店・移転など内容レベルの確認"],
     caution: "確認先サイトのrobots・負荷に配慮（1件1リクエスト・間隔を空ける）",
+    aiUpgrade: "移転先ページが同一事業者かの判定",
   },
   {
     id: "seo_article_data",
@@ -151,6 +162,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     autoParts: ["公式サイトからの項目抽出", "表への整形", "出典URLの併記"],
     humanParts: ["主観評価の列", "文章化"],
     caution: "他サイトの表の丸写しは著作権侵害。一次ソース（公式）から自分で組む",
+    aiUpgrade: "非定型ページからの項目抽出と表の下書き",
   },
   {
     id: "business_card_entry",
@@ -163,6 +175,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["読み取りの目視補正（旧字体・デザイン名刺）", "同姓同名の判断"],
     caution: "個人情報保護法の要注意類型。NDA必須が普通。データの再利用・持ち出しは禁止",
     priceHint: "10〜30円/枚",
+    aiUpgrade: "OCR後の項目分類の補正（氏名/社名/役職の切り分け）",
   },
   {
     id: "transcription_audio",
@@ -175,6 +188,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["聞き取りにくい箇所・固有名詞の確認", "意味を変えない整文の最終判断"],
     caution: "会議内容はNDA前提。医療・法律系音源は個人情報の要注意類型",
     priceHint: "素起こし50〜150円/分、整文150〜300円/分",
+    aiUpgrade: "ケバ取り・整文。長さの激変は機械検品で弾くが、意味の保存は人が読んで確認",
   },
   {
     id: "receipt_entry",
@@ -187,6 +201,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["かすれ・手書きの判読", "費目判断の例外"],
     caution: "税額計算・税務判断まで踏み込むと税理士法52条 → restricted_work ゲート。単純転記に限定",
     priceHint: "5〜30円/枚",
+    aiUpgrade: "店名・費目の推定補助（税務判断はしない）",
   },
   {
     id: "job_posting_entry",
@@ -199,6 +214,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["表現の言い換え（丸写しは転載）", "掲載可否の確認"],
     caution: "職業安定法の表示ルール（固定残業代の明示等）と元媒体の著作権に注意",
     priceHint: "30〜100円/件",
+    aiUpgrade: "転載回避の言い換え（事実の追加・削除は禁止のプロンプトで）",
   },
   {
     id: "property_entry",
@@ -211,6 +227,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["図面の読み取り", "おとり広告にならないかの確認"],
     caution: "宅建業法・不動産公正競争規約の表示ルール（徒歩分数の計算方法等）",
     priceHint: "50〜300円/件",
+    aiUpgrade: "物件キャッチコピーの下書き",
   },
   {
     id: "meeting_minutes",
@@ -223,6 +240,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["「決定」か「保留」かの判断", "社内文脈の補完", "責任者名の確定"],
     caution: "経営情報のNDA前提。人事系会議は個人情報の要注意類型",
     priceHint: "1本2,000〜10,000円",
+    aiUpgrade: "決定事項・ToDo・期日の抽出案の提示。確定は人",
   },
   {
     id: "annotation",
@@ -235,6 +253,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["曖昧ケースの判断", "エッジケースのラベリング"],
     caution: "人物画像・個人情報を含むデータセットは要注意類型。NDA前提",
     priceHint: "時給1,000〜3,000円相当",
+    aiUpgrade: "プリラベリング（AIが仮ラベル→人が修正）。アノテーション業界の標準工程",
   },
   {
     id: "store_list",
@@ -247,6 +266,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["閉店・移転の最終確認", "「雰囲気」等の感覚条件"],
     caution: "参照元ポータル（食べログ等）の転載禁止規約 → collection_source ゲート。店主個人の携帯収集は要注意類型",
     priceHint: "5〜30円/店舗",
+    aiUpgrade: "英字⇔カナの同一判定と非定型サイトからの抽出（company_listと同じカスケード）",
   },
   {
     id: "keyword_research",
@@ -259,6 +279,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["検索意図の分類", "競合の質的評価"],
     caution: "検索エンジンへの自動アクセスは利用規約違反 → 手動収集の整理・集計側をエンジン化する",
     priceHint: "1〜10円/キーワード",
+    aiUpgrade: "検索意図（情報収集/比較/購入）の分類",
   },
   {
     id: "document_admin",
@@ -271,6 +292,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["内容の妥当性確認", "先方事情の例外処理"],
     caution: "契約書など権利義務文書の作成代行は行政書士法・弁護士法に触れ得る → テンプレ転記・清書に限定",
     priceHint: "1通100〜500円",
+    aiUpgrade: "文面調整と敬語の統一。金額計算はAIに触らせない（決定的処理のまま）",
   },
   {
     id: "translation_glossary",
@@ -283,6 +305,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
     humanParts: ["訳語の妥当性判断", "文脈による訳し分け"],
     caution: "元文書の著作権・機密保持に注意",
     priceHint: "1〜5円/対",
+    aiUpgrade: "訳語候補の提示と用語の揺れ検出",
   },
 
 ];
