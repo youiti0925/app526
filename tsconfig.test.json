@@ -48,6 +48,7 @@
     "src/lib/hustle/agent/yourtime.ts",
     "src/lib/hustle/agent/pricing.ts",
     "src/lib/hustle/dataops/index.ts",
-    "src/lib/hustle/dataops/aiops-core.ts"
+    "src/lib/hustle/dataops/aiops-core.ts",
+    "src/lib/hustle/agent/maintenance.ts"
   ]
 }

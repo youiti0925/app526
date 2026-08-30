@@ -10,6 +10,9 @@ import {
   reapStaleRuns,
 } from "./db";
 import { STEP_IMPL, type StepContext } from "./steps";
+import { findExpiredItems } from "./maintenance";
+import { decideInbox, readInbox, readLeadsByIds } from "./db";
+import { todayLocal } from "../analytics";
 import { STEP_LABELS, STEP_ORDER, type AgentRun, type RunResult, type RunTrigger, type StepId } from "./types";
 
 /** 工程を回す順番。前の工程の結果を次が使うので固定。 */
@@ -76,6 +79,26 @@ export async function runAgent(options: RunOptions): Promise<RunOutcome> {
     trigger: options.trigger,
     callBudget: config.callBudget,
   });
+
+  // 工程の前に、締切の過ぎた承認待ちを掃除する。
+  // 人の承認が遅れても、もう出せない案件がキューに居座って判断を汚さないため
+  // （ホテル案件・海外企業リスト案件で実際に機会を逃した再発防止）。
+  try {
+    const pending = readInbox("pending", 200);
+    const leads = readLeadsByIds(pending.map((i) => i.leadId).filter((id): id is string => !!id));
+    const expired = findExpiredItems(
+      pending.map((i) => ({ id: i.id, title: i.title, leadRawText: i.leadId ? (leads.get(i.leadId)?.rawText ?? null) : null })),
+      todayLocal()
+    );
+    for (const e of expired) {
+      decideInbox(e.inboxId, "expired", `締切(${e.deadline})超過のため自動で取り下げ`);
+      logEvent(run.id, "runner", "action", `締切超過の承認待ちを取り下げました: ${e.title.slice(0, 60)}（締切 ${e.deadline}）`, {
+        inboxId: e.inboxId,
+      });
+    }
+  } catch (error) {
+    logEvent(run.id, "runner", "warn", `締切掃除に失敗しました（続行します）: ${error instanceof Error ? error.message : String(error)}`, {});
+  }
 
   const totals = { ingested: 0, triaged: 0, queued: 0 };
   const summaries: string[] = [];

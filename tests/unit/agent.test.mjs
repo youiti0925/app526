@@ -456,3 +456,30 @@ test("出品日が空でも経過日数の計算が暴走しない", async () =>
   assert.equal(r.verdict, "too_early");
   assert.match(r.nextAction, /出品日/);
 });
+
+// --- 締切超過の自動取り下げ（承認待ちのまま募集終了する事故の再発防止）--------
+
+test("募集文の締切日を読み、超過した承認待ちだけを選ぶ", async () => {
+  const { parseListedDeadline, isPastDeadline, findExpiredItems } = await import("../../dist-test/agent/maintenance.js");
+  assert.equal(parseListedDeadline("応募状況 締切日 2026年8月28日 / 掲載日 2026年8月21日"), "2026-08-28");
+  assert.equal(parseListedDeadline("締切日 2026年 9月 3日"), "2026-09-03");
+  assert.equal(parseListedDeadline("納品希望日 ご相談"), null);
+  assert.equal(parseListedDeadline("締切日 2026年13月40日"), null, "ありえない日付は読まない");
+
+  // 締切当日はまだ出せる。過ぎたら下げる
+  assert.equal(isPastDeadline("2026-08-30", "2026-08-30"), false);
+  assert.equal(isPastDeadline("2026-08-28", "2026-08-30"), true);
+  assert.equal(isPastDeadline(null, "2026-08-30"), false, "締切の書かれていない案件は触らない");
+
+  const expired = findExpiredItems(
+    [
+      { id: "a", title: "海外企業リスト", leadRawText: "締切日 2026年8月28日" },
+      { id: "b", title: "本日締切", leadRawText: "締切日 2026年8月30日" },
+      { id: "c", title: "出品案（締切なし）", leadRawText: null },
+      { id: "d", title: "貼り付け起源", leadRawText: "納期は相談" },
+    ],
+    "2026-08-30"
+  );
+  assert.deepEqual(expired.map((e) => e.inboxId), ["a"]);
+  assert.equal(expired[0].deadline, "2026-08-28");
+});
