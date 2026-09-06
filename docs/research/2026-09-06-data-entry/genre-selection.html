@@ -1,0 +1,187 @@
+<title>どのジャンルなら良いか</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@600;700&family=Noto+Sans+JP:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --ground:#F3F4F1; --surface:#FFFFFF; --ink:#1B2430; --muted:#5F6B75; --line:#D9DDD8;
+    --accent:#0E7C7B; --accent-soft:#E3F1F0; --good:#2C7A4B; --good-soft:#E4F1E8;
+    --bad:#A63D2F; --bad-soft:#F6E6E2; --warn:#9A6B00; --warn-soft:#F7EFD9;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#12171B; --surface:#1A2127; --ink:#E6E9E4; --muted:#9AA5AD; --line:#2B343B;
+      --accent:#4FB3B0; --accent-soft:#1B3331; --good:#6CC28F; --good-soft:#1C3326;
+      --bad:#E0776A; --bad-soft:#3A2420; --warn:#D9A83D; --warn-soft:#3A3120;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#12171B; --surface:#1A2127; --ink:#E6E9E4; --muted:#9AA5AD; --line:#2B343B;
+    --accent:#4FB3B0; --accent-soft:#1B3331; --good:#6CC28F; --good-soft:#1C3326;
+    --bad:#E0776A; --bad-soft:#3A2420; --warn:#D9A83D; --warn-soft:#3A3120;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--ground); color:var(--ink); font-family:"Noto Sans JP",system-ui,sans-serif; font-size:15px; line-height:1.9; margin:0; padding:36px 18px 90px}
+  main{max-width:760px; margin:0 auto; display:flex; flex-direction:column; gap:34px}
+  h1,h2,h3{font-family:"Shippori Mincho","Noto Serif JP",serif; line-height:1.35; text-wrap:balance; margin:0}
+  h1{font-size:30px; font-weight:700} h2{font-size:21px; font-weight:700} h3{font-size:16px; font-weight:700}
+  p{margin:0}
+  .eyebrow{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.14em; color:var(--muted); text-transform:uppercase}
+  .small{font-size:12.5px; color:var(--muted)}
+  .verdict{background:var(--surface); border:1px solid var(--line); border-left:5px solid var(--accent); padding:22px 26px; display:flex; flex-direction:column; gap:12px}
+  .verdict .lead{font-family:"Shippori Mincho",serif; font-size:20px; font-weight:600; line-height:1.6}
+  section{display:flex; flex-direction:column; gap:14px}
+  .axes{display:grid; grid-template-columns:auto 1fr; gap:6px 16px; font-size:14px; background:var(--surface); border:1px solid var(--line); padding:14px 18px}
+  .axes dt{font-family:"IBM Plex Mono",monospace; color:var(--accent); white-space:nowrap}
+  .axes dd{margin:0}
+  .group{background:var(--surface); border:1px solid var(--line); padding:16px 20px; display:flex; flex-direction:column; gap:8px}
+  .group header{display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap}
+  .group .id{font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--accent); letter-spacing:.08em}
+  .pill{display:inline-block; font-family:"IBM Plex Mono",monospace; font-size:11.5px; padding:2px 10px; border-radius:99px; white-space:nowrap}
+  .pill.go{background:var(--good-soft); color:var(--good)} .pill.no{background:var(--bad-soft); color:var(--bad)} .pill.if{background:var(--warn-soft); color:var(--warn)} .pill.acc{background:var(--accent-soft); color:var(--accent)}
+  .kv{display:grid; grid-template-columns:auto 1fr; gap:2px 14px; font-size:13.5px}
+  .kv dt{color:var(--muted); white-space:nowrap} .kv dd{margin:0}
+  .ev{font-size:13px; color:var(--muted); border-left:3px solid var(--line); padding:2px 12px}
+  .tablewrap{overflow-x:auto; border:1px solid var(--line); background:var(--surface)}
+  table{border-collapse:collapse; width:100%; font-size:13.5px; line-height:1.6}
+  th{text-align:left; font-size:12px; color:var(--muted); font-weight:700; letter-spacing:.04em; border-bottom:1.5px solid var(--line); padding:10px 12px; white-space:nowrap}
+  td{border-bottom:1px solid var(--line); padding:9px 12px; vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  td.c{text-align:center; font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums}
+  td.tot{text-align:center; font-family:"IBM Plex Mono",monospace; font-weight:500; color:var(--accent)}
+  ol{margin:0; padding-left:1.3em; display:flex; flex-direction:column; gap:8px}
+  ul{margin:0; padding-left:1.3em; display:flex; flex-direction:column; gap:6px}
+  a{color:var(--accent); word-break:break-all}
+</style>
+
+<main>
+  <header style="display:flex;flex-direction:column;gap:10px">
+    <span class="eyebrow">genre selection / 2026-09-06 / 証拠: 試作9件・募集345件・YouTube105本・規約一次確認</span>
+    <h1>どのジャンルなら良いか</h1>
+    <p class="small">副業の全体を、市場のラベルではなく「お金の入り方 × 成果物の担い手 × 何に払われるか」で10グループに定義し直し、この案件で集めた証拠だけで選び直したものです。</p>
+  </header>
+
+  <div class="verdict">
+    <span class="eyebrow">結論</span>
+    <p class="lead">良いのは3つ。C 仕様変換（応募の主力）、D 専門判断（出品の本命）、B 照合リスト（実績づくり）。<br>データ入力は B の入口としてだけ正しい。</p>
+    <p>理由は単純で、この3つだけが「単価がある × 機械が主で人は承認だけ × 法・規約の壁がない」を同時に満たします。他は、単価が無い（A）、あなたの時間を売る（F・G）、客が来ない（H）、本人性か権利保証で詰む（E）のどれかです。</p>
+  </div>
+
+  <section>
+    <span class="eyebrow">定義の軸</span>
+    <h2>ジャンルを切る3つの軸</h2>
+    <dl class="axes">
+      <dt>お金の入り方</dt><dd><b>応募型</b>（締切と競争がある）/ <b>出品型</b>（待ち。締切なし）/ <b>契約型</b>（月額・時給、稼働時間の約束）/ <b>販売型</b>（客を自分で集める）/ <b>参加型</b>（本人がその場にいる）</dd>
+      <dt>成果物の担い手</dt><dd><b>機械のみ</b> / <b>機械＋承認</b>（あなたは要確認分だけ見る）/ <b>人の専門判断</b> / <b>本人性</b>（顔・声・実績・体験）/ <b>現地・実物</b></dd>
+      <dt>何に払われるか</dt><dd>L0 転記 / L1 収集 / L2 照合 / L3 整形・変換 / L4 判断（前の報告書の定義）</dd>
+    </dl>
+    <p class="small">この3軸で切ると、市場で「データ入力」「事務代行」「Webライター」「オンライン秘書」と呼ばれているものが、実は別グループに散らばっていることが分かります。</p>
+  </section>
+
+  <section>
+    <span class="eyebrow">10グループ</span>
+    <h2>定義・観測した証拠・判定</h2>
+
+    <div class="group">
+      <header><span><span class="id">A</span>　転記・入力型の事務（L0/L1）</span><span class="pill no">やらない</span></header>
+      <dl class="kv"><dt>定義</dt><dd>渡された情報を決められた形に写す／探して写す。応募型。機械100%</dd><dt>市場の呼び名</dt><dd>データ入力、コピペ作業、名刺入力、レシート入力、商品リスト入力、OCR補正</dd></dl>
+      <p class="ev">1件3円の企業リスト作成に929提案・採用1名 / 件単価中央値40円 / 検証動画は時給25〜293円 / ママワークスのOCR補正1件1円</p>
+      <p>機械で100%できるのに受けない唯一の理由は、<b>単価が無い</b>こと。速さは誰にでもAIにもあるので価格競争が底まで落ちている。</p>
+    </div>
+
+    <div class="group">
+      <header><span><span class="id">B</span>　照合・保証つきリスト作成（L2）</span><span class="pill go">実績づくりに使う</span></header>
+      <dl class="kv"><dt>定義</dt><dd>集めた値を別ソースで裏取りし、正確さを保証して納める。応募型。機械＋承認</dd><dt>市場の呼び名</dt><dd>企業リスト作成、店舗情報収集、リストクレンジング、名寄せ、掲載確認</dd></dl>
+      <p class="ev">大阪ホテルリスト 1件200円×100件（34応募、発注者は前回の粗悪納品に懲りて品質を買いに来ていた）/ 国内企業リスト18応募・海外企業リスト23応募 / ランサーズ メーカーサイトリサーチ150件で5千〜1万円（44応募）</p>
+      <p>エンジン（抽出→照合→NG除外→検査）は完成済みで、あなたの作業は要確認行の目視だけ。<b>単価はあるが天井が低い</b>（月4〜6件出て取れて1〜2件、月2〜4万円）。ゼロから評価を作る場所として使う。壁: 個人情報（法人限定）、収集元の規約（Instagram等は手動・任意扱い）。</p>
+    </div>
+
+    <div class="group">
+      <header><span><span class="id">C</span>　仕様変換・整形（L3）</span><span class="pill go">応募の主力にする</span></header>
+      <dl class="kv"><dt>定義</dt><dd>決まった仕様の形に組み替える。応募型（一部出品可）。機械＋承認（仕様確認だけ人）</dd><dt>市場の呼び名</dt><dd>EC商品登録、モールCSV作成、KDP縦書き変換・登録、Word書式化、サイト移行、集計表作成、差し込み書類</dd></dl>
+      <p class="ev">募集中（9/6）: 楽天50商品登録（40応募）/ KDP縦書き変換+登録 1〜3万円（23応募）/ 準備済みHTMLのWix移行 1〜3万円（30応募）/ 論文の指定書式Word化（45応募）/ <b>BUYMA出品作業 5千〜1万円（応募4〜6人）</b></p>
+      <p><b>データ入力の隣にあって単価が1桁上</b>。仕様を一度コード化すれば毎回同じ処理で、機械の得意領域そのもの。正直に書くと<b>このグループの成果物はまだ試作していない</b>（試作9件は記事・画像・動画・チラシ系だった）。応募前に1件、BUYMA/楽天のCSV作成かKDP変換を試作して納品水準を確認する。壁: 画像・説明文の転載可否、モール規約。</p>
+    </div>
+
+    <div class="group">
+      <header><span><span class="id">D</span>　専門判断つき文書・技術サービス（L4）</span><span class="pill go">出品の本命</span></header>
+      <dl class="kv"><dt>定義</dt><dd>専門知識で良し悪しを決め、責任ごと納める。出品型＋応募型。人の判断＋機械の下書き</dd><dt>市場の呼び名</dt><dd>SDS作成、化学物質リスクアセスメント、作業標準書・手順書、ISO文書整備、作業指示書テンプレ</dd></dl>
+      <p class="ev">出品4本（SDS 45,000円 / RA 90,000円 / 手順書 24,000円 / ISO 90,000円）承認済み・未出品 / 募集中: <b>自動車整備の作業指示書作成（76応募）</b>、SDS 5物質（貼り付け起源）/ 2026-04 安衛法改正でSDS対象物質が拡大</p>
+      <p>あなたの製造業知識が売り物になる唯一のグループ。競争相手は「AIで量産する人」ではなく「資格や経験のある人」で、機械の下書き＋あなたの判断はここで一番効く。壁: 行政書士・税理士の業務に踏み込まない（既に台帳に線引き済み）、GHS区分はNITEの分類結果と決定的に照合。<b>需要は未実証</b>（出品して60日ルールで測る）。</p>
+    </div>
+
+    <div class="group">
+      <header><span><span class="id">E</span>　制作受託（記事・画像・動画・デザイン）</span><span class="pill if">条件付き</span></header>
+      <dl class="kv"><dt>定義</dt><dd>クリエイティブを作って納める。応募型／出品型。機械が作れるが、権利保証と本人性が壁</dd><dt>市場の呼び名</dt><dd>Webライター、記事作成、サムネ・チラシ、切り抜き動画、イラスト</dd></dl>
+      <p class="ev">試作9件: 発注者の目線で「払う」が5/9、返金が4/9（返金4件は全部、本人性か成果物違い）/ 本日の新着で「著作権譲渡」条件が2件（トレカ名刺・シンガー）→ 生成AIの規約上、独占性と非侵害の保証は約束できない / 切り抜き案件は3,000〜22,500円で契約0が続く</p>
+      <p>受けられるのは<b>「AI利用可」と明記 × 独占的利用の保証なし × 本人の実績提示不要</b>の3条件がそろう案件だけ。単価は下落中。主力にはしない。</p>
+    </div>
+
+    <div class="group">
+      <header><span><span class="id">F</span>　本人参加型スポット（アンケート・インタビュー・モニター・体験談）</span><span class="pill if">自動化の枠外。ただし最速の現金</span></header>
+      <dl class="kv"><dt>定義</dt><dd>本人がその場にいることに払われる。参加型。機械は関係ない</dd><dt>市場の呼び名</dt><dd>インタビュー協力、アプリモニター、体験談執筆、覆面調査</dd></dl>
+      <p class="ev">募集中（9/6）: 保護者インタビュー45分3,300円（応募1〜2人）/ アプリ動作確認1時間2,500円（30応募）/ 体験談2,000字1,000〜1,500円</p>
+      <p>正直に入れておきます。<b>45分3,300円＝時給4,400円は、この報告書のどのグループより高い</b>。自動化とは無関係で、あなたの時間を直接売る型。「少額でも今すぐ」が要るなら、条件に合うもの（本人属性が一致するもの）を月1〜2件は合理的。ただし伸びない。</p>
+    </div>
+
+    <div class="group">
+      <header><span><span class="id">G</span>　継続契約型（準委任・時給・オンライン秘書・テレアポ）</span><span class="pill no">やらない</span></header>
+      <dl class="kv"><dt>定義</dt><dd>稼働時間を約束して月額・時給で払われる。契約型。人の時間</dd><dt>市場の呼び名</dt><dd>フリーランス案件（週2〜5日）、在宅事務、オンライン秘書、テレアポ、カスタマーサポート</dd></dl>
+      <p class="ev">エージェント系16/17が月額準委任（40〜170万円/月、週3〜5日）/ ママワークス時給1,100〜1,800円 / YouTubeが「データ入力の代替」として推すオンライン秘書は月5〜7万円で週10〜20時間の稼働前提</p>
+      <p>単価は高いが「あなたの時間を10時間以上売る」型で、自動化・承認だけ、という前提と正面から衝突する。YouTubeがデータ入力からの乗り換え先に推すのはこれだが、それは<b>時間の切り売りの単価が上がっただけ</b>。</p>
+    </div>
+
+    <div class="group">
+      <header><span><span class="id">H</span>　販売・広告収益型（ブログ・動画・デジタル素材・電子書籍・ツール販売）</span><span class="pill no">今はやらない</span></header>
+      <dl class="kv"><dt>定義</dt><dd>作って置き、客が来て買う／広告が付く。販売型。機械が作れるが、客を集めるのは別の仕事</dd></dl>
+      <p class="ev">YouTube収益化: 登録者1,000人+4,000時間、量産型コンテンツは対象外（2025-07改定）/ PIXTAはAI素材から撤退（2026-05）/ KDPはAI申告義務 / メルカリはデジタル販売禁止 / 初収入まで中央値90〜240日（paths-data）</p>
+      <p>「自動販売機型」の理想形だが、<b>客が来る部分が一番難しく、そこは自動化できない</b>。Dが出品で売れ始めたら、その延長で「報告書自動作成ツール」に進む順番。先にここへ行くと数ヶ月無収入になる。</p>
+    </div>
+
+    <div class="group">
+      <header><span><span class="id">I</span>　物販・無在庫</span><span class="pill no">やらない</span></header>
+      <p class="ev">メルカリは「手元にない商品」の出品を明文禁止 / 資金・在庫・実物の発送が要る / YouTubeランキングで上位に来るが、動画の発信者はスクール（30〜100万円）を売っている</p>
+    </div>
+
+    <div class="group">
+      <header><span><span class="id">J</span>　自動化ツール・テンプレの受託（L3〜L4）</span><span class="pill acc">試す価値あり（出品で）</span></header>
+      <dl class="kv"><dt>定義</dt><dd>相手の業務を自動化する道具（スプレッドシート・スクリプト・テンプレ）を作って納める。応募型／出品型。機械が作り、人は要件確認</dd></dl>
+      <p class="ev">募集中: 広告出稿先企業リスト作成ツール開発（85応募）/ 業務自動化のアイデア壁打ち 月3,000円（13応募）/ 整備作業指示書のExcel化（76応募）/ 取引履歴の自動集計Excel（42応募、ただし税務計算は税理士法で不可）</p>
+      <p>うちの道具箱そのものが商品になる。ただし<b>開発案件は応募が85と多く、納品後の保守を期待される</b>。応募で取りに行くより、Dと同じく「製造業向けExcel自動化ツール作ります」の出品で需要を測るのが安全。</p>
+    </div>
+  </section>
+
+  <section>
+    <span class="eyebrow">採点</span>
+    <h2>6つの物差しで並べる（各5点満点）</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>グループ</th><th>単価</th><th>自動化率</th><th>競争の低さ</th><th>法・規約</th><th>需要の実証</th><th>初収入の速さ</th><th>合計</th></tr></thead>
+        <tbody>
+          <tr><td>C 仕様変換</td><td class="c">4</td><td class="c">5</td><td class="c">3</td><td class="c">4</td><td class="c">3</td><td class="c">4</td><td class="tot">23</td></tr>
+          <tr><td>D 専門判断</td><td class="c">5</td><td class="c">3</td><td class="c">5</td><td class="c">4</td><td class="c">2</td><td class="c">2</td><td class="tot">21</td></tr>
+          <tr><td>B 照合リスト</td><td class="c">2</td><td class="c">5</td><td class="c">2</td><td class="c">4</td><td class="c">4</td><td class="c">4</td><td class="tot">21</td></tr>
+          <tr><td>J 自動化受託</td><td class="c">4</td><td class="c">4</td><td class="c">2</td><td class="c">4</td><td class="c">2</td><td class="c">2</td><td class="tot">18</td></tr>
+          <tr><td>F 本人参加</td><td class="c">3</td><td class="c">0</td><td class="c">4</td><td class="c">5</td><td class="c">5</td><td class="c">5</td><td class="tot">22*</td></tr>
+          <tr><td>E 制作受託</td><td class="c">3</td><td class="c">4</td><td class="c">1</td><td class="c">2</td><td class="c">3</td><td class="c">3</td><td class="tot">16</td></tr>
+          <tr><td>G 継続契約</td><td class="c">5</td><td class="c">1</td><td class="c">3</td><td class="c">5</td><td class="c">5</td><td class="c">2</td><td class="tot">21*</td></tr>
+          <tr><td>A 転記</td><td class="c">0</td><td class="c">5</td><td class="c">0</td><td class="c">4</td><td class="c">5</td><td class="c">3</td><td class="tot">17</td></tr>
+          <tr><td>H 販売・広告</td><td class="c">3</td><td class="c">4</td><td class="c">2</td><td class="c">2</td><td class="c">1</td><td class="c">0</td><td class="tot">12</td></tr>
+          <tr><td>I 物販</td><td class="c">3</td><td class="c">1</td><td class="c">2</td><td class="c">1</td><td class="c">3</td><td class="c">2</td><td class="tot">12</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small">*F と G は合計点が高く見えるが、「自動化率0〜1」＝あなたの時間をそのまま売る型なので、このプロジェクトの前提（機械が働き、人は承認だけ）から外れる。Fだけは「少額でも今すぐ」の現金として別枠で扱う。採点は私の判断で、各点の根拠は上の証拠欄。</p>
+  </section>
+
+  <section>
+    <span class="eyebrow">進め方</span>
+    <h2>この順番で</h2>
+    <ol>
+      <li><b>D を出す（今週）。</b>承認済みの出品4本をココナラに置く。締切も競争もないので、置いた瞬間から60日の計測が始まる。</li>
+      <li><b>C を1件試作する（今週）。</b>BUYMA出品作業（応募4〜6人）か楽天CSV作成を、実際の募集文を使って納品水準まで作る。試作で通れば、以後この型はエンジンで即応する。通らなければ理由を台帳に書いて閉じる。</li>
+      <li><b>B は自動で拾い続ける。</b>L2以上・単価200円以上・法人公開情報の案件だけ承認デスクに上がる。締切切れは自動で下がる。取れた1件が最初の評価になる。</li>
+      <li><b>F は本人属性が合う募集だけ、月1〜2件。</b>自動化とは別枠の現金。</li>
+      <li><b>J は D の出品が動いてから</b>「製造業向けExcel自動化ツール」を出品で追加する。</li>
+    </ol>
+    <p>畳む基準はこれまで通り: 応募30件・4週で返信ゼロなら応募先を変える / 1件で実作業8時間超ならその型を畳む / 出品60日で問い合わせゼロなら文面か価格を変える。</p>
+  </section>
+</main>
