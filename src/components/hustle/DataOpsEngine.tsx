@@ -15,7 +15,7 @@ import {
   valueCounts, crossTab, numericSummary,
   mailMerge,
   parseTable, toCsvText,
-  DATAOPS_PATTERNS, matchDataOpsPatterns,
+  DATAOPS_PATTERNS, matchDataOpsPatterns, VALUE_LEVELS, MIN_LEVEL_TO_ACCEPT, levelVerdict,
 } from "@/lib/hustle/dataops";
 
 type ToolId =
@@ -450,15 +450,40 @@ export default function DataOpsEngine() {
       )}
 
       <div className="card">
+        <h3 className="font-semibold mb-1">「データ入力系」の線引き — 価値レベル</h3>
+        <p className="text-xs text-slate-500 mb-2">
+          ジャンル名では境界が引けないので、発注者が何に払っているかで5段階に切ります。受けるのは L{MIN_LEVEL_TO_ACCEPT} 以上（単価200円以上の例外を除く）。
+        </p>
+        <div className="overflow-x-auto rounded-lg border mb-5" style={{ borderColor: "var(--card-border)" }}>
+          <table className="min-w-full text-xs">
+            <thead><tr className="bg-slate-100"><th className="px-3 py-2 text-left">レベル</th><th className="px-3 py-2 text-left">要するに</th><th className="px-3 py-2 text-left">払われているもの</th><th className="px-3 py-2 text-left">相場</th><th className="px-3 py-2 text-left">誰が</th></tr></thead>
+            <tbody>
+              {([0, 1, 2, 3, 4] as const).map((lv) => (
+                <tr key={lv} className={`border-t ${lv >= MIN_LEVEL_TO_ACCEPT ? "" : "text-slate-400"}`}>
+                  <td className="px-3 py-2 whitespace-nowrap font-semibold">L{lv} {VALUE_LEVELS[lv].name}</td>
+                  <td className="px-3 py-2">{VALUE_LEVELS[lv].gist}</td>
+                  <td className="px-3 py-2">{VALUE_LEVELS[lv].paidFor}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{VALUE_LEVELS[lv].unitPrice}</td>
+                  <td className="px-3 py-2">{VALUE_LEVELS[lv].who}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <h3 className="font-semibold mb-1">搭載パターン台帳（{DATAOPS_PATTERNS.length}種）</h3>
         <p className="text-xs text-slate-500 mb-3">
-          市場調査（ココナラ実データ220件 + 相場調査 2026-08）で確認した定型案件と、受けたときの自動/人の分担です。
+          市場調査（ココナラ実データ220件 + 相場調査 2026-08/09）で確認した定型案件と、受けたときの自動/人の分担です。
         </p>
         <div className="space-y-1.5">
           {DATAOPS_PATTERNS.map((p) => (
             <details key={p.id} className="rounded-lg border px-3 py-2" style={{ borderColor: "var(--card-border)" }}>
               <summary className="text-sm font-medium cursor-pointer flex items-baseline justify-between gap-2">
-                <span>{p.name}</span>
+                <span>
+                  <span className={`text-[11px] font-mono rounded px-1.5 py-0.5 mr-2 ${levelVerdict(p.level).accept ? "bg-indigo-100 text-indigo-800" : "bg-slate-200 text-slate-600"}`}>
+                    {levelVerdict(p.level).label}
+                  </span>
+                  {p.name}
+                </span>
                 <span className="text-xs text-slate-500 shrink-0">{p.priceHint ?? ""}</span>
               </summary>
               <div className="text-xs leading-relaxed mt-2 space-y-1 text-slate-600">

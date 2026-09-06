@@ -1,0 +1,19 @@
+{
+ "source": "YouTube データ入力特化 58本（WebSearchで発見、watchページはoEmbed+チャンネル一覧で補完）",
+ "tally": {
+  "total": 58,
+  "positive": 22,
+  "negative": 18,
+  "mixed": 18,
+  "withLineOrCourse": 37,
+  "medianViews": 7650
+ },
+ "keyFindings": [
+  "実際にやってみた検証系はほぼ全て negative（時給25円 / 200円 / 293円）",
+  "positive の多くは『AI活用すれば月10〜20万』または『オンライン秘書・スクールへ乗り換え』が前提で、LINE→講座の導線を持つ",
+  "58本中37本（64%）がLINE登録・講座・スクールへ誘導",
+  "最多再生 140万回: ゆいママ『40時間で1,000円＝時給25円』（2021-05）",
+  "ランサーズ公式: 『初めての方はまずタスクから』＝データ入力は実績づくりの入口という位置づけ"
+ ],
+ "limits": "watchページはcurlでCAPTCHA、WebFetchはJS描画前。再生回数はチャンネル一覧の丸め値、投稿月は一部推定。monetizationはチャンネル概要ベース。"
+}

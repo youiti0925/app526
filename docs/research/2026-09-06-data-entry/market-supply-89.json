@@ -1,0 +1,29 @@
+{"asOf":"2026-09-06",
+"coconala":{"openRelevant":40,"pureDataEntryOpen":"少数（『文字起こし・データ入力代行』カテゴリの直近80件中、募集中は1件）","medianApplicants":4.5,"applicantRange":"0〜76","contracted":"募集中のため大半0（締切後に決定）",
+  "examples":[
+   {"t":"日々のルーティン業務・データ入力（フリマ掲載漏れチェック）","price":"90分で1,500円・時給1,000円上限と明記","applicants":18},
+   {"t":"論文原稿を指定書式でWord化","price":"見積り","applicants":45},
+   {"t":"YouTube動画の文字起こし（ケバ取り）","price":"5千円未満","applicants":23},
+   {"t":"BUYMA出品作業（画像加工+入力）×2件","price":"5千〜1万円","applicants":"4〜6"},
+   {"t":"電子書籍の縦書き変換とKDP登録","price":"1〜3万円","applicants":23},
+   {"t":"準備済みHTMLのWix移行","price":"1〜3万円","applicants":30},
+   {"t":"自動車整備の作業指示書作成（Excel/Word）","price":"見積り","applicants":76}
+  ]},
+"lancers":{"openDataEntry":115,"pattern":"名目予算1〜2万円だが詳細に『実際の支払い300〜700円』と明記される案件が多い","unitPriceMainstream":"1件3〜75円（最高500円）","medianUnitJpy":40,
+  "competition":[
+   {"t":"企業リスト作成 1件3円","proposals":929,"hired":1},
+   {"t":"商品リスト入力 1件70円","proposals":240,"hired":2},
+   {"t":"eBayリサーチ 1件60円","proposals":215,"hired":12},
+   {"t":"EC価格調整 1件30円","proposals":206,"hired":1},
+   {"t":"新着の入力案件（物流データ等）","proposals":"4〜25","hired":"0〜2"}
+  ]},
+"mamaworks":{"count":20,"type":"業務委託の継続稼働型（掲載期間最長1年）","hourly":"時間単価1,100〜1,800円・中央値1,250円","perUnit":"件単価制は1件1〜10円のものも（OCR補正1円、民泊検索入力10円、メール送信8円）","applicants":"非公開"},
+"thirdParty":[
+  {"src":"クラウドワークス公式メディア","claim":"データ入力の時間単価はおおむね1,000〜1,400円前後"},
+  {"src":"skimama.jp（2024）","claim":"『データ入力』331件。相場1件10〜50円。実体験: BUYMA 20件×30円=600円を5時間 → 時給120円。画像文字入力6万文字で1,023円（1文字0.017円）"},
+  {"src":"work-home.jp（2026-03）","claim":"初心者は時給換算100〜300円、月3,000〜5,000円程度"},
+  {"src":"remolabo（2026-05）","claim":"1件10円以下〜数十円、高くても500円。時給換算300〜500円台は珍しくない"},
+  {"src":"atsoho（2026-07）","claim":"名刺・アンケート入力1件0.5〜5円、EC登録50〜300円、文字起こし1分100〜300円。始めたては時給300〜500円、慣れて800〜1,200円"}
+],
+"automationFit":{"machine":43,"mixed":24,"human":22,"machineShare":"48%"},
+"limits":"ランサーズ一覧の予算は名目で実支払と乖離。ココナラは募集中の純データ入力が少なく、電話代行・インタビュー協力など人向きが混在。クラウドワークスはrobots拒否のため第三者記事のみ。"}

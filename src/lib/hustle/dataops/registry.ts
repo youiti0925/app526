@@ -7,6 +7,68 @@
  * 「どこまで自動でどこから人か」が即答できる。
  */
 
+/**
+ * 価値レベル — 「データ入力系」の仕事をどこで線引きするかの定義。
+ *
+ * ジャンル名（データ入力・リスト作成・照合・事務代行）は市場で混用されていて境界が無い。
+ * そこで「発注者が何にお金を払っているか」で5段階に切る。手を動かす中身は
+ * どれも事務作業で近いが、単価が付く理由が違う。この番号が全部の判断の物差し。
+ */
+export type ValueLevel = 0 | 1 | 2 | 3 | 4;
+
+export interface ValueLevelDef {
+  name: string;
+  /** その仕事は要するに何か */
+  gist: string;
+  /** 発注者が払っているもの */
+  paidFor: string;
+  /** 市場の単価帯（2026-09 調査） */
+  unitPrice: string;
+  /** 誰がやるか */
+  who: string;
+}
+
+export const VALUE_LEVELS: Record<ValueLevel, ValueLevelDef> = {
+  0: {
+    name: "転記",
+    gist: "渡されたAを、決められたBの形に写す",
+    paidFor: "速さだけ。誰でもAIでもできるので値段が付かない",
+    unitPrice: "1件1〜50円（時給換算100〜500円）",
+    who: "機械100%。ただし単価が無いので受けない",
+  },
+  1: {
+    name: "収集",
+    gist: "Aがどこにあるか探して集める（公式サイト・掲載ページ）",
+    paidFor: "探す手間",
+    unitPrice: "1件10〜100円",
+    who: "機械。収集元の規約（robots・利用規約）が壁になる",
+  },
+  2: {
+    name: "照合",
+    gist: "集めた値が正しいと、別ソースで裏取りして保証する",
+    paidFor: "正確さの保証。納品後の『電話が通じない』を引き受けること",
+    unitPrice: "1件100〜300円",
+    who: "機械が確定、人は要確認行だけ。ここから受ける",
+  },
+  3: {
+    name: "整形・変換",
+    gist: "決まった仕様の形に組み替える（モールCSV、縦書き、Word書式、集計表）",
+    paidFor: "仕様を知っていること",
+    unitPrice: "1件数千〜3万円",
+    who: "機械（仕様を一度コード化すれば毎回同じ）",
+  },
+  4: {
+    name: "判断",
+    gist: "どれを選ぶか・良し悪しを決める（OEM先選定、リスク評価、分類の最終判断）",
+    paidFor: "専門知識と責任",
+    unitPrice: "見積り（数万円〜）",
+    who: "人。あなたの製造業知識が売り物になる領域＝出品レーン",
+  },
+};
+
+/** 受ける下限。これ未満は自動化しても単価が無く、929人と競う市場になる。 */
+export const MIN_LEVEL_TO_ACCEPT: ValueLevel = 2;
+
 export type OpId =
   | "extract" // テキストから電話/URL/社名/価格等を抽出
   | "normalize" // 幅・電話・URL・法人名・住所の正規化
@@ -32,6 +94,8 @@ export interface DataOpsPattern {
   autoParts: string[];
   /** 人（承認者）が最後にやること */
   humanParts: string[];
+  /** 価値レベル（0転記/1収集/2照合/3整形変換/4判断）。受けるかどうかの物差し */
+  level: ValueLevel;
   /** 法・規約の地雷。gates.ts の判定と対応 */
   caution: string;
   /** 市場の単価相場（2026-08 調査。出典は調査ログ） */
@@ -43,6 +107,7 @@ export interface DataOpsPattern {
 export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   {
     id: "company_list",
+    level: 2,
     name: "企業・店舗リスト作成",
     looksLike: "条件に合う企業/店舗をN件、指定項目で一覧化",
     marketExample: "「大阪府内ホテル情報収集・リスト作成」1件200円×100件、「保育園リストアップ300件」（ココナラ 2026-08）",
@@ -56,6 +121,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "list_cleansing",
+    level: 2,
     name: "既存リストの検証・更新（リストクレンジング）",
     looksLike: "古い顧客/営業リストの電話・住所・URLが今も有効か確認して直す",
     marketExample: "営業代行会社の定番依頼。ホテル案件も「過去納品の電話番号が使われていない」ことが発端",
@@ -69,6 +135,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "dedupe_merge",
+    level: 2,
     name: "名寄せ・重複統合",
     looksLike: "複数の名簿/リストを1本にまとめ、表記ゆれの重複を消す",
     marketExample: "住所録整備・顧客名簿統合。ホテル案件の「同一運営会社は表記ゆれ含め3施設まで」も同型",
@@ -81,6 +148,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "ec_product_entry",
+    level: 3,
     name: "ECサイト商品登録・商品データ整形",
     looksLike: "商品情報N点をモール仕様のCSVに整えて登録",
     marketExample: "「楽天新規出店の商品50アイテムの登録」画像はメーカーHPから取得（ココナラ 2026-08）",
@@ -94,6 +162,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "survey_tabulation",
+    level: 3,
     name: "アンケート集計・報告表作成",
     looksLike: "回答データを集計してグラフ/表にまとめる",
     marketExample: "「採用サービスのアンケート・ヒアリング」系（ココナラ 2026-08）。回答CSV→単純集計+クロス集計が定番",
@@ -106,6 +175,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "transcription_structuring",
+    level: 3,
     name: "テキスト転記・構造化（PDF/画像/名刺→表）",
     looksLike: "PDFや画像のテキストをExcel/スプレッドシートに転記",
     marketExample: "名刺入力・レシート入力・請求書転記。クラウドソーシングのデータ入力カテゴリの最頻出型",
@@ -118,6 +188,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "price_research",
+    level: 2,
     name: "価格調査・相場表作成",
     looksLike: "指定商品/サービスの価格を複数サイトで調べ相場表に",
     marketExample: "「ヴィンテージサングラス市場調査」「メルカリ/Yahooフリマ商品リサーチ」（ココナラ 2026-08）",
@@ -130,6 +201,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "mail_merge_docs",
+    level: 3,
     name: "差し込み書類の量産（案内文・見積書・宛名）",
     looksLike: "テンプレートに顧客ごとのデータを差し込んでN通作成",
     marketExample: "案内状・DM原稿・見積書の宛先差し替え。事務代行カテゴリの定番",
@@ -142,6 +214,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "web_directory_check",
+    level: 2,
     name: "掲載確認・リンク切れ調査",
     looksLike: "リストのURLが生きているか・掲載が続いているか一括確認",
     marketExample: "アフィリエイトサイトのリンク切れ調査、掲載店舗の閉店確認。リスト検証案件の亜種",
@@ -154,6 +227,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "seo_article_data",
+    level: 1,
     name: "記事用データ収集・一覧表埋め込み",
     looksLike: "比較記事・まとめ記事のための項目表（N社比較表など）を作る",
     marketExample: "「恋愛・出会いテーマの記事リサーチ」「転職エージェント比較」系記事の下ごしらえ（ココナラ 2026-08）",
@@ -166,6 +240,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "business_card_entry",
+    level: 0,
     name: "名刺データ入力",
     looksLike: "名刺のスキャン画像から氏名・会社・連絡先を指定フォーマットへ",
     marketExample: "クラウドソーシングのデータ入力カテゴリ定番。相場10〜30円/枚（2026-08調査）",
@@ -179,6 +254,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "transcription_audio",
+    level: 0,
     name: "音声文字起こしの整形（ケバ取り・整文・タイムスタンプ）",
     looksLike: "会議・インタビュー音源の書き起こしと整形",
     marketExample: "切り抜き案件の下工程にも頻出（「Vrewで文字起こし」ココナラ 2026-08）。素起こし50〜150円/分",
@@ -192,6 +268,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "receipt_entry",
+    level: 0,
     name: "レシート・領収書入力（単純転記に限定）",
     looksLike: "領収書の日付・金額・取引先・費目をExcelへ",
     marketExample: "記帳補助の定番。相場5〜30円/枚（2026-08調査）",
@@ -205,6 +282,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "job_posting_entry",
+    level: 0,
     name: "求人票の転記・求人情報入力",
     looksLike: "求人票PDFや媒体から自社サイト/DBの形式へ転記",
     marketExample: "求人媒体運営会社の定番外注。相場30〜100円/件（2026-08調査）",
@@ -218,6 +296,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "property_entry",
+    level: 0,
     name: "物件情報入力",
     looksLike: "マイソク・物件資料からポータルへ登録",
     marketExample: "不動産会社の定番外注。相場50〜300円/件（2026-08調査）",
@@ -231,6 +310,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "meeting_minutes",
+    level: 3,
     name: "議事録作成",
     looksLike: "会議録音から決定事項・ToDo・発言要旨をまとめる",
     marketExample: "1本2,000〜10,000円（2026-08調査）",
@@ -244,6 +324,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "annotation",
+    level: 4,
     name: "AI学習データ作成（アノテーション）の品質検査",
     looksLike: "ラベル付けと、その一貫性チェック",
     marketExample: "「AIモデルのデータ収録の協力依頼」（ココナラ 2026-08）。時給1,000〜3,000円と入力系より高単価",
@@ -257,6 +338,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "store_list",
+    level: 2,
     name: "店舗情報収集・エリアリサーチ",
     looksLike: "指定エリア・業態の店舗一覧（店名・住所・営業時間・URL）",
     marketExample: "「大阪府内ホテル」「保育園300件」の同型。相場5〜30円/店舗（2026-08調査）",
@@ -270,6 +352,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "keyword_research",
+    level: 1,
     name: "検索結果・キーワード調査",
     looksLike: "キーワードごとの上位サイト・順位・サジェストを表に",
     marketExample: "SEO会社の定番外注。相場1〜10円/キーワード（2026-08調査）",
@@ -283,6 +366,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "document_admin",
+    level: 3,
     name: "定型書類の作成代行（請求書・見積書・管理表）",
     looksLike: "元データとテンプレートから書類を量産",
     marketExample: "事務代行カテゴリ定番。1通100〜500円（2026-08調査）",
@@ -296,6 +380,7 @@ export const DATAOPS_PATTERNS: DataOpsPattern[] = [
   },
   {
     id: "translation_glossary",
+    level: 3,
     name: "対訳表・用語集の整備",
     looksLike: "原文と訳文から対訳表・用語集を作る",
     marketExample: "翻訳会社の下工程。相場1〜5円/対（2026-08調査）",
@@ -324,4 +409,17 @@ export function matchDataOpsPatterns(text: string): PatternMatch[] {
     if (m) out.push({ pattern, matched: m[0] });
   }
   return out;
+}
+
+/** 案件が受けられる水準かの一言。エンジン対応の行や台帳に添える。 */
+export function levelVerdict(level: ValueLevel): { accept: boolean; label: string; note: string } {
+  const def = VALUE_LEVELS[level];
+  if (level >= MIN_LEVEL_TO_ACCEPT) {
+    return { accept: true, label: `L${level} ${def.name}`, note: `${def.paidFor}（相場 ${def.unitPrice}）` };
+  }
+  return {
+    accept: false,
+    label: `L${level} ${def.name}`,
+    note: `${def.paidFor}（相場 ${def.unitPrice}）。単価200円以上の例外を除き受けない`,
+  };
 }

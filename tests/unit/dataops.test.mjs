@@ -415,3 +415,26 @@ test("抽出の検品: 元テキストがプロンプト上限を超えるとき
   assert.equal(parsed[0].needsHuman, true);
   assert.ok(parsed[0].reason.includes("未探索"), parsed[0].reason);
 });
+
+
+// --- 価値レベル（「データ入力系」の線引きの定義）--------------------------------
+
+test("全パターンに価値レベルがあり、受ける/受けないが定義から決まる", async () => {
+  const { VALUE_LEVELS, MIN_LEVEL_TO_ACCEPT, levelVerdict } = await import("../../dist-test/dataops/registry.js");
+  for (const lv of [0, 1, 2, 3, 4]) assert.ok(VALUE_LEVELS[lv].name && VALUE_LEVELS[lv].unitPrice, `L${lv}`);
+  for (const p of DATAOPS_PATTERNS) assert.ok([0, 1, 2, 3, 4].includes(p.level), `${p.id} にレベルが無い`);
+  // 転記(L0)は受けない、照合(L2)から受ける
+  assert.equal(levelVerdict(0).accept, false);
+  assert.equal(levelVerdict(MIN_LEVEL_TO_ACCEPT).accept, true);
+  assert.match(levelVerdict(2).label, /照合/);
+  // 市場で「データ入力」と呼ばれる名刺入力・レシート入力は L0 = 受けない側
+  const byId = Object.fromEntries(DATAOPS_PATTERNS.map((p) => [p.id, p]));
+  assert.equal(byId.business_card_entry.level, 0);
+  assert.equal(byId.receipt_entry.level, 0);
+  // ホテル型の店舗リストは照合が値段の理由 = L2
+  assert.equal(byId.store_list.level, 2);
+  assert.equal(byId.company_list.level, 2);
+  // EC登録・集計・差し込みは仕様を知っている値段 = L3
+  assert.equal(byId.ec_product_entry.level, 3);
+  assert.equal(byId.survey_tabulation.level, 3);
+});

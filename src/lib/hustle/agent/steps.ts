@@ -18,7 +18,7 @@ import { reviewListing, summarizeListings } from "./listing-tracker";
 import { estimateByWorkType, estimateUnits } from "./worktypes";
 import { unknownSplit, yourTime, type YourTime } from "./yourtime";
 import { readPricing } from "./pricing";
-import { matchDataOpsPatterns } from "../dataops/registry";
+import { matchDataOpsPatterns, levelVerdict } from "../dataops/registry";
 import { evidenceFor } from "./dryrun-core";
 import { needsEscalation } from "./escalation";
 import { fetchFeed, leadFromParsed } from "./ingest";
@@ -780,7 +780,10 @@ export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
     const engineLine = engineMatches.length
       ? `【エンジン対応】${engineMatches
           .slice(0, 2)
-          .map((m) => `${m.pattern.name}（自動: ${m.pattern.autoParts.slice(0, 3).join("・")} / 人: ${m.pattern.humanParts[0]}）`)
+          .map((m) => {
+            const v = levelVerdict(m.pattern.level);
+            return `${m.pattern.name}〔${v.label}${v.accept ? "" : "・受けない水準"}〕（自動: ${m.pattern.autoParts.slice(0, 3).join("・")} / 人: ${m.pattern.humanParts[0]}）`;
+          })
           .join(" / ")} — /hustle/data-work で即実行できます`
       : "";
 
