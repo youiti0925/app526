@@ -202,6 +202,7 @@ function NewJobForm({ onCreated }: { onCreated: (id: string) => void }) {
   const [title, setTitle] = useState("");
   const [instructions, setInstructions] = useState("");
   const [csv, setCsv] = useState("");
+  const [xlsxBase64, setXlsxBase64] = useState("");
   const [fileName, setFileName] = useState("");
   const [lists, setLists] = useState<{ name: string; text: string }[]>([]);
   const [dataClass, setDataClass] = useState<"public" | "confidential">("confidential");
@@ -212,15 +213,25 @@ function NewJobForm({ onCreated }: { onCreated: (id: string) => void }) {
 
   async function loadFile(file: File | undefined) {
     if (!file) return;
-    if (/\.xlsx?$/i.test(file.name)) {
-      setError("Excelファイルはまだ読めません。ExcelでCSV UTF-8として保存してから入れてください。");
+    if (/\.xls$/i.test(file.name)) {
+      setError("古い形式のExcel（.xls）は読めません。Excelで .xlsx として保存し直してください。");
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
       setError("5MBを超えるファイルは入れられません。分けてください。");
       return;
     }
-    setCsv(await file.text());
+    if (/\.xlsx$/i.test(file.name)) {
+      // Excelはサーバーで読む（中身はZIPなので、ブラウザでは文字として読めない）
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      setXlsxBase64(btoa(bin));
+      setCsv("");
+    } else {
+      setCsv(await file.text());
+      setXlsxBase64("");
+    }
     setFileName(file.name);
     setError(null);
   }
@@ -233,13 +244,13 @@ function NewJobForm({ onCreated }: { onCreated: (id: string) => void }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title, instructions, inputCsv: csv, dataClass, deadline, priceJpy: Number(price) || 0,
+          title, instructions, inputCsv: csv, inputXlsxBase64: xlsxBase64 || undefined, dataClass, deadline, priceJpy: Number(price) || 0,
           lists: Object.fromEntries(lists.filter((l) => l.name.trim()).map((l) => [l.name.trim(), l.text])),
         }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error ?? "登録に失敗しました");
-      setTitle(""); setInstructions(""); setCsv(""); setFileName(""); setLists([]); setDeadline(""); setPrice("");
+      setTitle(""); setInstructions(""); setCsv(""); setXlsxBase64(""); setFileName(""); setLists([]); setDeadline(""); setPrice("");
       setOpen(false);
       onCreated(d.job.id);
     } catch (e) {
@@ -266,11 +277,11 @@ function NewJobForm({ onCreated }: { onCreated: (id: string) => void }) {
         <textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} rows={8} className="input w-full"
           placeholder="納品してほしい列・条件・形式・除外条件などが書かれた依頼文" />
       </Field>
-      <Field label="入力の表（CSV / TSV。1行目は見出し）">
+      <Field label="入力の表（Excel / CSV / TSV。1行目は見出し）">
         <input type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,text/csv,text/plain" onChange={(e) => void loadFile(e.target.files?.[0])}
           className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2" />
-        {fileName && <p className="text-xs text-slate-500 mt-1">読み込み済み: {fileName}（{csv.split(/\r?\n/).length - 1}行）</p>}
-        <textarea value={csv} onChange={(e) => { setCsv(e.target.value); setFileName(""); }} rows={4} className="input w-full mt-2 font-mono text-xs"
+        {fileName && <p className="text-xs text-slate-500 mt-1">読み込み済み: {fileName}{xlsxBase64 ? "（Excel。最初の表のあるシートを使います）" : `（${csv.split(/\r?\n/).length - 1}行）`}</p>}
+        <textarea value={csv} onChange={(e) => { setCsv(e.target.value); setXlsxBase64(""); setFileName(""); }} rows={4} className="input w-full mt-2 font-mono text-xs"
           placeholder={"または貼り付け\n施設名,所在地\nホテルA,東京都…"} />
       </Field>
       <div>
@@ -308,7 +319,7 @@ function NewJobForm({ onCreated }: { onCreated: (id: string) => void }) {
       </div>
       {error && <p className="text-sm text-rose-600">{error}</p>}
       <div className="flex gap-2">
-        <button onClick={submit} disabled={sending || !title.trim() || !instructions.trim() || !csv.trim()} className="btn-primary flex items-center gap-2">
+        <button onClick={submit} disabled={sending || !title.trim() || !instructions.trim() || (!csv.trim() && !xlsxBase64)} className="btn-primary flex items-center gap-2">
           {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Workflow className="w-4 h-4" />} 処理を始める
         </button>
         <button onClick={() => setOpen(false)} className="btn-secondary">閉じる</button>
@@ -453,8 +464,9 @@ function JobDetail({ id, onBack, onChanged }: { id: string; onBack: () => void; 
             <p className="text-sm text-amber-800">品質基準に届いていません。要確認の行を見てから判断してください。</p>
           )}
           <div className="flex flex-wrap gap-2">
+            <a href={`/api/hustle/jobs/${id}/csv?kind=xlsx`} className="btn-secondary flex items-center gap-1 text-sm"><Download className="w-4 h-4" /> 納品用Excel</a>
+            <a href={`/api/hustle/jobs/${id}/csv?kind=annotated-xlsx`} className="btn-secondary flex items-center gap-1 text-sm"><Download className="w-4 h-4" /> 確認メモ付きExcel</a>
             <a href={`/api/hustle/jobs/${id}/csv`} className="btn-secondary flex items-center gap-1 text-sm"><Download className="w-4 h-4" /> 納品用CSV</a>
-            <a href={`/api/hustle/jobs/${id}/csv?kind=annotated`} className="btn-secondary flex items-center gap-1 text-sm"><Download className="w-4 h-4" /> 確認メモ付きCSV</a>
           </div>
           <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className="input w-full text-sm"
             placeholder="作り直すときは、どこを直すかを書く（例: 電話番号はハイフン付きで）" />
@@ -474,7 +486,8 @@ function JobDetail({ id, onBack, onChanged }: { id: string; onBack: () => void; 
       )}
       {job.status === "approved" && (
         <div className="flex flex-wrap gap-2">
-          <a href={`/api/hustle/jobs/${id}/csv`} className="btn-primary flex items-center gap-1 text-sm"><Download className="w-4 h-4" /> 納品用CSV</a>
+          <a href={`/api/hustle/jobs/${id}/csv?kind=xlsx`} className="btn-primary flex items-center gap-1 text-sm"><Download className="w-4 h-4" /> 納品用Excel</a>
+          <a href={`/api/hustle/jobs/${id}/csv`} className="btn-secondary flex items-center gap-1 text-sm"><Download className="w-4 h-4" /> 納品用CSV</a>
         </div>
       )}
 

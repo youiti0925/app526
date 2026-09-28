@@ -35,20 +35,24 @@
 
 ## B. 仕事を処理する
 
-1. 依頼文を `outbox/in/依頼.txt`、表を `outbox/in/入力.csv`（1行目は見出し）に保存する。
-   NGリストなど添付のリストは `outbox/in/<名前>.txt`（1行に1件）。
-   表が無い・Excelしか無いときは、CSVで貼り直してもらう（Excelはまだ読めない）。
-2. 件名は依頼内容から短く決める。公開情報だけの依頼なら `--public` を付ける。依頼者の資料を含む・迷うときは付けない。
-3. 次の1コマンドだけを実行する:
+1. 依頼文を `outbox/in/依頼.txt` に保存する。
+2. 入力の表:
+   - **Excel（.xlsx）が添付されたら**、そのファイルの場所をそのまま `--input` に渡す（変換は要らない）。
+   - 表が文章で貼られたら、`outbox/in/入力.csv` に保存する（1行目は見出し。タブ区切りのままでもよい）。
+   - 古い .xls だけは読めないので、.xlsx で送り直してもらう。
+   - NGリストなど添付のリストは、Excelなら場所をそのまま、文章なら `outbox/in/<名前>.txt`（1行に1件）に保存して `--list 名前=場所` で渡す。
+3. 件名は依頼内容から短く決める。公開情報だけの依頼なら `--public` を付ける。依頼者の資料を含む・迷うときは付けない。
+4. 次の1コマンドだけを実行する:
    ```
-   node scripts/job.mjs run --title "件名" --instructions outbox/in/依頼.txt --csv outbox/in/入力.csv [--list 名前=outbox/in/名前.txt] [--public] --push
+   node scripts/job.mjs run --title "件名" --instructions outbox/in/依頼.txt --input <表の場所> [--sheet シート名] [--list 名前=場所] [--public] --push
    ```
-4. 出力から、状態・要確認の数・品質基準・使ったAIを3〜5行で伝え、
-   出力に書かれた `納品.csv` と `確認メモ付き.csv` を SendUserFile で送る
+   出力に「ほかのシート」があり、どのシートか依頼文から分からないときは、1行で聞いてから `--sheet` を付けてやり直す。
+5. 出力から、状態・要確認の数・品質基準・使ったAIを3〜5行で伝え、
+   `納品.xlsx` と `確認メモ付き.xlsx`（要確認の行は赤）を SendUserFile で送る。依頼者がCSVを指定していたら `納品.csv` を送る
    （SendUserFile が無ければ、ファイルの場所を伝える。アプリの画面から開ける）。
-5. 返事に応じて:
+6. 返事に応じて:
    - 承認・OK → `node scripts/job.mjs approve last --push`
-   - 作り直し＋理由 → `node scripts/job.mjs redo last --note "理由" --push`（結果は4と同じく伝えて送る）
+   - 作り直し＋理由 → `node scripts/job.mjs redo last --note "理由" --push`（結果は5と同じく伝えて送る）
    - 却下＋理由 → `node scripts/job.mjs reject last --note "理由" --push`
    - 使用上限で止まったと出たら、出力の時刻以降に `node scripts/job.mjs resume last --push`
 

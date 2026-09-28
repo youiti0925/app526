@@ -15,6 +15,7 @@ import {
   claimJob, claimNextJob, getRecipe, listRecipes, patchRecipe, reapStaleJobs, readJob, recordUsage, saveRecipe, updateJob,
 } from "./db";
 import { parseTable, toCsvText } from "../dataops/table";
+import { writeXlsx } from "../dataops/xlsx";
 
 /** 1件あたりのAI呼び出しの上限。暴走して週の枠を食い潰さないため。 */
 export const MAX_CALLS_PER_JOB = Math.max(10, Number(process.env.JOB_MAX_AI_CALLS ?? 400));
@@ -189,6 +190,34 @@ export async function runModelComparison(recipeId: string): Promise<{ summary: s
   const result = await compareModels(recipe, { call, fetchPage: createPageFetcher() }, candidates);
   patchRecipe(recipe.id, { trials: [...recipe.trials, ...result.trials].slice(-20), preferred: result.preferred ?? recipe.preferred });
   return { summary: result.summary, trials: result.trials.length };
+}
+
+function notesBySrc(job: Job): Map<number, { text: string[]; error: boolean }> {
+  const bySrc = new Map<number, { text: string[]; error: boolean }>();
+  for (const i of job.issues) {
+    const cur = bySrc.get(i.src) ?? { text: [], error: false };
+    cur.text.push(`${i.severity === "error" ? "要確認" : "注意"}:${i.column ? `${i.column} ` : ""}${i.reason}`);
+    cur.error ||= i.severity === "error";
+    bySrc.set(i.src, cur);
+  }
+  return bySrc;
+}
+
+/**
+ * Excel（.xlsx）で出す。annotated のときは「確認メモ」の列を足し、要確認の行を薄い赤で塗る。
+ * 全セルを文字列で書くので、電話番号の先頭の0や日付が Excel に変換されない。
+ */
+export function outputXlsx(job: Job, annotated: boolean): Buffer {
+  const table = parseTable(job.outputCsv);
+  if (!annotated) return writeXlsx(table.headers, table.rows, { sheetName: "納品" });
+  const notes = notesBySrc(job);
+  const highlight = new Set<number>();
+  const rows = table.rows.map((r, idx) => {
+    const n = notes.get(job.outputSrc[idx]);
+    if (n?.error) highlight.add(idx);
+    return { ...r, "確認メモ": n?.text.join(" / ") ?? "" };
+  });
+  return writeXlsx([...table.headers, "確認メモ"], rows, { sheetName: "確認メモ付き", highlightRows: highlight });
 }
 
 /** 画面のダウンロード用。要確認の理由を末尾の列に付けたCSV。 */

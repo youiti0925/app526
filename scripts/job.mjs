@@ -6,8 +6,8 @@
  * 会話の相手（Claude）が何度も動くと、その分だけ使用量が増えるので、
  * 1件の処理は「ファイルを置く → このコマンドを1回 → 結果を送る」で終わるようにしてある。
  *
- *   node scripts/job.mjs run --title "件名" --instructions 依頼.txt --csv 入力.csv \
- *       [--list NGリスト=ng.txt] [--public] [--deadline 2026-10-10] [--price 20000] [--push]
+ *   node scripts/job.mjs run --title "件名" --instructions 依頼.txt --input 入力.xlsx（または .csv） \
+ *       [--sheet シート名] [--list NGリスト=ng.txt または ng.xlsx] [--public] [--deadline 2026-10-10] [--price 20000] [--push]
  *   node scripts/job.mjs approve [id|last] [--push]
  *   node scripts/job.mjs reject  [id|last] --note "理由" [--push]
  *   node scripts/job.mjs redo    [id|last] --note "直す点" [--push]
@@ -104,6 +104,52 @@ const jobsDb = require_(path.join(DIST, "lib/hustle/jobs/db.js"));
 const worker = require_(path.join(DIST, "lib/hustle/jobs/worker.js"));
 const { JOB_STATUS_LABELS } = require_(path.join(DIST, "lib/hustle/jobs/pipeline.js"));
 const judge = require_(path.join(DIST, "lib/hustle/jobs/judge.js"));
+const xlsx = require_(path.join(DIST, "lib/hustle/dataops/xlsx.js"));
+const { toCsvText } = require_(path.join(DIST, "lib/hustle/dataops/table.js"));
+
+/** 入力の表を読む。Excel（.xlsx）ならシートを選んでCSVにする。 */
+function readTableFile(file, sheetWanted) {
+  const buf = fs.readFileSync(path.resolve(file));
+  if (!xlsx.looksLikeXlsx(buf)) {
+    if (/\.xls$/i.test(file)) die("古い形式の Excel（.xls）は読めません。Excel で .xlsx か CSV として保存し直してください");
+    return { csv: buf.toString("utf8").replace(/^\uFEFF/, ""), note: "" };
+  }
+  let book;
+  try {
+    book = xlsx.readXlsx(buf);
+  } catch (e) {
+    die(`Excelを読めませんでした: ${e.message}`);
+  }
+  const filled = book.sheets.filter((s) => s.rows.some((r) => r.some((v) => v.trim())));
+  let sheet;
+  if (sheetWanted) {
+    sheet = book.sheets.find((s) => s.name === sheetWanted) ?? book.sheets[Number(sheetWanted) - 1];
+    if (!sheet) die(`シート「${sheetWanted}」がありません（あるのは: ${book.sheets.map((s) => s.name).join("、")}）`);
+  } else {
+    sheet = filled[0] ?? book.sheets[0];
+  }
+  const table = xlsx.sheetToTable(sheet);
+  if (table.rows.length === 0) die(`シート「${sheet.name}」に表がありません`);
+  const others = filled.filter((s) => s !== sheet).map((s) => s.name);
+  const note =
+    `Excelのシート「${sheet.name}」から ${table.rows.length}行を読みました（見出し: ${table.headers.join(" / ")}）` +
+    (others.length ? `。ほかのシート: ${others.join("、")}（使うなら --sheet で指定）` : "");
+  return { csv: toCsvText(table.rows, table.headers), note };
+}
+
+const LIST_HEADERS = /^(会社名|社名|企業名|法人名|名称|名前|氏名|店舗名|施設名|屋号|NG|NGリスト|除外|除外リスト|既存|既存リスト|リスト)$/i;
+
+/** NGリストなどを読む。テキストは1行1件、Excelは最初のシートの最初の列（見出しらしい1行目は除く）。 */
+function readListFile(file) {
+  const buf = fs.readFileSync(path.resolve(file));
+  if (!xlsx.looksLikeXlsx(buf)) {
+    return buf.toString("utf8").replace(/^\uFEFF/, "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  }
+  const book = xlsx.readXlsx(buf);
+  const sheet = book.sheets.find((s) => s.rows.some((r) => r.some((v) => v.trim())));
+  const values = (sheet?.rows ?? []).map((r) => (r[0] ?? "").trim()).filter(Boolean);
+  return values.length > 0 && LIST_HEADERS.test(values[0]) ? values.slice(1) : values;
+}
 const agentDb = require_(path.join(DIST, "lib/hustle/agent/db.js"));
 const hustleDb = require_(path.join(DIST, "lib/hustle/db.js"));
 const repo = require_(path.join(DIST, "lib/hustle/repo.js"));
@@ -132,6 +178,8 @@ function writeOutbox(job) {
   if (!job.outputCsv) return null;
   const dir = path.join(ROOT, "outbox", `${job.createdAt.slice(0, 10)}-${job.id.slice(0, 8)}`);
   fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "納品.xlsx"), worker.outputXlsx(job, false));
+  fs.writeFileSync(path.join(dir, "確認メモ付き.xlsx"), worker.outputXlsx(job, true));
   fs.writeFileSync(path.join(dir, "納品.csv"), job.outputCsv);
   fs.writeFileSync(path.join(dir, "確認メモ付き.csv"), worker.outputWithIssuesCsv(job));
   return dir;
@@ -161,8 +209,9 @@ function report(job) {
   }
   const dir = writeOutbox(job);
   if (dir) {
-    lines.push(`納品用: ${path.relative(ROOT, path.join(dir, "納品.csv"))}`);
-    lines.push(`確認メモ付き: ${path.relative(ROOT, path.join(dir, "確認メモ付き.csv"))}`);
+    const rel = (f) => path.relative(ROOT, path.join(dir, f));
+    lines.push(`納品用（Excel）: ${rel("納品.xlsx")}　／ CSVが要るとき: ${rel("納品.csv")}`);
+    lines.push(`確認メモ付き（要確認の行は赤）: ${rel("確認メモ付き.xlsx")}`);
   }
   if (job.status === "awaiting_approval") lines.push("次: 承認なら approve、直すなら redo --note \"直す点\"、出さないなら reject");
   if (job.status === "waiting_quota") lines.push(`次: ${job.retryAt ? new Date(job.retryAt).toLocaleString("ja-JP") : "しばらく"} 以降に resume`);
@@ -307,19 +356,21 @@ async function main() {
     case "run": {
       const title = opt("title");
       const instructionsFile = opt("instructions");
-      const csvFile = opt("csv");
-      if (!title || !instructionsFile || !csvFile) die("--title と --instructions（依頼文のファイル）と --csv（入力の表）が要ります");
-      const read = (f) => fs.readFileSync(path.resolve(f), "utf8").replace(/^﻿/, "");
+      const inputFile = opt("input") ?? opt("csv");
+      if (!title || !instructionsFile || !inputFile) die("--title と --instructions（依頼文のファイル）と --input（入力の表。CSV か Excel）が要ります");
+      const read = (f) => fs.readFileSync(path.resolve(f), "utf8").replace(/^\uFEFF/, "");
       const lists = {};
       for (const spec of opts("list")) {
         const eq = spec.indexOf("=");
         if (eq <= 0) die(`--list は 名前=ファイル の形で指定してください（${spec}）`);
-        lists[spec.slice(0, eq)] = read(spec.slice(eq + 1)).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+        lists[spec.slice(0, eq)] = readListFile(spec.slice(eq + 1));
       }
+      const input = readTableFile(inputFile, opt("sheet"));
+      if (input.note) console.log(input.note);
       const job = jobsDb.createJob({
         title,
         instructions: read(instructionsFile),
-        inputCsv: read(csvFile),
+        inputCsv: input.csv,
         lists,
         dataClass: flag("public") ? "public" : "confidential",
         deadline: /^\d{4}-\d{2}-\d{2}$/.test(opt("deadline") ?? "") ? opt("deadline") : "",

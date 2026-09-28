@@ -3,7 +3,8 @@ import { guard, readJsonObject, str, num, oneOf, date } from "@/lib/hustle/http"
 import { createJob, readJobs, listRecipes, usageSince } from "@/lib/hustle/jobs/db";
 import { kickJobWorker, jobWorkerRunning } from "@/lib/hustle/jobs/worker";
 import { claudeStatus } from "@/lib/hustle/jobs/claude-status";
-import { parseTable } from "@/lib/hustle/dataops/table";
+import { parseTable, toCsvText } from "@/lib/hustle/dataops/table";
+import { readXlsx, sheetToTable, XlsxError } from "@/lib/hustle/dataops/xlsx";
 import { tierModel } from "@/lib/hustle/jobs/models";
 
 const MAX_CSV = 5_000_000;
@@ -44,8 +45,23 @@ export async function POST(request: NextRequest) {
     const b = parsed.data;
     const title = str(b.title, 200)?.trim() ?? "";
     const instructions = str(b.instructions, 20_000)?.trim() ?? "";
-    const inputCsv = typeof b.inputCsv === "string" ? b.inputCsv : "";
+    let inputCsv = typeof b.inputCsv === "string" ? b.inputCsv : "";
     if (!title || !instructions) return NextResponse.json({ error: "件名と依頼内容を入れてください" }, { status: 400 });
+    // Excel（.xlsx）はブラウザから base64 で届く。サーバーで表にしてCSVとして扱う
+    if (typeof b.inputXlsxBase64 === "string" && b.inputXlsxBase64) {
+      if (b.inputXlsxBase64.length > MAX_CSV * 1.4) return NextResponse.json({ error: "Excelが大きすぎます（5MBまで）" }, { status: 400 });
+      try {
+        const book = readXlsx(Buffer.from(b.inputXlsxBase64, "base64"));
+        const wanted = typeof b.sheet === "string" ? b.sheet : "";
+        const sheet = (wanted && book.sheets.find((s) => s.name === wanted)) || book.sheets.find((s) => s.rows.some((r) => r.some((v) => v.trim())));
+        if (!sheet) return NextResponse.json({ error: "Excelに表がありません" }, { status: 400 });
+        const t = sheetToTable(sheet);
+        inputCsv = toCsvText(t.rows, t.headers);
+      } catch (e) {
+        const message = e instanceof XlsxError ? e.message : "Excelを読めませんでした";
+        return NextResponse.json({ error: message }, { status: 400 });
+      }
+    }
     if (!inputCsv.trim()) return NextResponse.json({ error: "入力の表（CSV）を入れてください" }, { status: 400 });
     if (inputCsv.length > MAX_CSV) return NextResponse.json({ error: "入力が大きすぎます（5MBまで）" }, { status: 400 });
     const table = parseTable(inputCsv);
