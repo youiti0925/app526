@@ -48,3 +48,6 @@ next-env.d.ts
 # test build output
 /dist-test/
 /dist-e2e/
+
+# 仕事ラインの納品物（依頼者のデータ。絶対にコミットしない）
+/outbox/

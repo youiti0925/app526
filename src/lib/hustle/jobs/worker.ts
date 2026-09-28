@@ -12,7 +12,7 @@ import { callGemini, geminiAvailable, geminiModel } from "./gemini";
 import { processJob, type Job } from "./pipeline";
 import { candidatesFor, compareModels } from "./compare";
 import {
-  claimNextJob, getRecipe, listRecipes, patchRecipe, reapStaleJobs, readJob, recordUsage, saveRecipe, updateJob,
+  claimJob, claimNextJob, getRecipe, listRecipes, patchRecipe, reapStaleJobs, readJob, recordUsage, saveRecipe, updateJob,
 } from "./db";
 import { parseTable, toCsvText } from "../dataops/table";
 
@@ -40,6 +40,14 @@ export function kickJobWorker(): void {
       running = false;
     }
   })();
+}
+
+/** 指定の依頼をこの場で最後まで回す（コマンドから使う。画面からは kickJobWorker）。 */
+export async function runJobNow(id: string): Promise<Job | null> {
+  const job = claimJob(id);
+  if (!job) return readJob(id);
+  await runOne(job);
+  return readJob(id);
 }
 
 async function runOne(job: Job): Promise<void> {
@@ -102,7 +110,12 @@ async function runOne(job: Job): Promise<void> {
  * ⑦ 人の判断。承認しても送信はしない（各サイトの規約上、納品は人が行う）。
  * 承認した行は、手順書の手本（人が確かめた正解）に昇格させる。これで手本が貯まっていく。
  */
-export function decideJob(id: string, decision: "approved" | "rejected" | "redo", note: string): Job | null {
+export function decideJob(
+  id: string,
+  decision: "approved" | "rejected" | "redo",
+  note: string,
+  opts: { kick?: boolean } = {}
+): Job | null {
   const job = readJob(id);
   if (!job) return null;
   if (job.status !== "awaiting_approval" && !(decision === "redo" && (job.status === "rejected" || job.status === "needs_human"))) {
@@ -120,7 +133,7 @@ export function decideJob(id: string, decision: "approved" | "rejected" | "redo"
       // 手順書が作れなかった依頼を作り直すときは、振り分けからやり直す
       ...(job.status === "needs_human" ? { recipeId: null, recipeVersion: null, route: null } : {}),
     });
-    kickJobWorker();
+    if (opts.kick !== false) kickJobWorker();
     return updated;
   }
 

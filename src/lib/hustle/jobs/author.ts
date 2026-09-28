@@ -48,6 +48,7 @@ const RULES = [
   "- output.columns に、依頼が指定する納品列を指定どおりの順で並べる",
   "- output.rules に、必須（required）や形式（phone / url / email / postal / priceBand / pattern / oneOf）を書く",
   "- match.keywords に、同じ型の依頼を見分けるための語を5〜15個（例: 施設名, 公式サイト, 電話番号, 照合）",
+  "- name / summary / match / template には、依頼者の社名・個人名・固有のデータを書かない（手順書は共有の保管場所に残る）",
   "- 除外リストを使うときは exclude の listRef に、添付リストの名前をそのまま書く",
   "- Webで値（電話番号・住所など）を調べるときは、ai_lookup では公式ページのURLだけを探させ、値そのものは",
   "  fetch_page でページ本文を取ってから ai_extract で抜く。ai_lookup の中のページ読み取りは要約を経由するため、",

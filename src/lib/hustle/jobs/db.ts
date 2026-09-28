@@ -10,6 +10,7 @@ import { getHustleDb } from "../db";
 import { validateRecipe, type Recipe } from "./recipe";
 import type { Job, JobStatus } from "./pipeline";
 import type { UsageRecord } from "./models";
+import { appendUsage, exportRecipe, readLibraryRecipes, readLibraryUsage } from "./library";
 
 let initialized = false;
 
@@ -56,7 +57,37 @@ function db() {
     CREATE INDEX IF NOT EXISTS hustle_ai_usage_job ON hustle_ai_usage(job_id);
   `);
   initialized = true;
+  importLibrary(d);
   return d;
+}
+
+/**
+ * library/（GitHubに残してある手順書と使用量）を読み戻す。
+ * 作業場所が作り直されてDBが空になっても、慣れた型を忘れないため。
+ * DBの方が新しい版を持っていれば、そちらを優先する（上書きしない）。
+ */
+function importLibrary(d: ReturnType<typeof getHustleDb>): void {
+  const insert = d.prepare("INSERT OR IGNORE INTO hustle_recipes (id, version, data, created_at) VALUES (?, ?, ?, ?)");
+  const top = d.prepare("SELECT MAX(version) AS v FROM hustle_recipes WHERE id = ?");
+  for (const r of readLibraryRecipes()) {
+    const v = validateRecipe(r, { now: r.updatedAt }).recipe;
+    if (!v) continue;
+    const have = (top.get(v.id) as { v: number | null }).v ?? 0;
+    if (have >= v.version) continue;
+    insert.run(v.id, v.version, JSON.stringify({ ...v, updatedAt: r.updatedAt ?? v.updatedAt }), v.createdAt);
+  }
+  const count = (d.prepare("SELECT COUNT(*) AS n FROM hustle_ai_usage").get() as { n: number }).n;
+  if (count === 0) {
+    const ins = d.prepare(
+      `INSERT INTO hustle_ai_usage
+        (at, job_id, recipe_id, purpose, provider, model, tier, ok, duration_ms, input_tokens, output_tokens, cache_tokens, cost_usd, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`
+    );
+    for (const u of readLibraryUsage()) {
+      ins.run(u.at, u.jobId, u.recipeId, u.purpose, u.provider, u.model, u.tier, u.ok ? 1 : 0,
+        Math.round(u.durationMs), u.inputTokens, u.outputTokens, u.cacheTokens, u.costUsd);
+    }
+  }
 }
 
 const now = () => new Date().toISOString();
@@ -163,6 +194,16 @@ export function claimNextJob(): Job | null {
   return updateJob(row.id, { status: "working", startedAt: at, error: "" });
 }
 
+/** 指定の依頼を「処理中」にする（コマンドから1件だけ回すとき）。取れなければ null。 */
+export function claimJob(id: string): Job | null {
+  const at = now();
+  const res = db()
+    .prepare("UPDATE hustle_jobs SET status = 'working', updated_at = ? WHERE id = ? AND status IN ('queued', 'waiting_quota')")
+    .run(at, id);
+  if (res.changes !== 1) return null;
+  return updateJob(id, { status: "working", startedAt: at, error: "" });
+}
+
 export function hasWorkingJob(): boolean {
   return !!db().prepare("SELECT 1 FROM hustle_jobs WHERE status = 'working' LIMIT 1").get();
 }
@@ -214,6 +255,7 @@ export function saveRecipe(recipe: Recipe): Recipe {
     const at = now();
     const saved: Recipe = { ...recipe, version, updatedAt: at, createdAt: version === 1 ? at : recipe.createdAt };
     d.prepare("INSERT INTO hustle_recipes (id, version, data, created_at) VALUES (?, ?, ?, ?)").run(saved.id, version, JSON.stringify(saved), at);
+    exportRecipe(saved);
     return saved;
   })();
 }
@@ -226,6 +268,7 @@ export function patchRecipe(id: string, patch: Partial<Pick<Recipe, "stats" | "t
     if (!cur) return null;
     const next = { ...cur, ...patch, updatedAt: now() };
     d.prepare("UPDATE hustle_recipes SET data = ? WHERE id = ? AND version = ?").run(JSON.stringify(next), id, cur.version);
+    exportRecipe(next);
     return next;
   })();
 }
@@ -233,6 +276,7 @@ export function patchRecipe(id: string, patch: Partial<Pick<Recipe, "stats" | "t
 // --- 使用量 -------------------------------------------------------------------
 
 export function recordUsage(u: UsageRecord & { jobId: string | null; recipeId: string | null }): void {
+  appendUsage({ ...u, at: now() });
   db()
     .prepare(
       `INSERT INTO hustle_ai_usage

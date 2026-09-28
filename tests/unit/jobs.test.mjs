@@ -548,3 +548,33 @@ test("比較: 安い順に試し、手本と95%以上一致した最初のモデ
   assert.equal(result.trials.length, 2, "基準を満たしたら残りは試さない");
   assert.ok(result.trials[0].accuracy < 0.95);
 });
+
+// --- GitHubへの保存（library/） -----------------------------------------------------
+
+test("GitHubに残す手順書から、依頼者の資料で作った手本を外し、使用量の記録にはエラー文を書かない", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const lib = await import("../../dist-test/jobs/library.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "joblib-"));
+  process.env.JOB_LIBRARY_DIR = dir;
+  try {
+    const ts = (dataClass) => ({ input: [{ 会社名: "秘密商事", 本文: "x" }], expected: [{ 会社名: "秘密商事", 電話: "", 分類: "その他" }], compareColumns: [], source: "human", dataClass });
+    const conf = validateRecipe({ ...RECIPE, id: "conf-recipe", testSet: ts("confidential") }).recipe;
+    const pub = validateRecipe({ ...RECIPE, id: "pub-recipe", testSet: ts("public") }).recipe;
+    lib.exportRecipe(conf);
+    lib.exportRecipe(pub);
+    const saved = fs.readFileSync(path.join(dir, "recipes", "conf-recipe.json"), "utf8");
+    assert.doesNotMatch(saved, /秘密商事/, "依頼者の資料から作った手本はGitHubに出さない");
+    assert.equal(JSON.parse(saved).steps.length, 3, "手順そのものは残す");
+    assert.match(fs.readFileSync(path.join(dir, "recipes", "pub-recipe.json"), "utf8"), /秘密商事/, "公開情報の手本は残す");
+    assert.equal(lib.readLibraryRecipes().length, 2);
+
+    lib.appendUsage({ provider: "claude", model: "haiku", tier: "light", purpose: "run", ok: false, durationMs: 1, inputTokens: 1, outputTokens: 1, cacheTokens: 0, costUsd: 0, note: "エラー: 秘密商事の…", at: "2026-01-01T00:00:00Z", jobId: "j", recipeId: "r" });
+    assert.doesNotMatch(fs.readFileSync(path.join(dir, "usage.jsonl"), "utf8"), /秘密商事/);
+    assert.equal(lib.readLibraryUsage()[0].model, "haiku");
+  } finally {
+    delete process.env.JOB_LIBRARY_DIR;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
