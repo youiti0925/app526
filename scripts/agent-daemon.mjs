@@ -53,17 +53,34 @@ async function tick() {
   }
 }
 
+/**
+ * 仕事ラインの合図。処理待ちの依頼と、使用上限で待っている依頼を拾わせる。
+ * 依頼を入れた瞬間にも処理は始まるので、これはサーバー再起動や上限待ちの取りこぼし対策。
+ */
+const JOB_TICK_MIN = Math.max(1, Number(process.env.JOB_TICK_MIN ?? 5));
+async function jobTick() {
+  try {
+    const res = await fetch(`${BASE}/api/hustle/jobs/tick`, { method: "POST", headers: { ...AUTH } });
+    if (!res.ok) console.error(`[${stamp()}] 仕事ライン: サーバーがエラーを返しました (${res.status})`);
+  } catch {
+    // サーバーが落ちているときは上の tick() が案内を出すので、ここでは黙る
+  }
+}
+
 console.log(`副業パイプラインのエージェントを起動しました。`);
 console.log(`  接続先: ${BASE}`);
 console.log(`  間隔:   ${INTERVAL_MIN}分`);
 console.log(`  停止:   Ctrl+C\n`);
 
 await tick();
+await jobTick();
 const timer = setInterval(tick, INTERVAL_MIN * 60_000);
+const jobTimer = setInterval(jobTick, JOB_TICK_MIN * 60_000);
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     clearInterval(timer);
+    clearInterval(jobTimer);
     console.log(`\n[${stamp()}] 停止しました。`);
     process.exit(0);
   });

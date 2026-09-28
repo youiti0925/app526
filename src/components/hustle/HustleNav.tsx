@@ -20,10 +20,12 @@ import {
   BookOpen,
   ArrowLeft,
   Settings,
+  Workflow,
 } from "lucide-react";
 
 const items = [
   { href: "/hustle", label: "今日やること", icon: ListChecks, exact: true },
+  { href: "/hustle/jobs", label: "仕事ライン", icon: Workflow },
   { href: "/hustle/data-work", label: "データ作業エンジン", icon: FileSpreadsheet },
   { href: "/hustle/inbox", label: "承認キュー", icon: Inbox, badge: true },
   { href: "/hustle/agent", label: "自律運転", icon: Bot },

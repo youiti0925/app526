@@ -320,7 +320,10 @@ async function runMode(mode) {
   }
 
   const args = [
-    "--bare", // CLAUDE.md やフックを読まない。バッチの再現性のため。
+    // CLAUDE.md・フック・プラグインを読まない（バッチの再現性のため）。
+    // 以前は --bare を使っていたが、--bare はサブスクのログイン（OAuth）を読まず
+    // ANTHROPIC_API_KEY でしか動かないため、「サブスクで動く」という説明と食い違っていた。
+    "--safe-mode",
     "-p",
     "--output-format", "json",
     "--json-schema", JSON.stringify(mode.schema),

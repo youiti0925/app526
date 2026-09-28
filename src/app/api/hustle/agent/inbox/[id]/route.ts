@@ -12,6 +12,7 @@ import { readPaths } from "@/lib/hustle/db";
 import { generateJson, describeAiError, hasApiKey } from "@/lib/hustle/ai";
 import { guard, oneOf, readJsonObject, str } from "@/lib/hustle/http";
 import type { InboxStatus } from "@/lib/hustle/agent/types";
+import { decideJob } from "@/lib/hustle/jobs/worker";
 
 const STATUSES = ["approved", "rejected"] as const satisfies readonly InboxStatus[];
 
@@ -126,6 +127,11 @@ ${item.body.slice(0, 8000)}`,
           workTypeId: meta.workTypeId,
         });
       }
+    }
+
+    // 仕事ラインの納品物は、依頼側の状態（と手順書の手本・実績）も進める
+    if (item.kind === "deliverable" && typeof item.meta.jobId === "string") {
+      decideJob(item.meta.jobId, status, note);
     }
 
     // 「撤退しますか」を承認したら、実際にチャネルを止める

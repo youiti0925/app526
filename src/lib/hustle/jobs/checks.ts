@@ -1,0 +1,113 @@
+/**
+ * 検品（機械の部分）と、手本との照合。
+ *
+ * 合格の基準をここに1か所で持つ。「何割が要確認なら作り直すか」を
+ * あちこちに書くと、どこかで甘くなる。
+ */
+import { checkRow } from "../dataops/validate";
+import { normalizeText, phoneKey, urlKey } from "../dataops/normalize";
+import type { Recipe } from "./recipe";
+import { SRC, srcOf, toColumnRule, type Row, type RowIssue } from "./ops";
+
+/** 要確認（error）の行がこの割合を超えたら「不合格」として、上位モデルでのやり直しに回す。 */
+export const MAX_ERROR_ROW_RATE = 0.2;
+/** 手本との一致率がこれ未満なら、その手順書は使わない。 */
+export const MIN_TEST_ACCURACY = 0.8;
+/** 比較試験で「安いモデルでも足りる」とみなす一致率。 */
+export const MIN_SWITCH_ACCURACY = 0.95;
+
+export function checkOutput(recipe: Pick<Recipe, "output">, rows: Row[]): RowIssue[] {
+  const issues: RowIssue[] = [];
+  const rules: Record<string, ReturnType<typeof toColumnRule>[]> = {};
+  for (const [col, specs] of Object.entries(recipe.output.rules)) rules[col] = specs.map(toColumnRule);
+  const clean = Object.fromEntries(
+    Object.entries(rules).map(([c, list]) => [c, list.filter((r): r is NonNullable<typeof r> => !!r)])
+  );
+  for (const row of rows) {
+    const r = checkRow(row, clean);
+    for (const m of r.missing) issues.push({ src: srcOf(row), column: m, reason: "必須の項目が空です", severity: "error", fromAi: false });
+    for (const v of r.invalid) issues.push({ src: srcOf(row), column: v.column, reason: v.reason, severity: "error", fromAi: false });
+  }
+  return issues;
+}
+
+/** 同じ行・同じ列・同じ理由の重複をまとめる。 */
+export function dedupeIssues(issues: RowIssue[]): RowIssue[] {
+  const seen = new Set<string>();
+  return issues.filter((i) => {
+    const k = `${i.src}\u0000${i.column}\u0000${i.reason}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+export interface QualitySummary {
+  rows: number;
+  errorRows: number;
+  warnRows: number;
+  errorRate: number;
+  aiErrorRows: number[];
+  pass: boolean;
+}
+
+export function summarize(rows: Row[], issues: RowIssue[], extraFailure = false): QualitySummary {
+  const present = new Set(rows.map(srcOf));
+  const errorRows = new Set(issues.filter((i) => i.severity === "error" && present.has(i.src)).map((i) => i.src));
+  const warnRows = new Set(issues.filter((i) => i.severity === "warn" && present.has(i.src) && !errorRows.has(i.src)).map((i) => i.src));
+  const aiErrorRows = [...new Set(issues.filter((i) => i.severity === "error" && i.fromAi && present.has(i.src)).map((i) => i.src))];
+  const errorRate = rows.length === 0 ? 0 : errorRows.size / rows.length;
+  return {
+    rows: rows.length,
+    errorRows: errorRows.size,
+    warnRows: warnRows.size,
+    errorRate,
+    aiErrorRows,
+    pass: !extraFailure && rows.length > 0 && errorRate <= MAX_ERROR_ROW_RATE,
+  };
+}
+
+/** 出力列だけを並べ直す（内部用の `_` 列は落とす）。 */
+export function project(rows: Row[], columns: string[]): Row[] {
+  return rows.map((r) => Object.fromEntries(columns.map((c) => [c, r[c] ?? ""])));
+}
+
+/** 照合用に値をそろえる。電話・URLは正規化キーで、それ以外は表記ゆれを畳んで比べる。 */
+export function cellKey(value: string): string {
+  const v = (value ?? "").trim();
+  if (!v) return "";
+  const p = phoneKey(v);
+  if (p && /^[\d\s()+\-－ー‐]+$/.test(v)) return `tel:${p}`;
+  if (/^https?:\/\//i.test(v)) return `url:${urlKey(v) ?? v.toLowerCase()}`;
+  return normalizeText(v).toLowerCase().replace(/\s+/g, "");
+}
+
+export interface TestComparison {
+  accuracy: number;
+  cells: number;
+  matched: number;
+  mismatches: { index: number; column: string; expected: string; actual: string }[];
+}
+
+/**
+ * 手本との照合。行は `_src`（手本の何行目か）で突き合わせる。
+ * 手順が行を落としてしまった場合、その行の全セルを不一致として数える。
+ */
+export function compareToExpected(actual: Row[], expected: Row[], columns: string[]): TestComparison {
+  const cols = columns.length > 0 ? columns : [...new Set(expected.flatMap((r) => Object.keys(r)))].filter((c) => c !== SRC);
+  const bySrc = new Map(actual.map((r) => [srcOf(r), r]));
+  const mismatches: TestComparison["mismatches"] = [];
+  let cells = 0;
+  let matched = 0;
+  expected.forEach((exp, index) => {
+    const act = bySrc.get(index);
+    for (const c of cols) {
+      cells++;
+      const e = exp[c] ?? "";
+      const a = act?.[c] ?? "";
+      if (cellKey(e) === cellKey(a)) matched++;
+      else mismatches.push({ index, column: c, expected: e, actual: act ? a : "（行が出力されていない）" });
+    }
+  });
+  return { accuracy: cells === 0 ? 0 : matched / cells, cells, matched, mismatches };
+}
