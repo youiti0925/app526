@@ -110,7 +110,7 @@ interface CliEnvelope {
   total_cost_usd?: number;
   api_error_status?: number | null;
   usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
-  modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }>;
+  modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; costUSD?: number }>;
   subtype?: string;
 }
 
@@ -143,6 +143,14 @@ export function readCliOutput(
 ): ModelResponse {
   const env = parseLooseJson(stdout) as CliEnvelope | null;
   const models = env?.modelUsage ? Object.keys(env.modelUsage) : [];
+  // Claude Code は裏で軽いモデルも呼ぶので、modelUsage には複数のモデルが並ぶ。
+  // 先頭を取ると、上位モデルで動かした呼び出しまで軽いモデルとして記録してしまう（実際にそうなった）。
+  // 指定したモデル名を含むもの → 無ければ費用が最大のもの を「主なモデル」とする。
+  const alias = meta.model.toLowerCase();
+  const main =
+    models.find((m) => m.toLowerCase() === alias) ??
+    models.find((m) => m.toLowerCase().includes(alias)) ??
+    [...models].sort((a, b) => (env!.modelUsage![b].costUSD ?? 0) - (env!.modelUsage![a].costUSD ?? 0))[0];
   const mu = models.reduce(
     (acc, m) => {
       const u = env!.modelUsage![m];
@@ -155,7 +163,7 @@ export function readCliOutput(
   );
   const usage: UsageRecord = {
     provider: "claude",
-    model: models[0] ?? meta.model,
+    model: main ?? meta.model,
     tier: meta.tier,
     purpose: meta.purpose,
     ok: false,
@@ -164,7 +172,7 @@ export function readCliOutput(
     outputTokens: mu.output || env?.usage?.output_tokens || 0,
     cacheTokens: mu.cache || (env?.usage?.cache_creation_input_tokens ?? 0) + (env?.usage?.cache_read_input_tokens ?? 0),
     costUsd: env?.total_cost_usd ?? 0,
-    note: "",
+    note: models.length > 1 ? `補助: ${models.filter((m) => m !== main).join(", ")}` : "",
   };
 
   const resultText = typeof env?.result === "string" ? env.result : "";

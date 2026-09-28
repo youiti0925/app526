@@ -19,7 +19,7 @@ import type { PageFetcher } from "./fetcher";
 import { runRecipe, withSrc, srcOf, type Row, type RowIssue, type RemovedRow } from "./ops";
 import {
   checkOutput, compareToExpected, dedupeIssues, project, summarize,
-  MIN_TEST_ACCURACY, type QualitySummary, type TestComparison,
+  MIN_TEST_ACCURACY, MAX_ERROR_ROW_RATE, type QualitySummary, type TestComparison,
 } from "./checks";
 import { scoreRecipes, decideByRule, buildRoutePrompt, parseRouteResponse, ROUTE_SCHEMA, type RouteDecision } from "./router";
 import { buildAuthorPrompt, buildFixPrompt, AUTHOR_SCHEMA, FIX_SCHEMA, AUTHOR_SAMPLE_ROWS, type AuthorJob, type FixContext } from "./author";
@@ -170,7 +170,7 @@ export async function processJob(job: Job, deps: PipelineDeps): Promise<Pipeline
     // --- ⑥ やり直し ---
     // (a) AIが原因で落ちた行だけ、1段上のモデルでやり直す
     const up = nextTier(recipe.tier);
-    if (!state.quality.pass && up && aiStepsOf(recipe).length > 0 && state.quality.aiErrorRows.length > 0) {
+    if (!state.quality.pass && up && aiStepsOf(recipe).length > 0 && state.quality.aiErrorRate > MAX_ERROR_ROW_RATE) {
       const redo = new Set(state.quality.aiErrorRows);
       deps.progress({ note: `要確認が${Math.round(state.quality.errorRate * 100)}%。${redo.size}行を1段上のモデルでやり直しています` });
       const subset = input.filter((r) => redo.has(srcOf(r)));
@@ -180,7 +180,8 @@ export async function processJob(job: Job, deps: PipelineDeps): Promise<Pipeline
     }
 
     // (b) それでも駄目なら、上位モデルに手順書を直させて全部やり直す
-    for (let fix = 0; !state.quality.pass && fix < MAX_FIXES; fix++) {
+    // 元データの問題（ダミー番号など）だけなら、手順書を直しても消えないので改修しない
+    for (let fix = 0; !state.quality.pass && state.quality.fixable && fix < MAX_FIXES; fix++) {
       deps.progress({ note: `品質基準に届かないため、上位モデルが手順書を改修しています（${fix + 1}回目）` });
       const fixed = await fixRecipe(authorJob, job, recipe, { quality: qualityContext(state) }, deps, now).catch((e) => {
         if (e instanceof CannotAutomate) return null;
@@ -222,8 +223,8 @@ export async function processJob(job: Job, deps: PipelineDeps): Promise<Pipeline
         report,
         qualityPass: state.quality.pass,
         note: state.quality.pass
-          ? `完成。要確認 ${state.quality.errorRows}行 / ${outRows.length}行`
-          : `品質基準に届いていません（要確認 ${Math.round(state.quality.errorRate * 100)}%）。承認前に要確認の行を見てください`,
+          ? `完成。要確認 ${state.quality.errorRows}行 / ${outRows.length}行${state.quality.errorRows > 0 ? "（元データの問題の可能性。承認前に確認）" : ""}`
+          : `品質基準に届いていません（要確認 ${Math.round(state.quality.errorRate * 100)}%${state.systemic ? "・検品AIの指摘あり" : ""}）。承認前に要確認の行を見てください`,
         finishedAt: now(),
       },
     };
@@ -413,7 +414,7 @@ async function recheck(
     const res = await deps.call({
       purpose: "review",
       tier: "standard",
-      prompt: buildReviewPrompt(job, recipe, sample, s.rows.length, issues.length),
+      prompt: buildReviewPrompt(job, recipe, sample, s.rows.length, issues.length, s.removed),
       schema: REVIEW_SCHEMA,
     });
     if (res.ok) {

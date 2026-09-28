@@ -9,8 +9,15 @@ import { normalizeText, phoneKey, urlKey } from "../dataops/normalize";
 import type { Recipe } from "./recipe";
 import { SRC, srcOf, toColumnRule, type Row, type RowIssue } from "./ops";
 
-/** 要確認（error）の行がこの割合を超えたら「不合格」として、上位モデルでのやり直しに回す。 */
+/** AIが原因の要確認（error）の行がこの割合を超えたら「不合格」として、上位モデルでのやり直しに回す。 */
 export const MAX_ERROR_ROW_RATE = 0.2;
+/**
+ * 機械の規則（形式・ダミー番号など）で引っかかった行の許容割合。
+ * 元データそのものの問題（依頼者の表にダミー番号が入っている等）は、手順書を直しても消えないので
+ * 少しなら不合格にしない（人が要確認として見る）。ただし半分を超えるなら手順の誤りを疑う
+ * （例: 違う列から電話番号を抜いている）。
+ */
+export const MAX_RULE_ERROR_ROW_RATE = 0.5;
 /** 手本との一致率がこれ未満なら、その手順書は使わない。 */
 export const MIN_TEST_ACCURACY = 0.8;
 /** 比較試験で「安いモデルでも足りる」とみなす一致率。 */
@@ -46,24 +53,40 @@ export interface QualitySummary {
   rows: number;
   errorRows: number;
   warnRows: number;
+  /** 要確認の行の割合（表示用。原因を問わない）。 */
   errorRate: number;
+  /** AIが原因の要確認の行の割合。 */
+  aiErrorRate: number;
+  /** 機械の規則だけで引っかかった行の割合。 */
+  ruleErrorRate: number;
   aiErrorRows: number[];
   pass: boolean;
+  /** 手順書を直せば良くなる見込みがあるか（元データの問題だけなら、直しても消えない）。 */
+  fixable: boolean;
 }
 
 export function summarize(rows: Row[], issues: RowIssue[], extraFailure = false): QualitySummary {
   const present = new Set(rows.map(srcOf));
-  const errorRows = new Set(issues.filter((i) => i.severity === "error" && present.has(i.src)).map((i) => i.src));
+  const errs = issues.filter((i) => i.severity === "error" && present.has(i.src));
+  const errorRows = new Set(errs.map((i) => i.src));
   const warnRows = new Set(issues.filter((i) => i.severity === "warn" && present.has(i.src) && !errorRows.has(i.src)).map((i) => i.src));
-  const aiErrorRows = [...new Set(issues.filter((i) => i.severity === "error" && i.fromAi && present.has(i.src)).map((i) => i.src))];
-  const errorRate = rows.length === 0 ? 0 : errorRows.size / rows.length;
+  const aiErrorRows = [...new Set(errs.filter((i) => i.fromAi).map((i) => i.src))];
+  const ruleRows = new Set(errs.filter((i) => !i.fromAi).map((i) => i.src));
+  const n = rows.length;
+  const rate = (k: number) => (n === 0 ? 0 : k / n);
+  const aiErrorRate = rate(aiErrorRows.length);
+  const ruleErrorRate = rate(ruleRows.size);
+  const fixable = extraFailure || aiErrorRate > MAX_ERROR_ROW_RATE || ruleErrorRate > MAX_RULE_ERROR_ROW_RATE;
   return {
-    rows: rows.length,
+    rows: n,
     errorRows: errorRows.size,
     warnRows: warnRows.size,
-    errorRate,
+    errorRate: rate(errorRows.size),
+    aiErrorRate,
+    ruleErrorRate,
     aiErrorRows,
-    pass: !extraFailure && rows.length > 0 && errorRate <= MAX_ERROR_ROW_RATE,
+    pass: n > 0 && !fixable,
+    fixable,
   };
 }
 

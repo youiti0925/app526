@@ -177,6 +177,57 @@ test("上位モデルの判定は、新しい案件が増えても書き戻せ�
   assert.equal(agentDb.readLeadsByIds([target.id]).get(target.id)?.title, "古い案件");
 });
 
+// --- 仕事ライン: DBとのつなぎ目（AIは呼ばない） ---
+
+test("仕事ライン: 依頼は1件ずつ取り合わずに取れ、手順書は版で残り、承認した行が手本になる", () => {
+  const jobsDb = require_(path.join(ROOT, "lib/hustle/jobs/db.js"));
+  const { validateRecipe } = require_(path.join(ROOT, "lib/hustle/jobs/recipe.js"));
+  const { decideJob } = require_(path.join(ROOT, "lib/hustle/jobs/worker.js"));
+
+  const job = jobsDb.createJob({
+    title: "e2e 問い合わせ", instructions: "分類してください", inputCsv: "会社名,本文\nA社,見積\nB社,苦情\n",
+    lists: {}, dataClass: "confidential", deadline: "", priceJpy: 0,
+  });
+  const claimed = jobsDb.claimNextJob();
+  assert.equal(claimed.id, job.id);
+  assert.equal(claimed.status, "working");
+  assert.equal(jobsDb.claimNextJob(), null, "処理中の依頼をもう一度取らない");
+
+  const draft = validateRecipe({
+    name: "e2e", summary: "", match: { keywords: ["分類"], description: "" }, input: { columns: ["会社名", "本文"] },
+    steps: [{ op: "set", into: "分類", value: "その他" }], output: { columns: ["会社名", "分類"], rules: {} }, tier: "light",
+  }).recipe;
+  const v1 = jobsDb.saveRecipe(draft);
+  const v2 = jobsDb.saveRecipe({ ...v1, summary: "改修" });
+  assert.equal(v1.version, 1);
+  assert.equal(v2.version, 2);
+  assert.equal(jobsDb.listRecipes().find((r) => r.id === v1.id).summary, "改修", "一覧は最新版");
+  assert.equal(jobsDb.getRecipe(v1.id, 1).summary, "", "前の版も残る");
+
+  jobsDb.updateJob(job.id, {
+    status: "awaiting_approval", recipeId: v1.id, recipeVersion: 2,
+    outputCsv: "会社名,分類\nA社,見積\nB社,苦情\n", outputSrc: [0, 1],
+    issues: [{ src: 1, column: "分類", reason: "要確認", severity: "error", fromAi: true }],
+  });
+  const decided = decideJob(job.id, "approved", "");
+  assert.equal(decided.status, "approved");
+  const recipe = jobsDb.getRecipe(v1.id);
+  assert.equal(recipe.stats.approved, 1);
+  assert.equal(recipe.testSet.source, "human");
+  assert.equal(recipe.testSet.input.length, 1, "要確認の付いた行は手本にしない");
+  assert.equal(recipe.testSet.expected[0]["分類"], "見積");
+  assert.equal(recipe.testSet.dataClass, "confidential");
+
+  jobsDb.recordUsage({
+    provider: "claude", model: "claude-haiku-4-5", tier: "light", purpose: "run", ok: true, durationMs: 60_000,
+    inputTokens: 100, outputTokens: 50, cacheTokens: 0, costUsd: 0.01, note: "", jobId: job.id, recipeId: v1.id,
+  });
+  const week = jobsDb.usageSince(new Date(Date.now() - 86_400_000).toISOString());
+  assert.equal(week[0].calls, 1);
+  assert.equal(week[0].minutes, 1);
+  assert.equal(jobsDb.usageForJob(job.id)[0].purpose, "run");
+});
+
 test.after(() => {
   fs.rmSync(dataDir, { recursive: true, force: true });
 });

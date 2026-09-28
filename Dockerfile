@@ -13,6 +13,9 @@ ENV NODE_ENV=production
 # データは必ず永続ディスクに置く（例: マウントした /data）。
 # 未設定だと作業ディレクトリ直下 data/ に書くので、コンテナ再作成で消える。
 ENV APP_DATA_DIR=/data
+# 仕事ラインが Claude をサブスクで呼ぶための CLI。
+# 認証は環境変数 CLAUDE_CODE_OAUTH_TOKEN（手元で `claude setup-token` を実行して得た値）で渡す。
+RUN npm install -g @anthropic-ai/claude-code
 COPY --from=builder /app/package.json /app/package-lock.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next

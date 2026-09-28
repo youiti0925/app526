@@ -33,7 +33,8 @@ export function pickReviewSample(rows: Row[], issues: RowIssue[], n = REVIEW_SAM
   const dirty = rows.filter((r) => flagged.has(srcOf(r)));
   const step = Math.max(1, Math.floor(clean.length / Math.max(1, n - 2)));
   const picked = clean.filter((_, i) => i % step === 0).slice(0, n - Math.min(2, dirty.length));
-  return [...picked, ...dirty.slice(0, n - picked.length)];
+  // 行番号の順に並べる。要確認の行を末尾に回すと、検品AIが「並びがおかしい」と誤って指摘する（実際にそうなった）
+  return [...picked, ...dirty.slice(0, n - picked.length)].sort((a, b) => srcOf(a) - srcOf(b));
 }
 
 export function buildReviewPrompt(
@@ -41,7 +42,8 @@ export function buildReviewPrompt(
   recipe: Pick<Recipe, "name" | "summary" | "output">,
   sample: Row[],
   total: number,
-  issueCount: number
+  issueCount: number,
+  removed: { src: number; reason: string }[] = []
 ): string {
   const cols = recipe.output.columns;
   const hidden = [...new Set(sample.flatMap((r) => Object.keys(r)))].filter((k) => k.startsWith("_") && k !== SRC).slice(0, 2);
@@ -51,12 +53,18 @@ export function buildReviewPrompt(
     "- 明らかにおかしい値（別の対象の情報、ダミー、不自然な重複、原文と食い違う値）",
     "行ごとの問題は problems に（src は行番号）、手順そのものの誤りで全体に及ぶ問題は systemic に書いてください。",
     "問題がなければ problems は空配列、systemic は空文字。細かい好みの問題は書かないでください。",
+    "src は入力の何行目か（0始まり）です。重複・除外で落とした行があるので番号は飛びます。番号の飛びや並びは問題ではありません。",
+    "抜粋から確実に言える誤りだけを書いてください。「抜粋だけでは確認できない」「念のため確認が必要」といった推測は書かないでください。",
     "",
     "## 依頼",
     job.instructions.slice(0, 4000),
     "",
     `## 手順書: ${recipe.name}`,
     recipe.summary.slice(0, 500),
+    "",
+    removed.length > 0
+      ? `## 落とした行（${removed.length}行）\n${removed.slice(0, 20).map((r) => `- src=${r.src}: ${r.reason}`).join("\n")}`
+      : "## 落とした行: なし",
     "",
     `## 作業結果（全${total}行から${sample.length}行を抜粋。機械の検品で既に${issueCount}件の要確認あり）`,
     ...sample.map((r) =>
