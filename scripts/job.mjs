@@ -43,6 +43,17 @@ if ((process.env.HTTPS_PROXY || process.env.https_proxy) && process.env.NODE_USE
   process.exit(r.status ?? 1);
 }
 
+// 開発用の会話で直した手順・修正を、専用の会話にも届ける。作業の前に GitHub の最新を取り込む
+// （取り込めなくても作業は続ける。JOB_AUTO_PULL=0 で止められる）
+if (process.env.JOB_AUTO_PULL !== "0" && fs.existsSync(path.join(ROOT, ".git"))) {
+  const head = () => spawnSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).stdout.trim();
+  const before = head();
+  spawnSync("git", ["pull", "--ff-only", "--quiet"], { cwd: ROOT, encoding: "utf8", timeout: 30_000 });
+  if (before && head() !== before) {
+    console.log("最新の手順・修正を取り込みました（docs/JOB-SESSION.md が変わっていれば読み直してください）");
+  }
+}
+
 process.env.APP_DATA_DIR ||= path.join(ROOT, "data");
 process.env.JOB_LIBRARY_DIR ||= path.join(ROOT, "library");
 process.env.HUSTLE_AI_PROVIDER ||= "claude";
