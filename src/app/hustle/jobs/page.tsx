@@ -29,6 +29,7 @@ const ORIGIN: Record<string, string> = {
 
 const PURPOSE: Record<string, string> = {
   route: "振り分け", author: "手順書づくり", fix: "手順書の改修", run: "作業", review: "検品", compare: "モデル比較",
+  judge: "案件判定", proposal: "提案文",
 };
 
 interface JobSummary {

@@ -54,7 +54,7 @@ export function readCompetition(text: string): Competition {
   const t = text.slice(0, 8000);
 
   const applicants =
-    readLabeled(t, /応募人数|応募者数|提案数|提案人数|エントリー数|応募状況[^0-9]{0,8}応募人数/) ??
+    readLabeled(t, /応募人数|応募者数|応募者|提案数|提案人数|エントリー数|応募状況[^0-9]{0,8}応募人数/) ??
     readLabeled(t, /(?:現在|すでに)[^。\n]{0,6}(?:応募|提案)/);
   const views = readLabeled(t, /閲覧数|PV数|閲覧回数/);
   const slots = readLabeled(t, /募集人数|募集枠|採用予定人数/);

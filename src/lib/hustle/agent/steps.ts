@@ -302,6 +302,7 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
         const ai = await generateJson<AiEstimate>(TRIAGE_PROMPT(lead.rawText, background), {
           temperature: 0.2,
           maxOutputTokens: 1024,
+          purpose: "judge",
         });
         aiUsed++;
         if (ai?.estimatedHours && Number.isFinite(ai.estimatedHours.low) && Number.isFinite(ai.estimatedHours.high)) {
@@ -756,7 +757,7 @@ export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
       try {
         const result = await generateJson<ProposalOut>(
           buildProposalPrompt(lead, background, learned),
-          { temperature: 0.8, maxOutputTokens: 4096 }
+          { temperature: 0.8, maxOutputTokens: 4096, purpose: "proposal" }
         );
         const best = result?.variants?.find((v) => v?.body?.trim());
         if (best) {

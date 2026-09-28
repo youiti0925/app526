@@ -60,6 +60,7 @@
     "src/lib/hustle/jobs/review.ts",
     "src/lib/hustle/jobs/pipeline.ts",
     "src/lib/hustle/jobs/compare.ts",
-    "src/lib/hustle/jobs/library.ts"
+    "src/lib/hustle/jobs/library.ts",
+    "src/lib/hustle/jobs/judge-core.ts"
   ]
 }

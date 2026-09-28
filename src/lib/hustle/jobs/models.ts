@@ -22,7 +22,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Tier } from "./recipe";
 
-export type Purpose = "route" | "author" | "fix" | "run" | "review" | "compare";
+export type Purpose = "route" | "author" | "fix" | "run" | "review" | "compare" | "judge" | "proposal";
 export const PURPOSE_LABELS: Record<Purpose, string> = {
   route: "振り分け",
   author: "手順書づくり",
@@ -30,6 +30,8 @@ export const PURPOSE_LABELS: Record<Purpose, string> = {
   run: "作業",
   review: "検品",
   compare: "モデル比較",
+  judge: "案件判定",
+  proposal: "提案文",
 };
 
 export interface ModelChoice {
@@ -41,8 +43,12 @@ export interface ModelRequest {
   purpose: Purpose;
   tier: Tier;
   prompt: string;
-  /** 返してほしいJSONの形（JSON Schema）。 */
-  schema: Record<string, unknown>;
+  /**
+   * 返してほしいJSONの形（JSON Schema）。null なら形を強制せず、答えの文章からJSONを取り出す
+   * （プロンプトに形を書いてある従来の生成用。{"type":"object"} だけを強制すると、
+   *  プロンプトの形と違う答えが返ることがあった）。
+   */
+  schema: Record<string, unknown> | null;
   /** Web検索・取得を許可する（ai_lookup と手順書づくりだけ）。 */
   web?: boolean;
   /** 段の既定モデルの代わりに使うモデル（比較試験・比較で選ばれたモデル）。 */
@@ -215,7 +221,7 @@ export function buildCliArgs(req: ModelRequest, model: string): string[] {
     "--no-session-persistence",
     "--model", model,
     "--system-prompt", SYSTEM_PROMPT,
-    "--json-schema", JSON.stringify(req.schema),
+    ...(req.schema ? ["--json-schema", JSON.stringify(req.schema)] : []),
     "--permission-mode", "dontAsk",
     "--tools", web ? "WebSearch,WebFetch" : "",
     "--max-turns", String(web ? (req.purpose === "author" || req.purpose === "fix" ? 40 : 15) : 3),

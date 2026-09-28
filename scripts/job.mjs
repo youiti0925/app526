@@ -15,8 +15,15 @@
  *   node scripts/job.mjs status
  *   node scripts/job.mjs usage
  *
+ *   node scripts/job.mjs judge --text 募集文.txt [--title "件名"] [--url URL] [--budget 20000] [--push]
+ *   node scripts/job.mjs lead [id|last] applied|won|lost|archived   # 応募した・受注した・落ちた・やめた
+ *   node scripts/job.mjs profile --file 経歴.txt [--push]            # 提案文に使う経歴を登録
+ *
  * --push: 手順書と使用量の記録（library/ だけ）を GitHub に保存する。
  *         依頼者のデータ（入力・納品物）は outbox/ と data/ に置き、どちらもコミットしない。
+ *         リポジトリが公開設定なら保存しない（手順書や経歴を世界に公開しないため）。
+ *
+ * AIはサブスクの Claude を使う（HUSTLE_AI_PROVIDER=claude）。
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -25,8 +32,20 @@ import Module from "node:module";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const DIST = path.join(ROOT, "dist-e2e");
+
+// クラウドの作業場所では外への通信がプロキシ経由。Node の fetch は既定でプロキシを使わないので、
+// 使うように設定して自分を起動し直す（そうしないと一部のサイトとGitHubのAPIに届かない）。
+if ((process.env.HTTPS_PROXY || process.env.https_proxy) && process.env.NODE_USE_ENV_PROXY !== "1") {
+  const r = spawnSync(process.execPath, ["--no-warnings", ...process.argv.slice(1)], {
+    stdio: "inherit",
+    env: { ...process.env, NODE_USE_ENV_PROXY: "1" },
+  });
+  process.exit(r.status ?? 1);
+}
+
 process.env.APP_DATA_DIR ||= path.join(ROOT, "data");
 process.env.JOB_LIBRARY_DIR ||= path.join(ROOT, "library");
+process.env.HUSTLE_AI_PROVIDER ||= "claude";
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -84,6 +103,21 @@ const require_ = Module.createRequire(import.meta.url);
 const jobsDb = require_(path.join(DIST, "lib/hustle/jobs/db.js"));
 const worker = require_(path.join(DIST, "lib/hustle/jobs/worker.js"));
 const { JOB_STATUS_LABELS } = require_(path.join(DIST, "lib/hustle/jobs/pipeline.js"));
+const judge = require_(path.join(DIST, "lib/hustle/jobs/judge.js"));
+const agentDb = require_(path.join(DIST, "lib/hustle/agent/db.js"));
+const hustleDb = require_(path.join(DIST, "lib/hustle/db.js"));
+const repo = require_(path.join(DIST, "lib/hustle/repo.js"));
+const { emptyProfile } = require_(path.join(DIST, "lib/hustle/types.js"));
+
+// 経歴（提案文に使う）は library/profile.json に控えてある。作業場所が作り直されたら読み戻す
+const PROFILE_FILE = path.join(process.env.JOB_LIBRARY_DIR, "profile.json");
+if (!hustleDb.readProfile() && fs.existsSync(PROFILE_FILE)) {
+  try {
+    repo.saveProfile({ ...emptyProfile, ...JSON.parse(fs.readFileSync(PROFILE_FILE, "utf8")) });
+  } catch {
+    /* 壊れていたら読まない。提案文は経歴の箇所を【要確認】で残す */
+  }
+}
 
 // --- 表示 ---------------------------------------------------------------------
 
@@ -135,6 +169,53 @@ function report(job) {
   console.log(lines.join("\n"));
 }
 
+const VERDICT = { proceed: "応募してよい", verify_first: "確認してから応募", reject: "見送り", unknown: "判定できず" };
+const KIND = { proposal: "提案文", outreach: "単価交渉の文面", question: "応募前に確認すること", warning: "危険の通知" };
+
+function reportJudge(r, started) {
+  const t = r.lead.triage ?? {};
+  const lines = [`【案件判定】${r.lead.title}（id: ${r.lead.id.slice(0, 8)}）`];
+  lines.push(`結論: ${VERDICT[r.lead.verdict] ?? r.lead.verdict}${r.escalated ? "（ルールで決めきれず、Claudeが判定）" : ""}`);
+  if (t.reason) lines.push(`理由: ${t.reason}`);
+  if (t.hourly) lines.push(`手取り時給: ${t.hourly.low.toLocaleString()}〜${t.hourly.high.toLocaleString()}円（手数料を引いた後）`);
+  else lines.push("手取り時給: 判定できていません（報酬か作業量が読めない）");
+  if (t.yourTime?.highHours) lines.push(`あなたが手を動かす時間: ${t.yourTime.lowHours}〜${t.yourTime.highHours}時間`);
+  if (t.estimate?.highHours) lines.push(`仕事全体の作業量: ${t.estimate.lowHours}〜${t.estimate.highHours}時間`);
+  if (t.competition?.note) lines.push(`競争: ${t.competition.note}`);
+  if (t.risks?.length) lines.push(`送る前に詰めること:\n${t.risks.map((x) => `・${x}`).join("\n")}`);
+  if (r.note) lines.push(r.note);
+  lines.push(
+    r.automation
+      ? `仕事ライン: 手順書「${r.automation.name}」が使えそうです（一致: ${r.automation.hits.join("・")}）。受注したら同じ型として自動で処理できる見込み`
+      : "仕事ライン: まだこの型の手順書はありません（受注したら、1件目は上位モデルが手順書を作ります）"
+  );
+
+  const dir = path.join(ROOT, "outbox", `judge-${started.slice(0, 10)}-${r.lead.id.slice(0, 8)}`);
+  for (const item of r.items) {
+    const label = KIND[item.kind] ?? item.kind;
+    const body = item.kind === "proposal" ? judge.proposalBody(item) : item.body.trim();
+    lines.push("", `--- ${label} ---`, body);
+    if (item.kind === "proposal" || item.kind === "outreach") {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${label}.txt`), `${body}\n`);
+    }
+  }
+  if (!r.items.some((i) => i.kind === "proposal") && r.lead.verdict !== "reject") {
+    lines.push("", "（提案文は出ていません。判定の理由を見て、確認してから進めてください）");
+  }
+  if (!hustleDb.readProfile()?.background) {
+    lines.push("", "※ 経歴が未登録のため、提案文の経歴の箇所は【要確認】のままです（profile で登録できます）");
+  }
+  const usage = jobsDb.usageSince(started);
+  if (usage.length) {
+    const cost = usage.reduce((a, u) => a + u.costUsd, 0);
+    lines.push("", `使ったAI: ${usage.map((u) => `${shortModel(u.model)} ${u.calls}回 ${u.minutes}分`).join(" / ")}（API換算 $${cost.toFixed(3)}）`);
+  }
+  if (fs.existsSync(dir)) lines.push(`保存先: ${path.relative(ROOT, dir)}`);
+  lines.push("次: 送ったら lead last applied、受注したら lead last won。承認しても送信はされません（応募は各サイトで）");
+  console.log(lines.join("\n"));
+}
+
 function pickJob(ref, wanted) {
   if (ref && ref !== "last") {
     const found = jobsDb.readJobs(200).find((j) => j.id === ref || j.id.startsWith(ref));
@@ -153,9 +234,48 @@ function git(args) {
   return execFileSync("git", args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
+/**
+ * リポジトリが公開設定か。GitHubのAPIを認証なしで引き、見えれば公開・404なら非公開。
+ * 分からないときは null（保存しない側に倒す）。
+ */
+async function repoIsPublic() {
+  let slug = "";
+  try {
+    const m = git(["remote", "get-url", "origin"]).match(/([^/:]+)\/([^/]+?)(?:\.git)?$/);
+    if (m) slug = `${m[1]}/${m[2]}`;
+  } catch {
+    return null;
+  }
+  if (!slug) return null;
+  try {
+    const res = await fetch(`https://api.github.com/repos/${slug}`, {
+      headers: { "User-Agent": "app526-job", Accept: "application/vnd.github+json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (res.status === 404) return false;
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body.private === false;
+  } catch {
+    return null;
+  }
+}
+
 async function pushLibrary() {
   const lib = path.relative(ROOT, process.env.JOB_LIBRARY_DIR);
   if (!fs.existsSync(path.join(ROOT, lib))) return;
+  if (process.env.JOB_LIBRARY_ALLOW_PUBLIC !== "1") {
+    const pub = await repoIsPublic();
+    if (pub !== false) {
+      console.log(
+        pub
+          ? "GitHub: このリポジトリは公開設定なので、手順書と経歴は保存しませんでした（誰でも見られるため）。" +
+              "GitHubのリポジトリ設定で非公開にすると、次から保存されます。今の作業場所の中には残っています。"
+          : "GitHub: リポジトリが非公開か確認できなかったので、保存しませんでした（今の作業場所の中には残っています）。"
+      );
+      return;
+    }
+  }
   git(["add", "--", lib]);
   const staged = spawnSync("git", ["diff", "--cached", "--quiet", "--", lib], { cwd: ROOT });
   if (staged.status === 0) {
@@ -245,6 +365,39 @@ async function main() {
         console.log(`${shortModel(u.model).padEnd(16)} ${String(u.calls).padStart(4)}回 ${String(u.minutes).padStart(6)}分  入力${(u.inputTokens + u.cacheTokens).toLocaleString()} 出力${u.outputTokens.toLocaleString()}  API換算$${u.costUsd.toFixed(3)}`);
       }
       console.log("（サブスクの週の上限は数値が公開されていないため、残り何%かは出せません）");
+      break;
+    }
+    case "judge": {
+      const textFile = opt("text");
+      if (!textFile) die("--text（募集文のファイル）が要ります");
+      const text = fs.readFileSync(path.resolve(textFile), "utf8").replace(/^\uFEFF/, "");
+      const started = new Date().toISOString();
+      console.log("案件を判定しています…");
+      const budget = Number(opt("budget"));
+      const r = await judge.judgeLead({ text, title: opt("title"), url: opt("url"), budgetJpy: Number.isFinite(budget) && budget > 0 ? budget : null });
+      reportJudge(r, started);
+      break;
+    }
+    case "lead": {
+      const target = argv.slice(1).find((a) => ["applied", "won", "lost", "archived"].includes(a));
+      if (!target) die("applied（応募した）/ won（受注した）/ lost（落ちた）/ archived（やめた）のどれかを指定してください");
+      const ref = positional && positional !== target ? positional : "last";
+      const leads = agentDb.readLeads(undefined, 200);
+      const lead = ref === "last" ? leads.find((l) => l.source === "manual") : leads.find((l) => l.id.startsWith(ref));
+      if (!lead) die("案件が見つかりません");
+      agentDb.updateLead(lead.id, { status: target });
+      const label = { applied: "応募済み", won: "受注", lost: "不採用", archived: "見送り" }[target];
+      console.log(`「${lead.title}」を ${label} にしました`);
+      break;
+    }
+    case "profile": {
+      const file = opt("file");
+      if (!file) die("--file（経歴を書いたファイル）が要ります");
+      const background = fs.readFileSync(path.resolve(file), "utf8").trim().slice(0, 5000);
+      const saved = repo.saveProfile({ ...emptyProfile, ...(hustleDb.readProfile() ?? {}), background });
+      fs.mkdirSync(path.dirname(PROFILE_FILE), { recursive: true });
+      fs.writeFileSync(PROFILE_FILE, `${JSON.stringify({ background: saved.background, weeklyHours: saved.weeklyHours }, null, 2)}\n`);
+      console.log(`経歴を登録しました（${saved.background.length}文字）。次の提案文から使います。`);
       break;
     }
     default:

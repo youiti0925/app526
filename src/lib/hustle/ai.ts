@@ -33,7 +33,17 @@ export function getApiKey(): string {
   return (row?.value ?? "").trim();
 }
 
+/**
+ * どのAIで生成するか。HUSTLE_AI_PROVIDER=claude のときは、サブスクの Claude（Claude Code CLI）を使う。
+ * 既定は従来どおり Gemini（無料枠）。仕事ラインのコマンド（scripts/job.mjs）は claude に切り替えて動く。
+ */
+export function aiProvider(): "claude" | "gemini" {
+  return process.env.HUSTLE_AI_PROVIDER?.trim() === "claude" ? "claude" : "gemini";
+}
+
 export function hasApiKey(): boolean {
+  // Claude はCLIのログインで動く（キー不要）。ログイン切れは呼び出し時のエラーで分かる
+  if (aiProvider() === "claude") return true;
   return getApiKey().length > 0;
 }
 
@@ -60,9 +70,34 @@ export interface GenerateOptions {
   json?: boolean;
   temperature?: number;
   maxOutputTokens?: number;
+  /** Claude のときに使う段（既定は中くらい）。Gemini では無視される。 */
+  tier?: "light" | "standard" | "heavy";
+  /** Claude のときの使用量の記録用。 */
+  purpose?: "judge" | "proposal" | "run";
+}
+
+/** サブスクの Claude で生成する。使用量は仕事ラインと同じ台帳に記録する。 */
+async function generateWithClaude(prompt: string, opts: GenerateOptions): Promise<string> {
+  const { callClaudeCli } = await import("./jobs/models");
+  const { recordUsage } = await import("./jobs/db");
+  // JSONの形はプロンプトに書いてあるので、形は強制せず答えの文章から取り出す（Gemini と同じ扱い）
+  const schema = opts.json ? null : { type: "object", properties: { text: { type: "string" } }, required: ["text"] };
+  const res = await callClaudeCli({
+    purpose: opts.purpose ?? "judge",
+    tier: opts.tier ?? "standard",
+    prompt: opts.json ? `${prompt}\n\nJSONだけを返してください。前後に説明を書かないでください。` : `${prompt}\n\n（答えは text に入れてください）`,
+    schema,
+  });
+  recordUsage({ ...res.usage, jobId: null, recipeId: null });
+  if (res.quota) throw new QuotaError("Claude の使用上限に達しました。上限が戻るまで待ってください");
+  if (!res.ok) throw new Error(res.error ?? "Claude の呼び出しに失敗しました");
+  if (opts.json) return JSON.stringify(res.data);
+  const text = (res.data as { text?: unknown })?.text;
+  return typeof text === "string" ? text : "";
 }
 
 export async function generate(prompt: string, opts: GenerateOptions = {}): Promise<string> {
+  if (aiProvider() === "claude") return generateWithClaude(prompt, opts);
   const apiKey = getApiKey();
   if (!apiKey) throw new NoApiKeyError();
 

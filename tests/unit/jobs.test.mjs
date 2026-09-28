@@ -308,6 +308,8 @@ test("CLIの呼び方: --bare を使わず（サブスクが読めない）、�
   assert.equal(args[args.indexOf("--tools") + 1], "");
   assert.equal(args[args.indexOf("--permission-mode") + 1], "dontAsk");
   assert.ok(!args.includes("bypassPermissions"));
+  const free = buildCliArgs({ purpose: "proposal", tier: "standard", prompt: "x", schema: null }, "sonnet");
+  assert.ok(!free.includes("--json-schema"), "形を強制しない呼び出しでは --json-schema を付けない");
   const web = buildCliArgs({ purpose: "run", tier: "light", prompt: "x", schema: {}, web: true }, "haiku");
   assert.equal(web[web.indexOf("--tools") + 1], "WebSearch,WebFetch");
 });
@@ -577,4 +579,21 @@ test("GitHubに残す手順書から、依頼者の資料で作った手本を�
     delete process.env.JOB_LIBRARY_DIR;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- 案件判定（貼り付けた募集文の読み取り） ---------------------------------------
+
+test("貼り付けた募集文から、報酬の総額と件名を読む（単価は総額として読まない）", async () => {
+  const { readBudgetFromText, titleFromText } = await import("../../dist-test/jobs/judge-core.js");
+  assert.equal(readBudgetFromText("【データ入力】ホテル100件\n予算: 20,000円（固定報酬）"), 20000);
+  assert.equal(readBudgetFromText("報酬 2万円 / 納期1週間"), 20000);
+  assert.equal(readBudgetFromText("予算：10,000円〜20,000円"), 10000, "幅があれば低いほう");
+  assert.equal(readBudgetFromText("報酬は1件100円です。300件"), null, "単価は総額ではない");
+  assert.equal(readBudgetFromText("金額は相談して決めます"), null);
+  assert.equal(titleFromText("\n  【データ入力】ホテル照合  \n予算: 2万円"), "【データ入力】ホテル照合");
+});
+
+test("応募人数: 「応募者: 3人」も読む", async () => {
+  const { readCompetition } = await import("../../dist-test/agent/competition.js");
+  assert.equal(readCompetition("予算 2万円\n応募者: 3人\n締切 10/10").applicants, 3);
 });
