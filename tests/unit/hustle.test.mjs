@@ -897,3 +897,28 @@ test("打ち合わせでの画面共有を遠隔操作と誤判定しない", ()
     assert.ok(scoreScam(t).signals.some((s) => s.id === "remote_access_tool"), t);
   }
 });
+
+// 実際にクラウドワークスで見た「モニター」案件（2026-10）。最初はスコア0で見逃していた。
+test("紹介リンクから暗号資産の口座を開設・本人確認させる「モニター」案件は危険と判定する", () => {
+  const r = scoreScam(`モニター、アンケートのご参加ありがとうございます！
+こちらでは仮想通貨 コインチェックというサイトを使用します。
+①下記のリンクから会員登録をお願いします。
+リンクを開いてそのまますぐに会員登録を行っていただければ大丈夫です。
+https://campaign.coincheck.com/invitation?code=XXXX
+②本人確認をする
+③アンケートに答えていただきます！
+虚偽がたまにあるため本人確認完了メールも添付お願い致します。`);
+  assert.equal(r.verdict, "danger");
+  const ids = r.signals.map((s) => s.id);
+  assert.ok(ids.includes("kyc_for_stranger"));
+  assert.ok(ids.includes("referral_signup"));
+  assert.ok(ids.includes("signup_proof_screenshot"));
+});
+
+test("暗号資産や口座開設について「書く」仕事や、応募フォームの案内は誤検知しない", () => {
+  const writing = scoreScam(`【記事作成】暗号資産取引所の口座開設手順を解説する記事
+本人確認の流れやコインチェックの特徴も解説してください。3,000文字、1記事5,000円。`);
+  assert.ok(!writing.signals.some((s) => ["kyc_for_stranger", "referral_signup"].includes(s.id)), JSON.stringify(writing.signals));
+  const form = scoreScam("ご応募は下記のフォームからお願いします。https://forms.gle/abc");
+  assert.ok(!form.signals.some((s) => s.id === "referral_signup"));
+});
