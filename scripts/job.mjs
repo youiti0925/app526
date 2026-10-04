@@ -15,6 +15,7 @@
  *   node scripts/job.mjs status
  *   node scripts/job.mjs usage
  *
+ *   node scripts/job.mjs scan [--push]                               # 公開されている募集を自動で取りに行き、判定と提案文まで
  *   node scripts/job.mjs judge --text 募集文.txt [--title "件名"] [--url URL] [--budget 20000] [--push]
  *   node scripts/job.mjs lead [id|last] applied|won|lost|archived   # 応募した・受注した・落ちた・やめた
  *   node scripts/job.mjs profile --file 経歴.txt [--push]            # 提案文に使う経歴を登録
@@ -115,6 +116,7 @@ const jobsDb = require_(path.join(DIST, "lib/hustle/jobs/db.js"));
 const worker = require_(path.join(DIST, "lib/hustle/jobs/worker.js"));
 const { JOB_STATUS_LABELS } = require_(path.join(DIST, "lib/hustle/jobs/pipeline.js"));
 const judge = require_(path.join(DIST, "lib/hustle/jobs/judge.js"));
+const scan = require_(path.join(DIST, "lib/hustle/jobs/scan.js"));
 const xlsx = require_(path.join(DIST, "lib/hustle/dataops/xlsx.js"));
 const { toCsvText } = require_(path.join(DIST, "lib/hustle/dataops/table.js"));
 
@@ -226,6 +228,38 @@ function report(job) {
   }
   if (job.status === "awaiting_approval") lines.push("次: 承認なら approve、直すなら redo --note \"直す点\"、出さないなら reject");
   if (job.status === "waiting_quota") lines.push(`次: ${job.retryAt ? new Date(job.retryAt).toLocaleString("ja-JP") : "しばらく"} 以降に resume`);
+  console.log(lines.join("\n"));
+}
+
+function reportScan(r) {
+  const lines = [`【案件の自動収集】${r.summary}`, `取りに行った先: ${r.sources.join("・")}`];
+  const dir = path.join(ROOT, "outbox", `scan-${r.started.slice(0, 10)}-${r.started.slice(11, 16).replace(":", "")}`);
+  const top = r.drafts.filter((d) => d.lead.verdict === "proceed").concat(r.drafts.filter((d) => d.lead.verdict !== "proceed")).slice(0, 8);
+  top.forEach(({ lead, items }, i) => {
+    const t = lead.triage ?? {};
+    const hourly = t.hourly ? `手取り時給 ${t.hourly.low.toLocaleString()}〜${t.hourly.high.toLocaleString()}円` : "時給は判定できず";
+    const price = lead.budgetJpy ? `${lead.budgetJpy.toLocaleString()}円` : "報酬不明";
+    lines.push("", `${i + 1}. ${VERDICT[lead.verdict] ?? lead.verdict}｜${lead.title.slice(0, 50)}`, `   ${price}／${hourly}／あなたの時間 ${t.yourTime?.lowHours ?? "?"}〜${t.yourTime?.highHours ?? "?"}時間`, `   ${lead.url}`);
+    if (t.reason) lines.push(`   理由: ${String(t.reason).slice(0, 120)}`);
+    const proposal = items.find((x) => x.kind === "proposal");
+    if (proposal) {
+      fs.mkdirSync(dir, { recursive: true });
+      const file = `${String(i + 1).padStart(2, "0")}-${lead.title.replace(/[\\/:*?"<>|\r\n\s]+/g, "_").slice(0, 30)}.txt`;
+      fs.writeFileSync(path.join(dir, file), `${lead.url}\n\n${judge.proposalBody(proposal)}\n`);
+    }
+  });
+  if (top.length === 0) lines.push("", "今回は応募候補がありませんでした。");
+  if (r.escalationNote) lines.push("", r.escalationNote);
+  if (r.counts.unknown > 0) lines.push(`判定保留 ${r.counts.unknown}件（報酬や作業量が読めない募集。必要なら本文を貼って judge）`);
+  const usage = jobsDb.usageSince(r.started);
+  if (usage.length) {
+    const cost = usage.reduce((a, u) => a + u.costUsd, 0);
+    lines.push("", `使ったAI: ${usage.map((u) => `${shortModel(u.model)} ${u.calls}回 ${u.minutes}分`).join(" / ")}（API換算 $${cost.toFixed(3)}）`);
+  } else {
+    lines.push("", "使ったAI: なし（機械の判定だけで済んだ）");
+  }
+  if (fs.existsSync(dir)) lines.push(`提案文の保存先: ${path.relative(ROOT, dir)}`);
+  lines.push("応募は各サイトで行ってください（アプリは応募しません）。気になる案件は本文を貼って judge すると詳しく見られます。");
   console.log(lines.join("\n"));
 }
 
@@ -438,6 +472,12 @@ async function main() {
       const budget = Number(opt("budget"));
       const r = await judge.judgeLead({ text, title: opt("title"), url: opt("url"), budgetJpy: Number.isFinite(budget) && budget > 0 ? budget : null });
       reportJudge(r, started);
+      break;
+    }
+    case "scan": {
+      console.log("公開されている募集を取りに行っています（ココナラ公開依頼・ままワークス。1回あたり少数だけ、間隔を空けて）…");
+      const r = await scan.scanLeads();
+      reportScan(r);
       break;
     }
     case "lead": {

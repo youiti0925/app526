@@ -67,6 +67,43 @@ export interface JudgeResult {
   note: string;
 }
 
+export interface EscalationOutcome {
+  /** Claude に判定を頼んだ件数。 */
+  requested: number;
+  applied: number;
+  note: string;
+}
+
+/**
+ * ルールで判定しきれなかった案件（報酬や作業量が読めない等）を、まとめて Claude に判定させる。
+ * 答えは applyVerdicts が金額と時間から検算してから反映する。leadIds を渡すと、その案件だけを対象にする。
+ * 使用上限に当たったら QuotaPauseError を投げる（黙って判定保留にしない）。
+ */
+export async function resolveEscalations(leadIds?: string[], limit = 5): Promise<EscalationOutcome> {
+  const want = leadIds ? new Set(leadIds) : null;
+  const pending = collectEscalations(100).filter((e) => !want || want.has(e.leadId)).slice(0, limit);
+  if (pending.length === 0) return { requested: 0, applied: 0, note: "" };
+  const res = await callClaudeCli({ purpose: "judge", tier: "standard", prompt: buildBrief(pending), schema: ESCALATION_SCHEMA });
+  recordUsage({ ...res.usage, jobId: null, recipeId: null });
+  if (res.quota) throw new QuotaPauseError(res.error ?? "使用上限に達しました");
+  const asked = new Set(pending.map((p) => p.leadId));
+  const all = ((res.data as { verdicts?: unknown })?.verdicts ?? []) as EscalationVerdict[];
+  const mine = Array.isArray(all) ? all.filter((v) => v && asked.has(v.leadId)) : [];
+  if (!res.ok || mine.length === 0) {
+    return {
+      requested: pending.length,
+      applied: 0,
+      note: `ルールで判定しきれず、Claudeの判定も得られませんでした（${res.error ?? "答えが空"}）。募集文を読んで人が判断してください`,
+    };
+  }
+  const applied = applyVerdicts(mine, "judge");
+  return {
+    requested: pending.length,
+    applied: applied.applied,
+    note: applied.skipped.length ? `Claudeの判定を反映できませんでした: ${applied.skipped.map((s) => s.why).join(" / ")}` : "",
+  };
+}
+
 export async function judgeLead(input: JudgeInput): Promise<JudgeResult> {
   const text = input.text.trim();
   if (text.length < 20) throw new Error("募集文が短すぎます（20文字以上）");
@@ -92,23 +129,9 @@ export async function judgeLead(input: JudgeInput): Promise<JudgeResult> {
   const outcome = await runAgent({ trigger: "manual", force: true, only: ["triage", "draft"] });
   if (!outcome.ran) throw new Error(`判定を実行できませんでした: ${outcome.reason ?? ""}`);
 
-  let escalated = false;
-  let note = "";
-  const pending = collectEscalations(50).filter((e) => e.leadId === lead.id);
-  if (pending.length > 0) {
-    escalated = true;
-    const res = await callClaudeCli({ purpose: "judge", tier: "standard", prompt: buildBrief(pending), schema: ESCALATION_SCHEMA });
-    recordUsage({ ...res.usage, jobId: null, recipeId: null });
-    if (res.quota) throw new QuotaPauseError(res.error ?? "使用上限に達しました");
-    const verdicts = ((res.data as { verdicts?: unknown })?.verdicts ?? []) as EscalationVerdict[];
-    const mine = Array.isArray(verdicts) ? verdicts.filter((v) => v?.leadId === lead.id) : [];
-    if (res.ok && mine.length > 0) {
-      const applied = applyVerdicts(mine, "judge");
-      if (applied.skipped.length) note = `Claudeの判定を反映できませんでした: ${applied.skipped.map((s) => s.why).join(" / ")}`;
-    } else {
-      note = `ルールで判定しきれず、Claudeの判定も得られませんでした（${res.error ?? "答えが空"}）。募集文を読んで人が判断してください`;
-    }
-  }
+  const resolved = await resolveEscalations([lead.id]);
+  const escalated = resolved.requested > 0;
+  const note = resolved.note;
 
   const current = readLeadsByIds([lead.id]).get(lead.id) ?? lead;
   // 今回の判定で出たものだけ（同じ募集文を前に判定したときの分は含めない）
