@@ -31,17 +31,19 @@ export interface ScanResult {
 }
 
 /** 有効にするソースを整える（作業場所が作り直されると設定が消えるので、毎回確かめる）。 */
-export function enableDefaultSources(): string[] {
+export function enableDefaultSources(maxDetails?: number): string[] {
   const on = SOURCES.filter((s) => s.defaultEnabled);
+  // 1回に読む詳細ページの上限。相手のサーバーに負荷をかけないよう、指定しても150件で頭打ち
+  const cap = maxDetails ? Math.max(1, Math.min(150, Math.round(maxDetails))) : undefined;
   writeAgentConfig({
-    sources: Object.fromEntries(on.map((s) => [s.id, { enabled: true }])),
+    sources: Object.fromEntries(on.map((s) => [s.id, cap ? { enabled: true, maxDetails: cap } : { enabled: true }])),
   });
   return on.map((s) => s.name);
 }
 
-export async function scanLeads(opts: { maxEscalate?: number } = {}): Promise<ScanResult> {
+export async function scanLeads(opts: { maxEscalate?: number; maxDetails?: number } = {}): Promise<ScanResult> {
   const started = new Date().toISOString();
-  const sources = enableDefaultSources();
+  const sources = enableDefaultSources(opts.maxDetails);
 
   const outcome = await runAgent({ trigger: "manual", force: true, only: ["ingest", "triage", "draft"] });
   if (!outcome.ran) throw new Error(`収集を実行できませんでした: ${outcome.reason ?? ""}`);

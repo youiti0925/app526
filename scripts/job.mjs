@@ -15,7 +15,7 @@
  *   node scripts/job.mjs status
  *   node scripts/job.mjs usage
  *
- *   node scripts/job.mjs scan [--push]                               # 公開されている募集を自動で取りに行き、判定と提案文まで
+ *   node scripts/job.mjs scan [--max 件数] [--push]                               # 公開されている募集を自動で取りに行き、判定と提案文まで
  *   node scripts/job.mjs judge --text 募集文.txt [--title "件名"] [--url URL] [--budget 20000] [--push]
  *   node scripts/job.mjs lead [id|last] applied|won|lost|archived   # 応募した・受注した・落ちた・やめた
  *   node scripts/job.mjs profile --file 経歴.txt [--push]            # 提案文に使う経歴を登録
@@ -476,7 +476,8 @@ async function main() {
     }
     case "scan": {
       console.log("公開されている募集を取りに行っています（ココナラ公開依頼・ままワークス。1回あたり少数だけ、間隔を空けて）…");
-      const r = await scan.scanLeads();
+      const max = Number(opt("max"));
+      const r = await scan.scanLeads(Number.isFinite(max) && max > 0 ? { maxDetails: max } : {});
       reportScan(r);
       break;
     }
