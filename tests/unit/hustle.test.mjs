@@ -922,3 +922,40 @@ test("暗号資産や口座開設について「書く」仕事や、応募フ�
   const form = scoreScam("ご応募は下記のフォームからお願いします。https://forms.gle/abc");
   assert.ok(!form.signals.some((s) => s.id === "referral_signup"));
 });
+
+// 実際にクラウドワークスで届いた「サポーター付きデータ入力」案件（2026-10）。最初はスコア35（注意）止まりだった。
+const SUPPORTER_POSTING = `【お仕事の進め方について】
+お願いするのは、指定された情報を確認し、専用のスプレッドシートに数字や短いコメントを入力していく【シンプルなデータ入力】です。
+スマホだけで進められるので、パソコンがなくても大丈夫です。
+【嬉しい実績づくり】：お仕事完了後は【星5つの高評価】をお付けしますので、これからの活動にも役立ちます♡
+【報酬目安】：4,000円 〜 10,000円程度
+【⚠️ご応募時のお願い】
+クラウドワークスのシステム上、ご応募のときは以下のとおりに入力をお願いします。
+契約金額（税抜）：【200円】
+源泉徴収：【チェックを外す】
+※仮払い金額との差額分は、お仕事が終わったあとに【追加支払い】機能を使って全額お渡ししますのでご安心くださいね！
+【応募用フォーマット】
+① 性別：
+② 年代（例：30代など）：
+③ お住まいの都道府県：
+④ ご職業（主婦、パート、会社員など）：`;
+
+test("募集の報酬と違う低い契約金額で応募させ、差額を後払いと約束する案件は危険と判定する", () => {
+  const r = scoreScam(SUPPORTER_POSTING);
+  assert.equal(r.verdict, "danger", JSON.stringify(r.signals.map((s) => s.id)));
+  const ids = r.signals.map((s) => s.id);
+  assert.ok(ids.includes("contract_amount_mismatch"));
+  assert.ok(ids.includes("rating_promise"));
+  assert.ok(ids.includes("demographics_on_apply"));
+});
+
+test("契約金額の指定そのものや、追加支払いの説明がある普通の案件は誤検知しない", () => {
+  const normal = scoreScam(`【ライティング】健康系の記事 1記事 5,000円 × 10記事
+ご応募の際は、契約金額に50,000円を入力してください。
+追加で作業が発生した場合は、追加支払い機能でお支払いします。修正は2回まで。納期は2週間です。`);
+  assert.ok(!normal.signals.some((s) => s.id === "contract_amount_mismatch"), JSON.stringify(normal.signals));
+  const rating = scoreScam("丁寧に進めていただける方には、継続案件もご相談します。完了後は評価をお付けします。");
+  assert.ok(!rating.signals.some((s) => s.id === "rating_promise"));
+  const survey = scoreScam("アンケートの集計作業です。回答者の属性（性別・年代）の列を集計してください。納期1週間、5,000円。");
+  assert.ok(!survey.signals.some((s) => s.id === "demographics_on_apply"));
+});
