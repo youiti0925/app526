@@ -959,3 +959,18 @@ test("契約金額の指定そのものや、追加支払いの説明がある�
   const survey = scoreScam("アンケートの集計作業です。回答者の属性（性別・年代）の列を集計してください。納期1週間、5,000円。");
   assert.ok(!survey.signals.some((s) => s.id === "demographics_on_apply"));
 });
+
+// 実際に届いた「選考エントリーシート」メッセージ（2026-10）。「LINE」の文字が無く、0点で見逃していた。
+test("契約前に lin.ee などのリンクでプラットフォーム外へ誘導するメッセージは危険と判定する", () => {
+  const r = scoreScam(`この度は、ご応募いただきありがとうございます！
+ご応募いただいた皆さまには下記にて事前に選考審査エントリーシートへのご回答をお願いしております。
+⏩ hhttps://lin.ee/XXXXXXX
+審査通過された方はクラウドワークス内にて契約とさせていただきますので、まずはお繋がりください。`);
+  assert.equal(r.verdict, "danger");
+  assert.ok(r.signals.some((s) => s.id === "offplatform_link"));
+});
+
+test("Googleフォームの応募案内や、普通のURLは外部誘導と判定しない", () => {
+  const r = scoreScam("ポートフォリオは https://example.com/works をご覧ください。応募はクラウドワークスのメッセージでお願いします。");
+  assert.ok(!r.signals.some((s) => s.id === "offplatform_link"));
+});
