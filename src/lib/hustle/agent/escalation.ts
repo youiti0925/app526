@@ -4,6 +4,7 @@ import { DEFAULT_MIN_WAGE_JPY } from "../analytics";
 import { readAgentConfig, readLeads, readLeadsByIds, updateLead, pushInbox, logEvent } from "./db";
 import type { Lead } from "./types";
 import { reconcileVerdict } from "./reconcile";
+import { trackRecordException } from "./track-record";
 
 /**
  * ルールでも無料枠のAIでも判定しきれなかった案件を、能力の高いモデルに回す層。
@@ -248,18 +249,54 @@ export function applyVerdicts(verdicts: EscalationVerdict[], runId = "escalation
 
     const offered = Number.isFinite(v.offeredJpy) ? (v.offeredJpy as number) : lead.budgetJpy;
 
+    // Claude が見積もるのは仕事全体の作業量。時給は「あなたが手を動かす時間」で割る
+    // （仕事ラインで自動化できる分は、あなたの時間に入らない）。ルールの判定で出した倍速を使う。
+    const prevTriage = (lead.triage ?? {}) as Record<string, unknown>;
+    const yt = prevTriage.yourTime as { certain?: boolean; speedup?: number } | undefined;
+    // 型の試作で確かめていない（certain=false）ときも、ルールの見込みの倍速を使い、理由にそう書く
+    const speedup = Number(yt?.speedup) > 1 ? Number(yt?.speedup) : 1;
+    const r1 = (h: number) => Math.max(0.1, Math.round((h / speedup) * 10) / 10);
+    const yourLow = r1(low);
+    const yourHigh = r1(high);
+
     // 返ってきた結論を鵜呑みにせず、金額と時間から計算し直す。
     // 判定した側の算術ミスを、そのまま「受けてよい」に変えないため。
-    const { verdict, reason, hourly, score, overridden } = reconcileVerdict({
+    let { verdict, reason, hourly, score, overridden } = reconcileVerdict({
       verdict: v.verdict,
       reason: v.reason ?? "",
       offeredJpy: offered,
-      lowHours: low,
-      highHours: high,
+      lowHours: yourLow,
+      highHours: yourHigh,
       riskCount: v.risks?.length ?? 0,
       minHourlyJpy: config.learned.minHourlyJpy,
       platform,
     });
+    if (speedup > 1) {
+      reason += `（仕事全体 ${low}〜${high}時間のうち、自動化した後にあなたが手を動かすのは ${yourLow}〜${yourHigh}時間 として計算${yt?.certain ? "" : "。この型の自動化はまだ試していない見込み"}）`;
+    }
+
+    // Claude が値段（時給）を理由に見送ったときは、自動化した後のあなたの時間で割った時給で決め直す。
+    // 評価が少ないうちは、短い仕事を「実績づくり」として通す（track-record.ts）。
+    const min = config.learned.minHourlyJpy;
+    const priceReason = /時給|基準|単価|報酬|手取り|安/.test(v.reason ?? "");
+    if (verdict === "reject" && priceReason && hourly && prevTriage.scamVerdict !== "danger") {
+      const noRisks = (v.risks?.length ?? 0) === 0;
+      const tr = trackRecordException({ hourly, yourHighHours: yourHigh, wonCount: readLeads("won", 100).length });
+      const yours = `自動化した後のあなたの時間（${yourLow}〜${yourHigh}時間）で割ると、手取り時給は ${hourly.low.toLocaleString()}〜${hourly.high.toLocaleString()}円`;
+      if (hourly.low >= min && noRisks) {
+        verdict = "proceed";
+        reason = `${yours}で、基準の ${min.toLocaleString()}円 を超えます${yt?.certain ? "" : "（この型の自動化はまだ試していない見込み）"}`;
+        overridden = true;
+      } else if (tr.applies && noRisks) {
+        verdict = "proceed";
+        reason = tr.reason;
+        overridden = true;
+      } else if (hourly.high >= min || tr.applies) {
+        verdict = "verify_first";
+        reason = `${yours}。条件次第で受けられます${noRisks ? "" : "。送る前に確認事項を詰めてください"}`;
+        overridden = true;
+      }
+    }
 
     if (overridden) {
       logEvent(runId, "triage", "warn", `[検算] 「${lead.title.slice(0, 36)}」の判定を上書きしました: ${reason.slice(0, 120)}`, {
@@ -279,6 +316,7 @@ export function applyVerdicts(verdicts: EscalationVerdict[], runId = "escalation
         escalationReasons: [],
         escalatedAt: new Date().toISOString(),
         estimate: { lowHours: low, highHours: high, basis: v.basis ?? "", confidence: v.confidence ?? "medium" },
+        yourTime: { ...(yt ?? {}), lowHours: yourLow, highHours: yourHigh },
         estimatedBy: "escalated",
         hourly,
         risks: v.risks ?? [],
