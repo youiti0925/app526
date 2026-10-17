@@ -18,6 +18,7 @@ import { reviewListing, summarizeListings } from "./listing-tracker";
 import { estimateByWorkType, estimateUnits } from "./worktypes";
 import { unknownSplit, yourTime, type YourTime } from "./yourtime";
 import { readPricing } from "./pricing";
+import { trackRecordException, TRACK_RECORD_UNTIL } from "./track-record";
 import { matchDataOpsPatterns, levelVerdict } from "../dataops/registry";
 import { evidenceFor } from "./dryrun-core";
 import { needsEscalation } from "./escalation";
@@ -228,6 +229,11 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
   const minHourly = ctx.config.learned.minHourlyJpy;
   const weeklyHours = profile?.weeklyHours ?? 10;
   const platform = PLATFORM_FEES.find((f) => f.id === "crowdworks")!;
+  // 評価が少ないうちは、小さく短い正規の仕事を「実績づくり」として通す（track-record.ts）
+  const wonCount = readLeads("won", 100).length;
+  const trackUntil = Number(process.env.JOB_TRACK_RECORD_UNTIL) >= 0 && process.env.JOB_TRACK_RECORD_UNTIL !== undefined
+    ? Number(process.env.JOB_TRACK_RECORD_UNTIL)
+    : TRACK_RECORD_UNTIL;
 
   // AI は上位（報酬が読み取れているもの）から順に使う。枠を無駄にしないため。
   const aiQuota = hasApiKey() ? ctx.budget.allocate(0.5) : 0;
@@ -418,6 +424,16 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       reason =
         `${offered.toLocaleString()}円 の提示ですが、募集文から数量（${byTypeEstimate?.workType.unit ?? "件"}数）を` +
         `読み取れないので、時給を計算できません。何${byTypeEstimate?.workType.unit ?? "件"}かを先に確認してください。`;
+    } else if (
+      hourly &&
+      hourly.low < minHourly &&
+      gates.passed &&
+      scam.verdict === "safe" &&
+      risks.length === 0 &&
+      trackRecordException({ hourly, yourHighHours: yours.highHours, wonCount, until: trackUntil }).applies
+    ) {
+      verdict = "proceed";
+      reason = trackRecordException({ hourly, yourHighHours: yours.highHours, wonCount, until: trackUntil }).reason;
     } else if (hourly && hourly.high < minHourly) {
       verdict = "reject";
       // 良いほうの端でも基準に届かないときだけ落とす。

@@ -1911,3 +1911,15 @@ test("関門: 年代・職業・状況で応募者が限られる募集は、確
   assert.equal(checkGates("女性大歓迎！データ入力のお仕事です。在宅で、主婦の方も働きやすい環境です。").hits.some((h) => h.id === "eligibility"), false);
   assert.equal(checkGates("ライティング経験者を募集します。1記事3,000円。").hits.length, 0);
 });
+
+test("実績づくり: 受けた仕事が少ないうちは、短く時給500円以上の小さな仕事を通す", async () => {
+  const { trackRecordException, FLOOR_JPY, MAX_HOURS } = await import("../../dist-test/agent/track-record.js");
+  const ok = trackRecordException({ hourly: { low: 600, high: 900 }, yourHighHours: 1, wonCount: 0 });
+  assert.equal(ok.applies, true);
+  assert.ok(ok.reason.includes("実績づくり") && ok.reason.includes("仮払い"));
+  // 極端に安い・長い・もう実績がある、は通さない
+  assert.equal(trackRecordException({ hourly: { low: 190, high: FLOOR_JPY - 1 }, yourHighHours: 1, wonCount: 0 }).applies, false);
+  assert.equal(trackRecordException({ hourly: { low: 600, high: 900 }, yourHighHours: MAX_HOURS + 1, wonCount: 0 }).applies, false);
+  assert.equal(trackRecordException({ hourly: { low: 600, high: 900 }, yourHighHours: 1, wonCount: 5 }).applies, false);
+  assert.equal(trackRecordException({ hourly: null, yourHighHours: 1, wonCount: 0 }).applies, false);
+});
