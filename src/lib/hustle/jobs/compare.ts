@@ -26,7 +26,10 @@ export function candidatesFor(
     out.push({ provider: "gemini", model: opts.geminiModel, label: `Gemini ${opts.geminiModel}（無料枠）` });
   }
   out.push({ provider: "claude", model: opts.lightModel, label: `Claude ${opts.lightModel}` });
-  out.push({ provider: "claude", model: opts.standardModel, label: `Claude ${opts.standardModel}` });
+  // 軽い段と処理の段が同じモデルなら、同じものを2回試さない
+  if (opts.standardModel !== opts.lightModel) {
+    out.push({ provider: "claude", model: opts.standardModel, label: `Claude ${opts.standardModel}` });
+  }
   return out;
 }
 

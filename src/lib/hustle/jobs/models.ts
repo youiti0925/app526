@@ -90,7 +90,28 @@ export class QuotaPauseError extends Error {
   }
 }
 
-const DEFAULT_TIER_MODELS: Record<Tier, string> = { light: "haiku", standard: "sonnet", heavy: "opus" };
+/**
+ * モデルの使い分け（ユーザーが決めたルール。変えるときはユーザーに確認する）:
+ *   - 設計・修正（手順書を作る・直す。コードの設計・修正にあたるもの）… opus・中
+ *   - それを使って処理する（作業・検品・判定・提案文）……………………… sonnet・超高（xhigh）
+ *   - どうでもいいもの（振り分けなどの軽い判断）…………………………… sonnet・中
+ * 段（tier）との対応: heavy = 設計・修正、standard = 処理、light = 軽い判断。
+ */
+const DEFAULT_TIER_MODELS: Record<Tier, string> = { light: "sonnet", standard: "sonnet", heavy: "opus" };
+const DEFAULT_TIER_EFFORT: Record<Tier, Effort> = { light: "medium", standard: "xhigh", heavy: "medium" };
+
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
+
+/** 段ごとの考える深さ（Claude Code の --effort）。JOB_EFFORT_LIGHT / STANDARD / HEAVY で差し替えられる。 */
+export function tierEffort(tier: Tier): Effort {
+  const env = {
+    light: process.env.JOB_EFFORT_LIGHT,
+    standard: process.env.JOB_EFFORT_STANDARD,
+    heavy: process.env.JOB_EFFORT_HEAVY,
+  }[tier]?.trim() as Effort | undefined;
+  return env && EFFORTS.includes(env) ? env : DEFAULT_TIER_EFFORT[tier];
+}
 
 /** 段ごとのモデル。環境変数で差し替えられる（モデルの世代交代でデプロイなしに直せるように）。 */
 export function tierModel(tier: Tier): string {
@@ -212,7 +233,7 @@ function workDir(): string {
   return dir;
 }
 
-export function buildCliArgs(req: ModelRequest, model: string): string[] {
+export function buildCliArgs(req: ModelRequest, model: string, effort: Effort = tierEffort(req.tier)): string[] {
   const web = !!req.web;
   const args = [
     "-p",
@@ -220,6 +241,7 @@ export function buildCliArgs(req: ModelRequest, model: string): string[] {
     "--output-format", "json",
     "--no-session-persistence",
     "--model", model,
+    "--effort", effort,
     "--system-prompt", SYSTEM_PROMPT,
     ...(req.schema ? ["--json-schema", JSON.stringify(req.schema)] : []),
     "--permission-mode", "dontAsk",

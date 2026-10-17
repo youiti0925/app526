@@ -7,7 +7,7 @@ import { validateRecipe, nextTier } from "../../dist-test/jobs/recipe.js";
 import { runRecipe, withSrc, verifyLookup } from "../../dist-test/jobs/ops.js";
 import { summarize, compareToExpected, checkOutput, cellKey, MAX_ERROR_ROW_RATE } from "../../dist-test/jobs/checks.js";
 import { scoreRecipes, decideByRule, parseRouteResponse } from "../../dist-test/jobs/router.js";
-import { readCliOutput, createCaller, buildCliArgs, QuotaPauseError } from "../../dist-test/jobs/models.js";
+import { readCliOutput, createCaller, buildCliArgs, QuotaPauseError, tierModel, tierEffort } from "../../dist-test/jobs/models.js";
 import { isPrivateAddress, createPageFetcher } from "../../dist-test/jobs/fetcher.js";
 import { processJob } from "../../dist-test/jobs/pipeline.js";
 import { candidatesFor, compareModels } from "../../dist-test/jobs/compare.js";
@@ -312,6 +312,24 @@ test("CLIの呼び方: --bare を使わず（サブスクが読めない）、�
   assert.ok(!free.includes("--json-schema"), "形を強制しない呼び出しでは --json-schema を付けない");
   const web = buildCliArgs({ purpose: "run", tier: "light", prompt: "x", schema: {}, web: true }, "haiku");
   assert.equal(web[web.indexOf("--tools") + 1], "WebSearch,WebFetch");
+});
+
+test("モデルの使い分け（ユーザーのルール）: 設計・修正は opus・中、処理は sonnet・超高、軽い判断は sonnet・中", () => {
+  const saved = { ...process.env };
+  for (const k of ["JOB_MODEL_LIGHT", "JOB_MODEL_STANDARD", "JOB_MODEL_HEAVY", "JOB_EFFORT_LIGHT", "JOB_EFFORT_STANDARD", "JOB_EFFORT_HEAVY"]) delete process.env[k];
+  try {
+    assert.deepEqual(["heavy", "standard", "light"].map((t) => [tierModel(t), tierEffort(t)]), [["opus", "medium"], ["sonnet", "xhigh"], ["sonnet", "medium"]]);
+    const author = buildCliArgs({ purpose: "author", tier: "heavy", prompt: "x", schema: {} }, tierModel("heavy"));
+    assert.equal(author[author.indexOf("--effort") + 1], "medium");
+    const run = buildCliArgs({ purpose: "run", tier: "standard", prompt: "x", schema: {} }, tierModel("standard"));
+    assert.equal(run[run.indexOf("--effort") + 1], "xhigh");
+    process.env.JOB_EFFORT_STANDARD = "high";
+    assert.equal(tierEffort("standard"), "high");
+    process.env.JOB_EFFORT_STANDARD = "ばか";
+    assert.equal(tierEffort("standard"), "xhigh", "知らない値は既定に戻す");
+  } finally {
+    process.env = saved;
+  }
 });
 
 test("呼び出し口: 依頼者の資料はGeminiに送らない・回数上限・使用上限で一時停止・Geminiの枠切れはClaudeで続行", async () => {

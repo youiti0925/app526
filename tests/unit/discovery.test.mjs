@@ -1923,3 +1923,10 @@ test("実績づくり: 受けた仕事が少ないうちは、短く時給500円
   assert.equal(trackRecordException({ hourly: { low: 600, high: 900 }, yourHighHours: 1, wonCount: 5 }).applies, false);
   assert.equal(trackRecordException({ hourly: null, yourHighHours: 1, wonCount: 0 }).applies, false);
 });
+
+test("納品できるか: 「代表電話」「携帯電話」はリストの項目名で、電話をかける仕事ではない", () => {
+  const list = judgeDeliverability("公開されている店舗の会社名・住所・代表電話をスプレッドシートに入力してください。100件。");
+  assert.ok(!list.blockers?.some?.((b) => b.id === "onsite") && !JSON.stringify(list).includes("現地作業・電話"));
+  const call = judgeDeliverability("リストの企業に電話をかけてアポイントを取るお仕事です。");
+  assert.ok(JSON.stringify(call).includes("現地作業・電話"));
+});
