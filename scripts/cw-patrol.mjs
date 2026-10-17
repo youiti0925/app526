@@ -119,67 +119,115 @@ const isLoginPage = (url) => /\/login(\b|\/|\?|$)/.test(new URL(url).pathname + 
 
 // --- setup ---------------------------------------------------------------------------
 
+/** 既定のブラウザでページを開く（アプリ パスワードの作成ページなど） */
+function openInDefaultBrowser(url) {
+  if (process.platform === "win32") spawnSync("cmd", ["/c", "start", "", url], { stdio: "ignore" });
+  else console.log(`   ブラウザで開いてください: ${url}`);
+}
+
+/**
+ * 自動で回す登録（管理者の権限は要らない形）:
+ *   - 3時間ごと: タスクスケジューラ（自分のユーザーの1時間単位の予定は権限なしで作れる）
+ *   - ログオン時: 自分の「スタートアップ」フォルダに、5分待ってから1回回す .cmd を置く
+ */
+function registerSchedule() {
+  if (process.platform !== "win32") {
+    console.log("（Windows 以外なので、自動実行の登録はしません）");
+    return;
+  }
+  const runner = path.join(ROOT, "scripts", "windows", "cw-patrol-run.cmd");
+  let ok = true;
+  const r = spawnSync("schtasks", ["/Create", "/F", "/TN", "CWPatrol-Every3h", "/SC", "HOURLY", "/MO", "3", "/TR", runner], { encoding: "utf8" });
+  if (r.status !== 0) {
+    ok = false;
+    console.log(`3時間ごとの登録に失敗しました（${(r.stderr || r.stdout).trim()}）`);
+  }
+  const startup = path.join(process.env.APPDATA ?? "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
+  try {
+    fs.writeFileSync(
+      path.join(startup, "cw-patrol.cmd"),
+      `@echo off\r\nrem CrowdWorks patrol: run once 5 minutes after logon\r\ntimeout /t 300 /nobreak >nul\r\ncall "${runner}"\r\n`
+    );
+  } catch (e) {
+    ok = false;
+    console.log(`ログオン時の登録に失敗しました（${e.message}）`);
+  }
+  if (ok) console.log("自動実行を登録しました（ログオンの5分後と、3時間ごと）。止めるときは scripts\\windows\\cw-patrol-unregister.cmd");
+}
+
 async function setup() {
   ensureBuilt();
-  // 募集の判定と提案文は、このPCの Claude Code（サブスク）で作る
-  const claude = spawnSync("claude", ["--version"], { encoding: "utf8", shell: process.platform === "win32" });
-  if (claude.status !== 0) {
-    console.log(
-      "注意: Claude Code が見つかりません。募集の判定・提案文には要ります（やり取りの確認とGメールは無しでも動きます）。\n" +
-        "  npm install -g @anthropic-ai/claude-code のあと、claude を一度起動してログインしてください。\n"
-    );
-  }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const config = readJson(CONFIG, { listUrls: [], searchUrls: [], me: "", mail: null });
   console.log("\n=== クラウドワークス巡回の設定（初回だけ）===\n");
-  console.log("ブラウザ（Edge）が開きます。以下の手順で進めてください。パスワードはブラウザにだけ入力します。\n");
+  console.log("Edge が開きます。パスワードは Edge にだけ入力します（この画面には入力しません）。\n");
 
   const { ctx, page } = await openBrowser({ headless: false });
   try {
     await page.goto(LOGIN_URL);
-    await rl.question("1) 開いたブラウザでクラウドワークスにログインしてください。終わったら、ここで Enter を押してください > ");
+    for (;;) {
+      await rl.question("【1】開いた Edge でクラウドワークスにログインしてください。ログインできたら、ここで Enter > ");
+      if (!isLoginPage(page.url())) break;
+      console.log("   まだログイン画面のようです。ログインしてから Enter を押してください");
+    }
 
-    await rl.question(
-      "2) ブラウザで「マイページ」→「相談から契約まで」の一覧（応募・相談中のやり取りが並ぶ画面）を開いてください。\n   開けたら Enter > "
-    );
-    if (isLoginPage(page.url())) die("まだログインできていないようです。もう一度 setup からやり直してください");
-    config.listUrls = [page.url()];
-    console.log(`   登録しました: ${page.url()}\n`);
+    // やり取りの一覧: マイページから自動で見つける。見つからなければ開いてもらう
+    const dash = await readPage(page, "https://crowdworks.jp/dashboard").catch(() => null);
+    const found = dash && !isLoginPage(dash.finalUrl) ? loadLib().core.collectLinks(dash.hrefs).threads : [];
+    if (found.length > 0) {
+      config.listUrls = [dash.finalUrl];
+      console.log(`   マイページから、やり取り ${found.length}件を見つけました\n`);
+    } else {
+      await rl.question("【1-2】Edge で「マイページ」→「相談から契約まで」の一覧を開いて、Enter > ");
+      config.listUrls = [page.url()];
+    }
 
+    // 新着: 検索を1回してもらい、その画面を覚える
+    await page.goto("https://crowdworks.jp/public/jobs").catch(() => {});
     config.searchUrls = [];
     for (let i = 1; i <= 3; i++) {
       const ans = await rl.question(
-        `3-${i}) 仕事を探す画面で、探したい条件（例: データ入力、新着順）で検索してください。\n` +
-          "     検索結果が出たら Enter（もう登録しないなら n と入力して Enter）> "
+        i === 1
+          ? "【2】Edge で、探したい言葉（例: データ入力）で検索し、並び順を「新着」にしてください。結果が出たら Enter > "
+          : "    もう1つ登録するなら、別の言葉で検索して Enter。終わりならそのまま n と入力して Enter > "
       );
-      if (ans.trim().toLowerCase() === "n") break;
+      if (i > 1 && ans.trim().toLowerCase() === "n") break;
       config.searchUrls.push(page.url());
-      console.log(`   登録しました: ${page.url()}\n`);
     }
+    config.me = config.me || "youitirou0925";
+  } finally {
+    await ctx.close();
+  }
 
-    const me = await rl.question(`4) あなたのクラウドワークスのID（例: youitirou0925）> `);
-    config.me = me.trim() || config.me || "youitirou0925";
-
-    console.log(
-      "\n5) まとめを送るGメールの設定です。\n" +
-        "   Googleアカウントの「アプリ パスワード」が要ります（2段階認証をオンにしたうえで、\n" +
-        "   https://myaccount.google.com/apppasswords で作る16文字。普段のパスワードではありません）。\n" +
-        "   ここで入力したものは、このPCの " + CONFIG + " にだけ保存します。"
-    );
+  console.log(
+    "\n【3】まとめを送るGメールの設定です。Googleの「アプリ パスワード」のページを開きます。\n" +
+      "   名前に CW巡回 と入れて「作成」→ 出てきた16文字を下に入力してください（普段のパスワードではありません）。\n" +
+      "   ※ 2段階認証がオフだと作れません。そのときは、同じページの案内に従ってオンにしてください。\n" +
+      `   入力したものは、このPCの ${CONFIG} にだけ保存します。`
+  );
+  openInDefaultBrowser("https://myaccount.google.com/apppasswords");
+  try {
     const user = (await rl.question("   Gメールのアドレス > ")).trim();
-    const pass = (await rl.question("   アプリ パスワード（16文字・空白は無視）> ")).replace(/\s+/g, "");
+    const pass = (await rl.question("   アプリ パスワード（16文字）> ")).replace(/\s+/g, "");
     if (user && pass) config.mail = { user, pass, to: user };
   } finally {
     rl.close();
-    await ctx.close();
   }
   writeJson(CONFIG, config);
   try {
     fs.chmodSync(CONFIG, 0o600);
   } catch {}
-  console.log("\n設定を保存しました。試しのメールを送ります…");
-  await testMail(config);
-  console.log("\n次: scripts\\windows\\cw-patrol-register.cmd を実行すると、PCを使っている間3時間ごとに自動で巡回します。");
+
+  if (config.mail) {
+    console.log("\n試しのメールを送ります…");
+    try {
+      await testMail(config);
+    } catch (e) {
+      console.log(`メールを送れませんでした: ${e.message}\n   あとで scripts\\windows\\cw-patrol-setup.cmd をもう一度実行してください`);
+    }
+  }
+  if (argv.includes("--register")) registerSchedule();
+  console.log("\n設定が終わりました。このあとはPCをつけている間、自動で巡回します。");
 }
 
 async function testMail(config = readJson(CONFIG, null)) {

@@ -81,7 +81,7 @@ function die(message) {
 function ensureDeps() {
   if (fs.existsSync(path.join(ROOT, "node_modules", "better-sqlite3"))) return;
   console.log("準備: 部品を入れています（初回だけ1〜2分）…");
-  const r = spawnSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: ROOT, encoding: "utf8" });
+  const r = spawnSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: ROOT, encoding: "utf8", shell: process.platform === "win32" });
   if (r.status !== 0) die(`npm ci に失敗しました\n${(r.stderr || r.stdout).slice(-2000)}`);
 }
 
@@ -99,7 +99,7 @@ function ensureBuild() {
   const marker = path.join(DIST, "lib", "hustle", "jobs", "worker.js");
   if (fs.existsSync(marker) && fs.statSync(marker).mtimeMs >= newestMtime(path.join(ROOT, "src", "lib"))) return;
   console.log("準備: コンパイルしています…");
-  const r = spawnSync("npx", ["tsc", "-p", "tsconfig.e2e.json"], { cwd: ROOT, encoding: "utf8" });
+  const r = spawnSync("npx", ["tsc", "-p", "tsconfig.e2e.json"], { cwd: ROOT, encoding: "utf8", shell: process.platform === "win32" });
   if (r.status !== 0) die(`コンパイルに失敗しました\n${(r.stdout || r.stderr).slice(-2000)}`);
 }
 

@@ -9,28 +9,20 @@ PCを使っている間、3時間ごと（とログオンの5分後）に、あ�
 - パスワード: クラウドワークスのパスワードは、Edgeにあなたが入力するだけ。Gメールは「アプリ パスワード」を
   このPCの `%USERPROFILE%\.cw-patrol\config.json` にだけ保存する。どちらもリポジトリにもClaudeにも渡らない
 
-## 準備（1回だけ・30分ほど）
+## 準備（1回だけ）
 
-1. 入れるもの
-   - Node.js（LTS）: https://nodejs.org/ja
-   - Git: https://git-scm.com/download/win
-   - Claude Code: コマンドプロンプトで `npm install -g @anthropic-ai/claude-code`、そのあと `claude` を起動してログイン
-2. コマンドプロンプトで:
+1. スタートボタンを右クリック →「ターミナル」（または「Windows PowerShell」）を開く
+2. 次の1行を貼って Enter:
    ```
-   cd %USERPROFILE%
-   git clone https://github.com/youiti0925/app526.git
-   cd app526
-   git checkout claude/auto-side-hustle-app-plz2sh
+   irm https://raw.githubusercontent.com/youiti0925/app526/claude/auto-side-hustle-app-plz2sh/scripts/windows/install.ps1 | iex
    ```
-3. Gメールの「アプリ パスワード」を作る（Googleアカウントで2段階認証をオンにしてから
-   https://myaccount.google.com/apppasswords 。16文字。普段のパスワードではない）
-4. エクスプローラーで `app526\scripts\windows\cw-patrol-setup.cmd` をダブルクリック
-   - Edgeが開くので、クラウドワークスにログイン → 黒い画面で Enter
-   - 「相談から契約まで」の一覧を開く → Enter
-   - 仕事を探す画面で、探したい条件（例: データ入力・リスト作成・文字起こし、新着順）で検索 → Enter（3つまで）
-   - クラウドワークスのID、Gメールのアドレスとアプリ パスワードを入力
-   - 「設定の確認」のメールが届けば完了
-5. `cw-patrol-register.cmd` をダブルクリック → 自動で巡回が始まる
+3. あとは画面の案内どおりに:
+   - 「このアプリがデバイスに変更を加えることを許可しますか」と出たら「はい」（Node.js と Git を入れるとき）
+   - ブラウザが開いたら、Claude にいつものアカウントでログイン
+   - Edge が開いたら、クラウドワークスにログイン → 黒い画面で Enter
+   - Edge で探したい言葉（例: データ入力）を検索し、新着順にして Enter
+   - Googleの「アプリ パスワード」のページが開くので、名前に「CW巡回」と入れて作成 → 16文字を黒い画面に入力
+   - 「設定の確認」のメールが届けば完了。自動実行も登録される
 
 ## 使う
 
