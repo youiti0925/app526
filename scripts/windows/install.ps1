@@ -73,4 +73,14 @@ if (Has 'claude') {
 Step '巡回の設定をします（Edge が開きます）'
 & node scripts\cw-patrol.mjs setup --register
 
+# スマホから、このPCで動くClaudeと話すための入口をデスクトップに置く
+try {
+  $shell = New-Object -ComObject WScript.Shell
+  $lnk = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Claude（app526）.lnk'))
+  $lnk.TargetPath = Join-Path $Dir 'scripts\windows\claude-pc.cmd'
+  $lnk.WorkingDirectory = $Dir
+  $lnk.Save()
+} catch { }
+
 Step '終わりました。このあとはPCをつけている間、自動で巡回して、知らせることがあればGメールに届きます。'
+Write-Host 'スマホからこのPCのClaudeと話したいときは、デスクトップの「Claude（app526）」をダブルクリックしてください（窓は開いたままに）。'
