@@ -1900,3 +1900,14 @@ test("本当に接客する仕事は今までどおり落とす", () => {
   const d = del.judgeDeliverability("店舗での接客をお願いします。お客様への対応が主な業務です。".repeat(3));
   assert.ok(d.matched.includes("onsite"));
 });
+
+test("関門: 年代・職業・状況で応募者が限られる募集は、確認が要るに寄せる", () => {
+  const nurse = checkGates("【1記事1500円/看護士の方限定！】転職活動の様子をお聞かせください。");
+  assert.ok(nurse.hits.some((h) => h.id === "eligibility"));
+  assert.equal(nurse.negotiable, true);
+  const age = checkGates("20代〜30代で、転職活動中、または未経験業界への就職活動中の方を対象とした募集です。");
+  assert.ok(age.hits.some((h) => h.id === "eligibility"));
+  // 属性の限定でない普通の募集は引っかけない
+  assert.equal(checkGates("女性大歓迎！データ入力のお仕事です。在宅で、主婦の方も働きやすい環境です。").hits.some((h) => h.id === "eligibility"), false);
+  assert.equal(checkGates("ライティング経験者を募集します。1記事3,000円。").hits.length, 0);
+});

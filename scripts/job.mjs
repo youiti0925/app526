@@ -17,6 +17,7 @@
  *
  *   node scripts/job.mjs scan [--max 件数] [--push]                               # 公開されている募集を自動で取りに行き、判定と提案文まで
  *   node scripts/job.mjs judge --text 募集文.txt [--title "件名"] [--url URL] [--budget 20000] [--push]
+ *   node scripts/job.mjs thread --text クラウドワークス画面.txt [--me 自分のID]   # 取り込んだ「相談から契約まで」の画面を読み、返事待ち・危険信号・金額のミスを洗い出す（AIは使わない）
  *   node scripts/job.mjs lead [id|last] applied|won|lost|archived   # 応募した・受注した・落ちた・やめた
  *   node scripts/job.mjs profile --file 経歴.txt [--push]            # 提案文に使う経歴を登録
  *
@@ -117,6 +118,7 @@ const worker = require_(path.join(DIST, "lib/hustle/jobs/worker.js"));
 const { JOB_STATUS_LABELS } = require_(path.join(DIST, "lib/hustle/jobs/pipeline.js"));
 const judge = require_(path.join(DIST, "lib/hustle/jobs/judge.js"));
 const scan = require_(path.join(DIST, "lib/hustle/jobs/scan.js"));
+const cwThread = require_(path.join(DIST, "lib/hustle/jobs/cw-thread.js"));
 const xlsx = require_(path.join(DIST, "lib/hustle/dataops/xlsx.js"));
 const { toCsvText } = require_(path.join(DIST, "lib/hustle/dataops/table.js"));
 
@@ -472,6 +474,19 @@ async function main() {
       const budget = Number(opt("budget"));
       const r = await judge.judgeLead({ text, title: opt("title"), url: opt("url"), budgetJpy: Number.isFinite(budget) && budget > 0 ? budget : null });
       reportJudge(r, started);
+      break;
+    }
+    case "thread": {
+      const textFile = opt("text");
+      if (!textFile) die("--text（クラウドワークスの画面を取り込んだファイル）が要ります");
+      const text = fs.readFileSync(path.resolve(textFile), "utf8").replace(/^\uFEFF/, "");
+      const me = opt("me") ?? process.env.CW_MY_NAME ?? "youitirou0925";
+      const reviews = cwThread.parseCwThreads(text, me).map((t) => cwThread.reviewCwThread(t, new Date()));
+      console.log(`${reviews.length}件の画面を読みました（自分の名前: ${me}）\n`);
+      console.log(reviews.map((r) => cwThread.formatCwReview(r)).join("\n\n"));
+      const todo = reviews.filter((r) => r.waiting === "me");
+      const risky = reviews.filter((r) => r.scam && r.scam.verdict !== "safe");
+      console.log(`\n--- まとめ ---\n返事が要るもの: ${todo.length}件${todo.length ? "（" + todo.map((r) => r.thread.title.slice(0, 20)).join(" / ") + "）" : ""}\n危険・注意: ${risky.length}件`);
       break;
     }
     case "scan": {
