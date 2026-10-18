@@ -6,9 +6,13 @@
  *   node scripts/cw-patrol.mjs run         # 巡回して、知らせることがあればGメールに送る（タスクスケジューラから呼ぶ）
  *   node scripts/cw-patrol.mjs run --always    # 新しいことが無くてもまとめを送る
  *   node scripts/cw-patrol.mjs test-mail   # Gメールに試しの1通を送る
+ *   node scripts/cw-patrol.mjs fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数]
+ *   node scripts/cw-patrol.mjs fill --list 一覧.tsv   # 1行に「URL<TAB>提案文.txt<TAB>金額<TAB>日数」。1回に5件まで
+ *       応募画面に提案文・金額・納期を入力した状態で開いて止める。「応募する」はあなたが押す
  *
  * 守ること（変えない）:
  *   - 見るだけ。応募・返信・メッセージ送信・ボタン操作はしない（ページを開いて文字を読むだけ）
+ *     fill だけは応募画面の欄に入力するが、送信系のボタンは押さない（scripts/lib/cw-fill.mjs）
  *   - 1回に開くページ数を絞り、ページごとに6〜12秒あける
  *   - パスワードはブラウザにあなたが入力する。このスクリプトもClaudeも受け取らない
  *   - 設定・ログイン状態・既読の記録は %USERPROFILE%\.cw-patrol に置き、リポジトリには入れない
@@ -20,6 +24,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import Module from "node:module";
 import { sendMail } from "./lib/smtp.mjs";
+import { MAX_TABS, applyState, applyUrl, fillProposalForm, jobIdFromUrl, jobUrl, parseList, validateEntry } from "./lib/cw-fill.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const DIST = path.join(ROOT, "dist-e2e");
@@ -455,9 +460,87 @@ async function run() {
   }
 }
 
-const commands = { setup, run, "test-mail": () => testMail() };
+// --- fill（応募画面に入力して止める。送信はしない）----------------------------------
+
+function optValue(name) {
+  const i = argv.indexOf(`--${name}`);
+  return i > 0 ? argv[i + 1] : undefined;
+}
+
+async function fill() {
+  const listFile = optValue("list");
+  let entries;
+  if (listFile) {
+    entries = parseList(fs.readFileSync(path.resolve(listFile), "utf8"));
+  } else {
+    const url = argv[1] && !argv[1].startsWith("--") ? argv[1] : undefined;
+    const price = optValue("price");
+    const days = optValue("days");
+    entries = [{ url, proposal: optValue("proposal"), price: price ? Number(price.replace(/[,円]/g, "")) : undefined, days: days ? Number(days) : undefined }];
+  }
+  if (!entries.length || !entries[0].url) die("使い方: node scripts/cw-patrol.mjs fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数]  または  fill --list 一覧.tsv");
+  if (entries.length > MAX_TABS) {
+    log(`1回に開くのは ${MAX_TABS} 件までです。先頭の ${MAX_TABS} 件だけ開きます`);
+    entries = entries.slice(0, MAX_TABS);
+  }
+  for (const e of entries) {
+    if (!e.proposal) die(`提案文のファイルがありません: ${e.url}`);
+    e.message = fs.readFileSync(path.resolve(e.proposal), "utf8").trim();
+    const problems = validateEntry(e);
+    if (problems.length) die(problems.join("\n"));
+  }
+
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  // ブラウザを開いているあいだは巡回を休ませる（同じログイン状態のフォルダを2つで開けないため）
+  const touch = setInterval(() => fs.utimesSync(LOCK, new Date(), new Date()), 60_000);
+  try {
+    const { ctx, page } = await openBrowser({ headless: argv.includes("--headless") });
+    const opened = [];
+    for (const [i, e] of entries.entries()) {
+      const id = jobIdFromUrl(e.url);
+      const tab = i === 0 ? page : await ctx.newPage();
+      if (i > 0) await politeWait();
+      try {
+        const job = await readPage(tab, jobUrl(id));
+        const state = applyState(job);
+        if (!state.ok) {
+          log(`飛ばします（${state.reason}）: ${jobUrl(id)}`);
+          if (i > 0) await tab.close();
+          continue;
+        }
+        await politeWait();
+        await tab.goto(applyUrl(id), { waitUntil: "domcontentloaded", timeout: 45_000 });
+        await tab.waitForTimeout(2500);
+        if (isLoginPage(tab.url())) {
+          log(`飛ばします（ログインが切れています）: ${jobUrl(id)}`);
+          continue;
+        }
+        const r = await fillProposalForm(tab, { message: e.message, price: e.price, days: e.days });
+        opened.push(id);
+        log(`入力しました: ${jobUrl(id)}  → ${r.done.join("・")}${r.skipped.length ? `（入れていない: ${r.skipped.join("・")}）` : ""}`);
+      } catch (err) {
+        log(`入力できませんでした: ${jobUrl(id)}  ${err.message}`);
+      }
+    }
+    if (!opened.length || argv.includes("--headless")) {
+      if (!opened.length) log("入力できた応募画面はありません");
+      await ctx.close();
+      return;
+    }
+    log(`${opened.length} 件の応募画面を、入力した状態で開いています。送信はしていません。`);
+    log("中身（提案文・金額・納期・源泉徴収のチェック）を確かめ、よければ自分で「応募する」を押してください。ブラウザを閉じると、このコマンドも終わります。");
+    await new Promise((resolve) => ctx.on("close", resolve));
+  } finally {
+    clearInterval(touch);
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
+const commands = { setup, run, fill, "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();
