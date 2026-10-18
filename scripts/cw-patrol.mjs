@@ -387,6 +387,9 @@ async function run() {
             const p = await readPage(page, link.url);
             const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
             seen.jobs[link.key] = new Date().toISOString();
+            // 判定がおかしいときに見直せるよう、読んだ本文をPCの中にだけ残す（前回の分は上書き）
+            fs.mkdirSync(path.join(HOME, "last-jobs"), { recursive: true });
+            fs.writeFileSync(path.join(HOME, "last-jobs", `${String(judged.length + 1).padStart(2, "0")}.txt`), `${link.url}\n${title}\n\n${p.text}`);
             log(`判定しています: ${title}`);
             const j = judgeJob(p.text, title, link.url);
             judged.push({ title, url: link.url, verdict: j.verdict, detail: j.detail });

@@ -49,9 +49,13 @@ test("まとめ: 返事が要る・危険・新着候補を並べ、新しいこ
     errors: [],
     loginExpired: false,
   });
-  assert.ok(r.subject.includes("返事が要る1件") && r.subject.includes("新着候補1件") && r.subject.includes("危険1件"));
+  assert.ok(r.subject.includes("今やること 1件") && r.subject.includes("応募候補 1件"));
+  assert.ok(r.body.startsWith("【結論】今やること 1件"));
   assert.ok(r.body.includes("良い募集") && r.body.includes("本文"));
-  assert.ok(!r.body.includes("安い募集"));
+  // LINE誘導の相手は「返事をしなくてよい」側に、理由つきで1行
+  assert.ok(r.body.includes("返事をしなくてよい相手 1件"));
+  // 見送りの募集も、題名と理由を1行ずつ出す
+  assert.ok(r.body.includes("見送り：安い募集"));
   assert.ok(r.body.includes("送信はしません"));
   assert.equal(r.worthSending, true);
 

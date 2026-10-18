@@ -105,56 +105,87 @@ export function buildReport(input: ReportInput): PatrolReport {
     };
   }
 
-  const reply = input.threads.filter((t) => t.review.waiting === "me");
   const risky = input.threads.filter((t) => t.review.scam && t.review.scam.verdict !== "safe");
-  const flagged = input.threads.filter((t) => t.review.flags.some((f) => f.includes("提示額")));
+  const riskySet = new Set(risky);
+  // 返事を考えるもの = 相手の番を待っている／提示額のミスがあり、かつ危険信号が出ていないやり取り
+  const reply = input.threads.filter(
+    (t) => !riskySet.has(t) && (t.review.waiting === "me" || t.review.flags.some((f) => f.includes("提示額")))
+  );
   const picks = input.jobs.filter((j) => WANT.some((w) => j.verdict.startsWith(w)));
-  const skipped = input.jobs.length - picks.length;
+  const others = input.jobs.filter((j) => !picks.includes(j));
+  const todo = picks.length + reply.length;
 
   const out: string[] = [];
-  const section = (title: string) => out.push("", `■■ ${title}`);
+  const section = (title: string) => out.push("", `■ ${title}`);
 
-  if (reply.length) {
-    section(`返事が要るもの ${reply.length}件`);
-    for (const t of reply) {
-      const last = t.review.thread.messages[t.review.thread.messages.length - 1];
-      out.push(
-        `・${t.review.thread.title}${t.changed ? "【新着】" : ""}`,
-        `  ${last?.from ?? ""}さん ${last?.at?.slice(0, 16).replace("T", " ") ?? ""}${t.review.daysSinceLast !== null ? `（${t.review.daysSinceLast}日前）` : ""}`,
-        `  ${t.url}`
-      );
-    }
-  }
-  if (risky.length || flagged.length) {
-    section("危険信号・ミスの疑い");
-    for (const t of [...new Set([...risky, ...flagged])]) {
-      out.push(`・${t.review.thread.title}`, `  ${t.url}`);
-      for (const s of t.review.scam?.signals.slice(0, 2) ?? []) out.push(`  - ${s.label}`);
-      for (const f of t.review.flags) out.push(`  - ${f}`);
-    }
-  }
+  // 1行目で結論が分かるように
+  out.push(
+    todo === 0
+      ? "【結論】今やることはありません。"
+      : `【結論】今やること ${todo}件${picks.length ? `（応募を考える ${picks.length}件` : "（"}${picks.length && reply.length ? "・" : ""}${reply.length ? `返事を考える ${reply.length}件` : ""}）`
+  );
+  if (risky.length) out.push(`危険信号の出た相手 ${risky.length}件は、返事をしなくて大丈夫です（理由は下に）。`);
+
   if (picks.length) {
-    section(`新着の応募候補 ${picks.length}件（送るかどうかはあなたが決める。送信はしません）`);
+    section(`応募を考える ${picks.length}件（送るかどうかはあなたが決める。送信はしません）`);
     for (const j of picks) out.push("", `―――― ${j.title}`, j.url, j.detail.trim());
   }
-  if (input.jobs.length) out.push("", `新着 ${input.jobs.length}件を判定（見送り・判定できず ${skipped}件）`);
+  if (reply.length) {
+    section(`返事を考える ${reply.length}件`);
+    for (const t of reply) {
+      const last = t.review.thread.messages[t.review.thread.messages.length - 1];
+      out.push(`・${t.review.thread.title}${t.changed ? "【新着】" : ""}`);
+      if (last) out.push(`  最後の発言: ${last.from}さん${t.review.daysSinceLast !== null ? `（${t.review.daysSinceLast}日前）` : ""}`);
+      for (const f of t.review.flags) out.push(`  - ${f}`);
+      out.push(`  ${t.url}`);
+    }
+  }
+  if (risky.length) {
+    section(`返事をしなくてよい相手 ${risky.length}件（危険信号あり）`);
+    for (const t of risky) {
+      const why = t.review.scam?.signals[0]?.label ?? "危険信号あり";
+      out.push(`・${shortTitle(t.review.thread.title)} … ${why}`);
+    }
+  }
+  if (input.jobs.length) {
+    section(`新着の募集 ${input.jobs.length}件の判定`);
+    for (const j of others) out.push(`・${j.verdict}：${shortTitle(j.title)}`, `  ${jobReason(j)}`);
+    if (!others.length) out.push("・すべて上の「応募を考える」に入れました");
+  }
   if (input.errors.length) {
-    section("うまく読めなかったもの");
+    section("うまく読めなかったもの（直すために使います）");
     for (const e of input.errors.slice(0, 10)) out.push(`・${e}`);
   }
   out.push(
     "",
-    "※「目立った危険信号なし」は安全の保証ではありません。契約と仮払いが画面に出るまで作業しないでください。",
+    "※ 危険信号が出ていないことは、安全の保証ではありません。契約と仮払いが画面に出るまで作業しないでください。",
     "※ このメールはあなたのPCの巡回が送っています。応募・返信・送信はしません。"
   );
 
-  const changedReply = reply.filter((t) => t.changed).length;
-  const worthSending = changedReply > 0 || picks.length > 0 || risky.some((t) => t.changed) || flagged.some((t) => t.changed);
+  const worthSending =
+    reply.some((t) => t.changed) || picks.length > 0 || risky.some((t) => t.changed);
   return {
-    subject: `【CW巡回】返事が要る${reply.length}件・新着候補${picks.length}件${risky.length ? `・危険${risky.length}件` : ""}`,
-    body: out.join("\n").replace(/^\n+/, ""),
+    subject: todo === 0 ? "【CW巡回】今やること：なし" : `【CW巡回】今やること ${todo}件${picks.length ? `（応募候補 ${picks.length}件）` : ""}`,
+    body: out.join("\n"),
     worthSending,
   };
+}
+
+/** 一覧で読みやすいよう、題名の飾り（【クラウドワークス】など）を落として短くする */
+function shortTitle(title: string): string {
+  const t = title
+    .replace(/^(相談から契約まで|契約詳細)[：:]\s*/, "")
+    .replace(/【(クラウドワークス|新着)】/g, "")
+    .trim();
+  return t.length > 40 ? `${t.slice(0, 40)}…` : t;
+}
+
+/** 判定の出力から、見送り・判定できずの理由を1行で取り出す */
+export function jobReason(j: JudgedJob): string {
+  const reason = j.detail.match(/^理由: (.+)$/m)?.[1];
+  if (reason) return `理由: ${reason.slice(0, 100)}`;
+  const tail = j.detail.trim().split("\n").filter((l) => l.trim()).slice(-2).join(" ").slice(0, 160);
+  return tail ? `（理由が読めませんでした: ${tail}）` : "（判定の結果が空でした）";
 }
 
 /** UTF-8 の件名を、メールのヘッダーに書ける形にする。 */
