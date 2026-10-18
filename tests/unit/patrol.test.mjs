@@ -130,3 +130,20 @@ test("SMTP: 決まった順にやり取りして1通送る（偽のサーバー�
     server.close();
   }
 });
+
+test("まとめ: 公開募集の応募候補があれば、結論の件数に足し、提案文を載せて送る", () => {
+  const r = buildReport({
+    threads: [],
+    jobs: [],
+    errors: [],
+    loginExpired: false,
+    scan: { candidates: 2, body: "1. 応募してよい｜データ入力\n―――― 提案文（01.txt）\nはじめまして" },
+  });
+  assert.ok(r.body.startsWith("【結論】今やること 2件（公開募集の応募を考える 2件）"));
+  assert.ok(r.body.includes("はじめまして"));
+  assert.ok(r.subject.includes("応募候補 2件"));
+  assert.equal(r.worthSending, true);
+  const none = buildReport({ threads: [], jobs: [], errors: [], loginExpired: false, scan: { candidates: 0, body: "" } });
+  assert.equal(none.worthSending, false);
+  assert.ok(none.body.startsWith("【結論】今やることはありません"));
+});

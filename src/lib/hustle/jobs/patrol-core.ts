@@ -90,6 +90,8 @@ export interface ReportInput {
   jobs: JudgedJob[];
   errors: string[];
   loginExpired: boolean;
+  /** 公開募集（ココナラ・ままワークス）の自動収集の結果。応募候補の件数と、メールに載せる本文（提案文つき） */
+  scan?: { candidates: number; body: string } | null;
 }
 
 const WANT = ["応募してよい", "確認してから応募"];
@@ -113,7 +115,8 @@ export function buildReport(input: ReportInput): PatrolReport {
   );
   const picks = input.jobs.filter((j) => WANT.some((w) => j.verdict.startsWith(w)));
   const others = input.jobs.filter((j) => !picks.includes(j));
-  const todo = picks.length + reply.length;
+  const scanCandidates = input.scan?.candidates ?? 0;
+  const todo = picks.length + reply.length + scanCandidates;
 
   const out: string[] = [];
   const section = (title: string) => out.push("", `■ ${title}`);
@@ -122,13 +125,23 @@ export function buildReport(input: ReportInput): PatrolReport {
   out.push(
     todo === 0
       ? "【結論】今やることはありません。"
-      : `【結論】今やること ${todo}件${picks.length ? `（応募を考える ${picks.length}件` : "（"}${picks.length && reply.length ? "・" : ""}${reply.length ? `返事を考える ${reply.length}件` : ""}）`
+      : `【結論】今やること ${todo}件（${[
+          picks.length ? `CWの応募を考える ${picks.length}件` : "",
+          scanCandidates ? `公開募集の応募を考える ${scanCandidates}件` : "",
+          reply.length ? `返事を考える ${reply.length}件` : "",
+        ]
+          .filter(Boolean)
+          .join("・")}）`
   );
   if (risky.length) out.push(`危険信号の出た相手 ${risky.length}件は、返事をしなくて大丈夫です（理由は下に）。`);
 
   if (picks.length) {
     section(`応募を考える ${picks.length}件（送るかどうかはあなたが決める。送信はしません）`);
     for (const j of picks) out.push("", `―――― ${j.title}`, j.url, j.detail.trim());
+  }
+  if (input.scan && scanCandidates > 0) {
+    section(`公開募集（ココナラ・ままワークス）の応募候補 ${scanCandidates}件（送るかどうかはあなたが決める。送信はしません）`);
+    out.push(input.scan.body.trim());
   }
   if (reply.length) {
     section(`返事を考える ${reply.length}件`);
@@ -163,9 +176,9 @@ export function buildReport(input: ReportInput): PatrolReport {
   );
 
   const worthSending =
-    reply.some((t) => t.changed) || picks.length > 0 || risky.some((t) => t.changed);
+    reply.some((t) => t.changed) || picks.length > 0 || scanCandidates > 0 || risky.some((t) => t.changed);
   return {
-    subject: todo === 0 ? "【CW巡回】今やること：なし" : `【CW巡回】今やること ${todo}件${picks.length ? `（応募候補 ${picks.length}件）` : ""}`,
+    subject: todo === 0 ? "【CW巡回】今やること：なし" : `【CW巡回】今やること ${todo}件${picks.length + scanCandidates ? `（応募候補 ${picks.length + scanCandidates}件）` : ""}`,
     body: out.join("\n"),
     worthSending,
   };

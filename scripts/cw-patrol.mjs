@@ -305,6 +305,39 @@ function judgeJob(text, title, url) {
   return { verdict, detail: out };
 }
 
+/**
+ * 公開されている募集（ココナラ・ままワークス）の自動収集を回し、応募候補と提案文をまとめに載せる。
+ * 失敗してもCWの巡回は止めない（errors に理由を残す）。
+ */
+function runScan(errors) {
+  if (process.env.CW_PATROL_FAKE_DIR || argv.includes("--no-scan")) return null;
+  const r = spawnSync(process.execPath, [path.join(ROOT, "scripts", "job.mjs"), "scan", "--max", "40"], {
+    cwd: ROOT,
+    encoding: "utf8",
+    timeout: 12 * 60_000,
+    env: { ...process.env, JOB_AUTO_PULL: "0" },
+  });
+  const out = `${r.stdout ?? ""}`.trim();
+  const m = out.match(/応募候補(\d+)・確認してから(\d+)/);
+  if (r.status !== 0 || !m) {
+    errors.push(`公開募集の収集に失敗しました: ${(r.stderr || out).slice(-300)}`);
+    return null;
+  }
+  const candidates = Number(m[1]) + Number(m[2]);
+  if (candidates === 0) return { candidates: 0, body: "" };
+  let body = out;
+  const dirRel = out.match(/提案文の保存先: (.+)/)?.[1]?.trim();
+  if (dirRel) {
+    const dir = path.join(ROOT, dirRel);
+    try {
+      for (const f of fs.readdirSync(dir).sort()) {
+        body += `\n\n―――― 提案文（${f}）\n${fs.readFileSync(path.join(dir, f), "utf8").trim()}`;
+      }
+    } catch {}
+  }
+  return { candidates, body };
+}
+
 async function run() {
   const config = readJson(CONFIG, null);
   if (!config?.listUrls?.length) die("まだ設定されていません。先に setup を実行してください");
@@ -404,7 +437,8 @@ async function run() {
     }
 
     writeJson(SEEN, seen);
-    const report = core.buildReport({ threads, jobs: judged, errors, loginExpired });
+    const scan = loginExpired ? null : runScan(errors);
+    const report = core.buildReport({ threads, jobs: judged, errors, loginExpired, scan });
     log(report.subject);
     if ((report.worthSending || argv.includes("--always")) && config.mail) {
       const message = core.buildMimeMessage({ from: config.mail.user, to: config.mail.to, subject: report.subject, body: report.body });
