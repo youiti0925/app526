@@ -31,11 +31,18 @@ export function extractBudget(text: string): number | null {
     { re: /([0-9,]+)\s*円/, scale: 1 },
   ];
 
-  for (const { re, scale } of patterns) {
-    const m = normalized.match(re);
-    if (!m) continue;
-    const value = Number(m[1].replace(/,/g, "")) * scale;
-    if (Number.isFinite(value) && value > 0 && value < 100_000_000) return value;
+  // ラベル付き（予算・報酬など）は信用する。ラベル無しの金額は、ページの飾り
+  // （「累計取引額 2,000万円」「会員数 1,500万人」の類）を拾いやすいので、
+  // 個人の仕事として現実的な範囲（100万円以下）に限る。
+  const LABELED_MAX = 10_000_000;
+  const UNLABELED_MAX = 1_000_000;
+  for (let i = 0; i < patterns.length; i++) {
+    const { re, scale } = patterns[i];
+    const max = i < 2 ? LABELED_MAX : UNLABELED_MAX;
+    for (const m of normalized.matchAll(new RegExp(re.source, "g"))) {
+      const value = Number(m[1].replace(/,/g, "")) * scale;
+      if (Number.isFinite(value) && value > 0 && value <= max) return value;
+    }
   }
   return null;
 }

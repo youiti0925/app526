@@ -87,6 +87,11 @@ test("報酬額が無ければ null（0にしない）", () => {
   assert.equal(extractBudget(""), null);
 });
 
+test("ページの飾りの「2,000万円」を予算と読み違えない", () => {
+  assert.equal(extractBudget("累計取引額 2,000万円突破\n予算 5,000円"), 5000);
+  assert.equal(extractBudget("会員1,500万人 取引2,000万円\n報酬は応相談です"), null);
+});
+
 test("非現実的な金額は拾わない", () => {
   assert.equal(extractBudget("999999999999円"), null);
 });
