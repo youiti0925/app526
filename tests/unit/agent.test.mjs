@@ -500,3 +500,8 @@ test("予算: 10円未満の仮入力（1文字1円など）は報酬として�
   assert.equal(extractBudget("報酬 1円（1文字）"), null);
   assert.equal(extractBudget("報酬 10,000円"), 10000);
 });
+
+test("予算: 依頼者の商品・コースの値段（括弧の中の個人○円・税込）は報酬にしない", () => {
+  assert.equal(extractBudget("料金はご提案ください。ヒストリエコース（個人672,000円・税込）の営業です"), null);
+  assert.equal(extractBudget("報酬 10,000円（税込）"), 10000);
+});

@@ -21,7 +21,10 @@ export interface ParsedLead {
 
 /** 本文から報酬額を読み取る。読めなければ null。 */
 export function extractBudget(text: string): number | null {
-  const normalized = text.normalize("NFKC");
+  // 「（個人672,000円・税込）」のように、依頼者の商品・コースの値段として括弧の中に書かれた金額は報酬ではない
+  const normalized = text
+    .normalize("NFKC")
+    .replace(/[(（][^)）\n]{0,40}(?:個人|法人|コース|プラン|月額|会員)[^)）\n]{0,40}[)）]/g, " ");
 
   // 「10,000円」「1万円」「時給1200円」など。範囲表記は下限を採用する。
   const patterns: { re: RegExp; scale: number }[] = [

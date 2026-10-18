@@ -37,7 +37,7 @@ GitHub に置かない「引き継ぎ_個人用.md」にある（ユーザーが
 
 ## 動かし方
 
-- テスト: `npm run test:unit`（UTC と日本時間の両方）、`npm run test:e2e`、型: `npx tsc --noEmit`
+- テスト: `npm run test:unit`（UTC と日本時間の両方。Windows でも動く）、`npm run test:e2e`、型: `npx tsc --noEmit`
 - 仕事ライン: `node scripts/job.mjs run|judge|scan|thread|status|usage …`（使い方はファイル先頭）
 - クラウドワークス巡回: `node scripts/cw-patrol.mjs setup|run|test-mail`（docs/CW-PATROL.md）
 - 専用の会話（スマホで案件を貼る用）の指示: docs/JOB-SESSION.md
