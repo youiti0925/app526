@@ -143,6 +143,8 @@ export function buildReport(input: ReportInput): PatrolReport {
   if (input.scan && scanCandidates > 0) {
     section(`公開募集（ココナラ・ままワークス）の応募候補 ${scanCandidates}件（送るかどうかはあなたが決める。送信はしません）`);
     out.push(input.scan.body.trim());
+  } else if (input.scan) {
+    out.push("", "公開募集（ココナラ・ままワークス）: 今回は応募候補なし（収集は動きました）");
   }
   if (reply.length) {
     section(`返事を考える ${reply.length}件`);

@@ -146,6 +146,8 @@ test("まとめ: 公開募集の応募候補があれば、結論の件数に足
   const none = buildReport({ threads: [], jobs: [], errors: [], loginExpired: false, scan: { candidates: 0, body: "" } });
   assert.equal(none.worthSending, false);
   assert.ok(none.body.startsWith("【結論】今やることはありません"));
+  assert.ok(none.body.includes("公開募集（ココナラ・ままワークス）: 今回は応募候補なし"));
+  assert.ok(!buildReport({ threads: [], jobs: [], errors: [], loginExpired: false, scan: null }).body.includes("今回は応募候補なし"));
 });
 
 test("予算の記録: Excel/VBA・品質の言葉と報酬の幅を読み、中央値などをまとめる", () => {
