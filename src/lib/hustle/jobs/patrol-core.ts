@@ -231,10 +231,13 @@ export interface BudgetRecord {
   key: string;
   title: string;
   url: string;
-  /** 報酬の下限（読めなければ null）。「10,000円〜30,000円」なら10,000 */
+  /** 固定報酬の下限（読めなければ null。時間単価・タスク形式でも null）。「10,000円〜30,000円」なら10,000 */
   budgetJpy: number | null;
-  /** 報酬の上限。幅が無ければ下限と同じ */
+  /** 固定報酬の上限。幅が無ければ下限と同じ */
   budgetMaxJpy: number | null;
+  /** 時間単価の募集の時給（下限・上限）。固定報酬では null */
+  hourlyJpy?: number | null;
+  hourlyMaxJpy?: number | null;
   /** 題名か本文に Excel・VBA・マクロ・スプレッドシートが出てくるか */
   excelVba: boolean;
   /** 品質・検査・測定・工程の言葉が出てくるか */
@@ -242,26 +245,63 @@ export interface BudgetRecord {
   payType: "固定報酬" | "時間単価" | "コンペ" | "タスク" | "不明";
 }
 
-const EXCEL_VBA = /(excel|エクセル|vba|マクロ|スプレッドシート)/i;
-const QUALITY = /(品質|検査|測定|工程|不良|成績書|管理図)/;
+const EXCEL_VBA = /(excel|エクセル|vba|マクロ|スプレッドシート)/gi;
+const QUALITY = /(品質管理|品質保証|検査|測定|工程能力|工程管理|不良|成績書|管理図|cpk)/gi;
+const yen = (s: string): number => parseInt(s.replace(/,/g, ""), 10);
 
-/** 読んだ募集から、予算と種類を1件分の記録にする。 */
+/** 題名に出ていれば当たり。本文だけなら、飾りで1回出ただけの募集を拾わないよう2回以上出たものを当たりにする。 */
+function mentions(re: RegExp, title: string, body: string): boolean {
+  const once = new RegExp(re.source, "i");
+  return once.test(title) || (body.match(new RegExp(re.source, "gi")) ?? []).length >= 2;
+}
+
+/** 読んだ募集から、予算と種類を1件分の記録にする。分類は、依頼者欄・おすすめより前の本文だけで行う。 */
 export function budgetRecord(link: { key: string; url: string }, title: string, text: string, at: Date = new Date()): BudgetRecord {
-  const t = text.normalize("NFKC");
-  const head = `${title}\n${t.slice(0, 4000)}`;
-  const range = t.match(/([0-9][0-9,]{2,})\s*円\s*[〜~～-]\s*([0-9][0-9,]{2,})\s*円/);
-  const min = readBudgetFromText(t);
-  const max = range ? parseInt(range[2].replace(/,/g, ""), 10) : min;
-  const payType = /コンペ/.test(head) ? "コンペ" : /タスク/.test(head) ? "タスク" : /時間単価|時給/.test(head) ? "時間単価" : /固定報酬/.test(head) ? "固定報酬" : "不明";
+  const body = jobBodyForJudging(text).normalize("NFKC").slice(0, 6000);
+  const head = body.slice(0, 600);
+  // 募集ページの先頭に出る「固定報酬制」「時間単価制」「コンペ形式」「タスク形式」の最初のものがその募集の支払い方式
+  const PAY_TYPES: Record<string, BudgetRecord["payType"]> = { 固定報酬制: "固定報酬", 時間単価制: "時間単価", コンペ形式: "コンペ", タスク形式: "タスク" };
+  const label = body.match(/(固定報酬制|時間単価制|コンペ形式|タスク形式)/)?.[1];
+  const payType: BudgetRecord["payType"] = label
+    ? PAY_TYPES[label]
+    : /コンペ/.test(head) ? "コンペ" : /タスク形式/.test(head) ? "タスク" : /時間単価|時給/.test(head) ? "時間単価" : /固定報酬/.test(head) ? "固定報酬" : "不明";
+
+  let budgetJpy: number | null = null;
+  let budgetMaxJpy: number | null = null;
+  let hourlyJpy: number | null = null;
+  let hourlyMaxJpy: number | null = null;
+  if (payType === "時間単価") {
+    const h = body.match(/(?:時間単価|時給)[^0-9]{0,20}([0-9][0-9,]{2,})\s*円(?:\s*[〜~～-]\s*([0-9][0-9,]{2,})\s*円)?/);
+    if (h) {
+      hourlyJpy = yen(h[1]);
+      hourlyMaxJpy = h[2] ? yen(h[2]) : hourlyJpy;
+    }
+  } else if (payType !== "タスク") {
+    const range = body.match(/(?:報酬|予算|金額|固定報酬)[^0-9]{0,20}([0-9][0-9,]{2,})\s*円\s*[〜~～-]\s*([0-9][0-9,]{2,})\s*円/);
+    if (range) {
+      budgetJpy = yen(range[1]);
+      budgetMaxJpy = yen(range[2]);
+    } else {
+      budgetJpy = readBudgetFromText(body);
+      budgetMaxJpy = budgetJpy;
+    }
+    // 下限が上限より大きいのは読み違い。当てずっぽうの数字を残さない
+    if (budgetJpy !== null && budgetMaxJpy !== null && budgetMaxJpy < budgetJpy) {
+      budgetJpy = null;
+      budgetMaxJpy = null;
+    }
+  }
   return {
     at: at.toISOString(),
     key: link.key,
     title: title.slice(0, 80),
     url: link.url,
-    budgetJpy: min,
-    budgetMaxJpy: max,
-    excelVba: EXCEL_VBA.test(head),
-    quality: QUALITY.test(head),
+    budgetJpy,
+    budgetMaxJpy,
+    hourlyJpy,
+    hourlyMaxJpy,
+    excelVba: mentions(EXCEL_VBA, title, body),
+    quality: mentions(QUALITY, title, body),
     payType,
   };
 }
@@ -272,16 +312,18 @@ const median = (xs: number[]): number => {
   return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
 };
 
-/** 記録をまとめる。同じ募集は最新の1件だけ数える。 */
+/** 記録をまとめる。同じ募集は最新の1件だけ数える。報酬は固定報酬だけを数え、時給は別に出す。 */
 export function summarizeBudgets(records: BudgetRecord[]): string {
   const latest = [...new Map(records.map((r) => [r.key, r])).values()];
   const group = (label: string, rs: BudgetRecord[]): string => {
-    const priced = rs.filter((r) => r.budgetJpy !== null && r.payType !== "時間単価" && r.payType !== "タスク");
+    const priced = rs.filter((r) => r.budgetJpy !== null && r.payType !== "時間単価" && r.payType !== "タスク" && r.payType !== "コンペ");
     if (!rs.length) return `${label}: 記録なし`;
-    if (!priced.length) return `${label}: ${rs.length}件（報酬が読めたもの 0件）`;
+    const hourly = rs.filter((r) => r.hourlyJpy != null);
+    const hourlyText = hourly.length ? `／時給の募集 ${hourly.length}件（時給の下限の中央値 ${median(hourly.map((r) => r.hourlyJpy as number)).toLocaleString()}円）` : "";
+    if (!priced.length) return `${label}: ${rs.length}件（報酬が読めた固定報酬 0件）${hourlyText}`;
     const mins = priced.map((r) => r.budgetJpy as number);
     const over20k = priced.filter((r) => (r.budgetMaxJpy ?? r.budgetJpy ?? 0) >= 20_000).length;
-    return `${label}: ${rs.length}件（報酬が読めた固定報酬 ${priced.length}件・下限の中央値 ${median(mins).toLocaleString()}円・最小 ${Math.min(...mins).toLocaleString()}円・最大 ${Math.max(...mins).toLocaleString()}円・上限が2万円以上 ${over20k}件）`;
+    return `${label}: ${rs.length}件（報酬が読めた固定報酬 ${priced.length}件・下限の中央値 ${median(mins).toLocaleString()}円・最小 ${Math.min(...mins).toLocaleString()}円・最大 ${Math.max(...mins).toLocaleString()}円・上限が2万円以上 ${over20k}件）${hourlyText}`;
   };
   return [
     `募集の予算の記録（${latest.length}件）`,

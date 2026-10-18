@@ -5,6 +5,8 @@
  *   node scripts/cw-patrol.mjs setup       # 初回だけ: ログイン・見る画面の登録・Gメールの設定
  *   node scripts/cw-patrol.mjs run         # 巡回して、知らせることがあればGメールに送る（タスクスケジューラから呼ぶ）
  *   node scripts/cw-patrol.mjs run --always    # 新しいことが無くてもまとめを送る
+ *   node scripts/cw-patrol.mjs survey [--max 30] [--fresh]   # 登録した検索画面の募集の報酬だけを集める（判定・応募はしない）
+ *   node scripts/cw-patrol.mjs schedule    # 自動実行の登録をやり直す（電池でも動く・寝ていた分も回す設定つき）
  *   node scripts/cw-patrol.mjs test-mail   # Gメールに試しの1通を送る
  *   node scripts/cw-patrol.mjs fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数]
  *   node scripts/cw-patrol.mjs fill --list 一覧.tsv   # 1行に「URL<TAB>提案文.txt<TAB>金額<TAB>日数」。1回に5件まで
@@ -173,6 +175,14 @@ function registerSchedule() {
   if (r.status !== 0) {
     ok = false;
     console.log(`3時間ごとの登録に失敗しました（${(r.stderr || r.stdout).trim()}）`);
+  } else {
+    // 既定のままだと「バッテリー駆動中は始めない」「PCが寝ていた時間の分は飛ばす」ので、ノートPCでは動かないことがある。
+    // 電源につないでいなくても動かし、寝ていて飛ばした分は起きたあとに1回回す（PCを起こすことはしない）。
+    const ps =
+      "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2); " +
+      "Set-ScheduledTask -TaskName 'CWPatrol-Every3h' -Settings $s | Out-Null";
+    const s = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], { encoding: "utf8" });
+    if (s.status !== 0) console.log(`3時間ごとの設定（電池でも動かす・寝ていた分を回す）に失敗しました。スケジュールは登録済みですが、ノートPCでは動かないことがあります（${(s.stderr || s.stdout).trim().slice(0, 200)}）`);
   }
   const startup = path.join(process.env.APPDATA ?? "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
   try {
@@ -355,6 +365,8 @@ async function run() {
   }
   fs.mkdirSync(HOME, { recursive: true });
   fs.writeFileSync(LOCK, String(process.pid));
+  // 公開募集の収集は最大40分かかるので、動いているあいだはロックを新しく保つ
+  const touch = setInterval(() => fs.utimesSync(LOCK, new Date(), new Date()), 60_000);
 
   try {
     ensureBuilt();
@@ -363,6 +375,7 @@ async function run() {
     const errors = [];
     const threads = [];
     const judged = [];
+    const toJudge = [];
     let loginExpired = false;
 
     const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
@@ -429,14 +442,12 @@ async function run() {
             seen.jobs[link.key] = new Date().toISOString();
             // 判定がおかしいときに見直せるよう、読んだ本文をPCの中にだけ残す（前回の分は上書き）
             fs.mkdirSync(path.join(HOME, "last-jobs"), { recursive: true });
-            fs.writeFileSync(path.join(HOME, "last-jobs", `${String(judged.length + 1).padStart(2, "0")}.txt`), `${link.url}\n${title}\n\n${p.text}`);
+            fs.writeFileSync(path.join(HOME, "last-jobs", `${String(toJudge.length + 1).padStart(2, "0")}.txt`), `${link.url}\n${title}\n\n${p.text}`);
             // 予算の記録（Excel/VBA の単価の前提を確かめるため。PCの中だけ）
             try {
               fs.appendFileSync(BUDGET_LOG, `${JSON.stringify(core.budgetRecord(link, title, p.text))}\n`);
             } catch {}
-            log(`判定しています: ${title}`);
-            const j = judgeJob(core.jobBodyForJudging(p.text), title, link.url);
-            judged.push({ title, url: link.url, verdict: j.verdict, detail: j.detail });
+            toJudge.push({ title, url: link.url, text: core.jobBodyForJudging(p.text) });
           } catch (e) {
             errors.push(`${link.url}: ${e.message}`);
           }
@@ -445,6 +456,18 @@ async function run() {
       }
     } finally {
       await ctx.close();
+    }
+
+    // 判定は、ブラウザを閉じてから（Edge を開いたままだと PC のメモリが足りず、判定の Claude が落ちることがあった）
+    for (const t of toJudge) {
+      log(`判定しています: ${t.title}`);
+      let j = judgeJob(t.text, t.title, t.url);
+      if (/VirtualAlloc|ENOMEM|out of memory/i.test(j.detail)) {
+        log("メモリ不足で判定が落ちました。少し待ってもう一度やります");
+        await new Promise((r) => setTimeout(r, 30_000));
+        j = judgeJob(t.text, t.title, t.url);
+      }
+      judged.push({ title: t.title, url: t.url, verdict: j.verdict, detail: j.detail });
     }
 
     writeJson(SEEN, seen);
@@ -467,6 +490,7 @@ async function run() {
       log("新しく知らせることは無いので、メールは送りません");
     }
   } finally {
+    clearInterval(touch);
     fs.rmSync(LOCK, { force: true });
   }
 }
@@ -560,6 +584,65 @@ function addSearch() {
   console.log(`検索画面を登録しました（全${config.searchUrls.length}件）`);
 }
 
+/**
+ * 募集の予算だけを集める（判定・応募はしない）。登録した検索画面の募集を、既読かどうかに関係なく読んで記録する。
+ * Excel/VBA の案件の報酬が実際いくらかを、短時間で確かめるために使う。見るだけ・ゆっくり（巡回と同じ）。
+ *   node scripts/cw-patrol.mjs survey [--max 30] [--fresh] [--show]
+ *   --fresh: これまでの記録（budget-log.jsonl）を budget-log.old.jsonl に退避してから集める
+ */
+async function survey() {
+  const config = readJson(CONFIG, null);
+  if (!config?.searchUrls?.length) die("検索画面が登録されていません。add-search で登録してください");
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  const max = Math.min(Math.max(Number(optValue("max")) || 30, 1), 60);
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  const touch = setInterval(() => fs.utimesSync(LOCK, new Date(), new Date()), 60_000);
+  try {
+    ensureBuilt();
+    const { core } = loadLib();
+    if (argv.includes("--fresh") && fs.existsSync(BUDGET_LOG)) fs.renameSync(BUDGET_LOG, path.join(HOME, "budget-log.old.jsonl"));
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    const records = [];
+    try {
+      const urls = config.searchUrls.filter((u) => !/category_id=267\b/.test(u));
+      const perSearch = [];
+      for (const url of urls) {
+        log(`検索結果を見ています: ${url}`);
+        const p = await readPage(page, url);
+        if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
+        perSearch.push(core.collectLinks(p.hrefs).jobs);
+        await politeWait();
+      }
+      const picked = core.pickJobsRoundRobin(perSearch, core.emptySeen(), max, Math.ceil(max / Math.max(urls.length, 1)));
+      log(`${picked.length} 件の募集を読みます（1件ごとに間をあけます）`);
+      for (const link of picked) {
+        try {
+          const p = await readPage(page, link.url);
+          const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+          const rec = core.budgetRecord(link, title, p.text);
+          fs.appendFileSync(BUDGET_LOG, `${JSON.stringify(rec)}\n`);
+          records.push(rec);
+          const body = core.jobBodyForJudging(p.text).normalize("NFKC");
+          const at = body.search(/(固定報酬制|時間単価制|コンペ形式|タスク形式)/);
+          const pay = at >= 0 ? body.slice(at, at + 90).replace(/\s+/g, " ") : "（報酬の欄が見つかりません）";
+          const money = rec.hourlyJpy != null ? `時給${rec.hourlyJpy}〜${rec.hourlyMaxJpy}` : rec.budgetJpy != null ? `${rec.budgetJpy}〜${rec.budgetMaxJpy}` : "報酬不明";
+          console.log(`- ${rec.payType} ${money}円 ${rec.excelVba ? "[Excel/VBA]" : ""}${rec.quality ? "[品質]" : ""} ${title.slice(0, 40)}\n    ${link.url}\n    画面の表示: ${pay}`);
+        } catch (e) {
+          log(`読めませんでした: ${link.url}  ${e.message}`);
+        }
+        await politeWait();
+      }
+    } finally {
+      await ctx.close();
+    }
+    console.log(`\n${core.summarizeBudgets(records)}`);
+  } finally {
+    clearInterval(touch);
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
 /** 記録した募集の予算をまとめて表示する */
 function budgets() {
   ensureBuilt();
@@ -574,9 +657,9 @@ function budgets() {
   console.log(loadLib().core.summarizeBudgets(records));
 }
 
-const commands = { setup, run, fill, "add-search": addSearch, budgets, "test-mail": () => testMail() };
+const commands = { setup, run, fill, "add-search": addSearch, budgets, survey, schedule: () => registerSchedule(), "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | schedule | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();

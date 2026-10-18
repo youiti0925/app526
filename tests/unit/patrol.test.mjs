@@ -163,6 +163,30 @@ test("予算の記録: Excel/VBA・品質の言葉と報酬の幅を読み、中
   assert.ok(summarizeBudgets([]).includes("記録なし"));
 });
 
+test("予算の記録: おすすめ欄のExcelは数えず、時給は固定報酬と分け、上限<下限は読まない", () => {
+  const filler = "3DCG動画の制作をお願いします。".repeat(30);
+  const page = `固定報酬制\n報酬 30,000円\n${filler}\nクライアント情報\nおすすめの仕事\nExcel VBA マクロ スプレッドシート 品質管理 検査`;
+  const a = budgetRecord({ key: "job:10", url: "u" }, "3DCG動画の制作", page);
+  assert.equal(a.excelVba, false);
+  assert.equal(a.quality, false);
+  assert.equal(a.budgetJpy, 30000);
+  // 本文に1回だけ出る飾りの語は数えない。題名に出る・本文に2回以上出る募集は数える
+  assert.equal(budgetRecord({ key: "job:11", url: "u" }, "資料作成", "固定報酬制 報酬 10,000円 Excelが使える方歓迎").excelVba, false);
+  assert.equal(budgetRecord({ key: "job:12", url: "u" }, "資料作成", "固定報酬制 報酬 10,000円 Excelで表を作り、Excelで集計します").excelVba, true);
+  const h = budgetRecord({ key: "job:13", url: "u" }, "スプレッドシートの関数でレポート構築", "時間単価制\n時給\n1,500円 〜 2,000円\n週10時間");
+  assert.equal(h.payType, "時間単価");
+  assert.equal(h.budgetJpy, null);
+  assert.equal(h.hourlyJpy, 1500);
+  assert.equal(h.hourlyMaxJpy, 2000);
+  const task = budgetRecord({ key: "job:14", url: "u" }, "地方創生マネージャー", "タスク形式\n報酬 3,000円");
+  assert.equal(task.payType, "タスク");
+  assert.equal(task.budgetJpy, null);
+  const bad = budgetRecord({ key: "job:15", url: "u" }, "集計", "固定報酬制 報酬 100,000円 〜 3,000円");
+  assert.equal(bad.budgetJpy, null);
+  const text = summarizeBudgets([h, task, bad, a]);
+  assert.ok(text.includes("時給の募集 1件（時給の下限の中央値 1,500円）"));
+});
+
 test("判定に渡す本文: 依頼者欄・おすすめ・ページ下部の定型文を落とす", () => {
   const body = "紙資料をExcelへ入力します。".repeat(30);
   const page = `${body}\nクライアント情報\n本人確認未提出\nおすすめの仕事\nアンケート\n個人情報保護方針`;

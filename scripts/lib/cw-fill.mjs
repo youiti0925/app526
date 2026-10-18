@@ -82,6 +82,9 @@ export function validateEntry(e) {
   const problems = [];
   if (!jobIdFromUrl(e.url)) problems.push(`クラウドワークスの募集のURLではありません: ${e.url}`);
   if (!e.message || !e.message.trim()) problems.push("提案文が空です");
+  // 確認が済んでいない書きかけの提案文は、送る直前まで進めない（残った印を見落とさないため）
+  const left = (e.message ?? "").match(/【要確認[^】]*】|\[要確認[^\]]*\]|［要確認[^］]*］|〇〇|○○|ＸＸ|XXX/);
+  if (left) problems.push(`提案文に書きかけの印が残っています（${left[0].slice(0, 30)}）。事実を確かめて書き直してから入力します: ${e.url}`);
   if (e.price !== undefined && !(Number.isInteger(e.price) && e.price > 0 && e.price < 10_000_000)) problems.push(`金額がおかしいです: ${e.price}`);
   if (e.days !== undefined && !(Number.isInteger(e.days) && e.days >= 1 && e.days <= 365)) problems.push(`日数がおかしいです: ${e.days}`);
   return problems;

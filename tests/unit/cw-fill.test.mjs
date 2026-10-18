@@ -67,6 +67,8 @@ test("一覧ファイルを読み、おかしい値は先に止める", () => {
   assert.equal(validateEntry({ ...rows[0], message: " " }).length, 1);
   assert.equal(validateEntry({ ...rows[0], message: "x", price: -1 }).length, 1);
   assert.equal(validateEntry({ url: "https://example.com/", message: "x" }).length, 1);
+  assert.equal(validateEntry({ ...rows[0], message: "経験があります。【要確認: QUERY関数の使用経験】" }).length, 1);
+  assert.equal(validateEntry({ ...rows[0], message: "○○様 はじめまして" }).length, 1);
   assert.equal(MAX_TABS, 5);
 });
 
