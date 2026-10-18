@@ -41,7 +41,8 @@ export function extractBudget(text: string): number | null {
     const max = i < 2 ? LABELED_MAX : UNLABELED_MAX;
     for (const m of normalized.matchAll(new RegExp(re.source, "g"))) {
       const value = Number(m[1].replace(/,/g, "")) * scale;
-      if (Number.isFinite(value) && value > 0 && value <= max) return value;
+      // 10円未満は「1文字1円」のような仮入力で、仕事の報酬ではない
+      if (Number.isFinite(value) && value >= 10 && value <= max) return value;
     }
   }
   return null;

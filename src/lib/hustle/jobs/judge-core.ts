@@ -10,8 +10,8 @@
 export function readBudgetFromText(text: string): number | null {
   const t = text.normalize("NFKC");
   const LABEL = "(?:予算|報酬|金額|契約金額|固定報酬|謝礼|支払)";
-  const man = t.match(new RegExp(`${LABEL}[^0-9\\n]{0,12}([0-9]+(?:\\.[0-9]+)?)\\s*万\\s*円`));
-  const yen = t.match(new RegExp(`${LABEL}[^0-9\\n]{0,12}([0-9][0-9,]{2,})\\s*円`));
+  const man = t.match(new RegExp(`${LABEL}[^0-9]{0,20}([0-9]+(?:\\.[0-9]+)?)\\s*万\\s*円`));
+  const yen = t.match(new RegExp(`${LABEL}[^0-9]{0,20}([0-9][0-9,]{2,})\\s*円`));
   const candidates: { at: number; jpy: number }[] = [];
   if (man?.index !== undefined) candidates.push({ at: man.index, jpy: Math.round(parseFloat(man[1]) * 10_000) });
   if (yen?.index !== undefined) candidates.push({ at: yen.index, jpy: parseInt(yen[1].replace(/,/g, ""), 10) });

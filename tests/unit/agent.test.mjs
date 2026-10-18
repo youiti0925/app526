@@ -488,3 +488,15 @@ test("募集文の締切日を読み、超過した承認待ちだけを選ぶ",
   assert.deepEqual(expired.map((e) => e.inboxId), ["a"]);
   assert.equal(expired[0].deadline, "2026-08-28");
 });
+
+test("ページ下部の「個人情報保護方針」は機密の根拠にしない。本文の「個人情報」は従来どおり", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const footer = "紙資料をExcelへ入力します。\nクライアント情報\n運営会社 利用規約 個人情報保護方針 特定商取引法に基づく表記";
+  assert.ok(!checkGates(footer).gates?.some?.((g) => g.id === "confidentiality") && !JSON.stringify(checkGates(footer)).includes("機密・NDA"));
+  assert.ok(JSON.stringify(checkGates("顧客の個人情報を含む名簿を入力します")).includes("機密・NDA"));
+});
+
+test("予算: 10円未満の仮入力（1文字1円など）は報酬として読まない", () => {
+  assert.equal(extractBudget("報酬 1円（1文字）"), null);
+  assert.equal(extractBudget("報酬 10,000円"), 10000);
+});

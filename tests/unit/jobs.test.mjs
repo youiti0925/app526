@@ -615,3 +615,18 @@ test("応募人数: 「応募者: 3人」も読む", async () => {
   const { readCompetition } = await import("../../dist-test/agent/competition.js");
   assert.equal(readCompetition("予算 2万円\n応募者: 3人\n締切 10/10").applicants, 3);
 });
+
+test("報酬: ラベルと金額が改行で離れたクラウドワークスの画面からも読む", async () => {
+  const { readBudgetFromText } = await import("../../dist-test/jobs/judge-core.js");
+  assert.equal(readBudgetFromText("固定報酬制\n報酬\n10,000円 〜 30,000円\n応募期限"), 10000);
+  assert.equal(readBudgetFromText("予算: 20,000円"), 20000);
+});
+
+test("claude の場所: CLAUDE_BIN を優先する", async () => {
+  const { resolveClaudeBin } = await import("../../dist-test/jobs/models.js");
+  const old = process.env.CLAUDE_BIN;
+  process.env.CLAUDE_BIN = "/x/claude";
+  assert.equal(resolveClaudeBin(), "/x/claude");
+  if (old === undefined) delete process.env.CLAUDE_BIN;
+  else process.env.CLAUDE_BIN = old;
+});

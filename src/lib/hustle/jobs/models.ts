@@ -17,7 +17,7 @@
  *
  * Gemini は無料枠のため、送った内容が学習に使われうる。公開情報だけの依頼でしか使わない。
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { Tier } from "./recipe";
@@ -258,9 +258,31 @@ function childEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+let resolvedBin: string | null = null;
+
+/**
+ * claude コマンドの場所。Windows では npm が入れるのは claude.cmd で、shell なしの spawn では起動できないため、
+ * 隣の node_modules にある claude.exe を探して使う。CLAUDE_BIN があればそれを優先する。
+ */
+export function resolveClaudeBin(): string {
+  if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
+  if (process.platform !== "win32") return "claude";
+  if (resolvedBin) return resolvedBin;
+  resolvedBin = "claude";
+  try {
+    const r = spawnSync("where", ["claude"], { encoding: "utf8" });
+    for (const line of String(r.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
+      if (/\.exe$/i.test(line)) return (resolvedBin = line);
+      const exe = path.join(path.dirname(line), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+      if (fs.existsSync(exe)) return (resolvedBin = exe);
+    }
+  } catch {}
+  return resolvedBin;
+}
+
 export async function callClaudeCli(req: ModelRequest): Promise<ModelResponse> {
   const model = req.override?.provider === "claude" ? req.override.model : tierModel(req.tier);
-  const bin = process.env.CLAUDE_BIN || "claude";
+  const bin = resolveClaudeBin();
   const timeoutMs = req.timeoutMs ?? (req.web ? 10 * 60_000 : 3 * 60_000);
   const started = Date.now();
 
