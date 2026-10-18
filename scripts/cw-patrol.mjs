@@ -119,6 +119,32 @@ const isLoginPage = (url) => /\/login(\b|\/|\?|$)/.test(new URL(url).pathname + 
 
 // --- setup ---------------------------------------------------------------------------
 
+/**
+ * ログインのときだけ、Edge を普通のブラウザとして開く。
+ * Playwright が開いた（プログラムが操作する）ブラウザからの Google ログインは Google に拒否されるため。
+ * 同じ browser-profile を使うので、ここでのログイン状態を巡回でもそのまま使える。
+ * Windows 以外・試験用の偽画面のときは false を返し、呼び出し側は従来どおり Playwright で開く。
+ */
+function openPlainBrowser(url) {
+  if (process.platform !== "win32" || process.env.CW_PATROL_FAKE_DIR) return false;
+  fs.mkdirSync(PROFILE, { recursive: true });
+  const args = [`--user-data-dir=${PROFILE}`, "--no-first-run", url];
+  const exe = process.env.CW_PATROL_EXECUTABLE;
+  const r = exe
+    ? spawnSync("cmd", ["/c", "start", "", exe, ...args], { stdio: "ignore" })
+    : spawnSync("cmd", ["/c", "start", "", "msedge", ...args], { stdio: "ignore" });
+  return r.status === 0;
+}
+
+/** 巡回用のブラウザを開き、ログインできているかを確かめる（できていなければ null） */
+async function openLoggedIn() {
+  const b = await openBrowser({ headless: false });
+  const dash = await readPage(b.page, "https://crowdworks.jp/dashboard").catch(() => null);
+  if (dash && !isLoginPage(dash.finalUrl)) return { ...b, dash };
+  await b.ctx.close();
+  return null;
+}
+
 /** 既定のブラウザでページを開く（アプリ パスワードの作成ページなど） */
 function openInDefaultBrowser(url) {
   if (process.platform === "win32") spawnSync("cmd", ["/c", "start", "", url], { stdio: "ignore" });
@@ -162,17 +188,37 @@ async function setup() {
   console.log("\n=== クラウドワークス巡回の設定（初回だけ）===\n");
   console.log("Edge が開きます。パスワードは Edge にだけ入力します（この画面には入力しません）。\n");
 
-  const { ctx, page } = await openBrowser({ headless: false });
-  try {
+  let ctx, page, dash;
+  if (openPlainBrowser(LOGIN_URL)) {
+    // Google ログインが通るよう、ふつうの Edge でログインしてもらい、閉じてから巡回用に開き直す
+    for (;;) {
+      await rl.question(
+        "【1】開いた Edge でクラウドワークスにログインしてください（Googleでのログインも使えます）。\n" +
+          "    ログインできたら、その Edge の窓を右上の × で閉じてから、ここで Enter > "
+      );
+      const b = await openLoggedIn().catch((e) => {
+        console.log(`   Edge を開けませんでした（${e.message.split("\n")[0]}）。Edge の窓がすべて閉じているか確かめてください`);
+        return null;
+      });
+      if (b) {
+        ({ ctx, page, dash } = b);
+        break;
+      }
+      console.log("   まだログインできていないようです。もう一度 Edge を開きます");
+      openPlainBrowser(LOGIN_URL);
+    }
+  } else {
+    ({ ctx, page } = await openBrowser({ headless: false }));
     await page.goto(LOGIN_URL);
     for (;;) {
       await rl.question("【1】開いた Edge でクラウドワークスにログインしてください。ログインできたら、ここで Enter > ");
       if (!isLoginPage(page.url())) break;
       console.log("   まだログイン画面のようです。ログインしてから Enter を押してください");
     }
-
+  }
+  try {
     // やり取りの一覧: マイページから自動で見つける。見つからなければ開いてもらう
-    const dash = await readPage(page, "https://crowdworks.jp/dashboard").catch(() => null);
+    dash = dash ?? (await readPage(page, "https://crowdworks.jp/dashboard").catch(() => null));
     const found = dash && !isLoginPage(dash.finalUrl) ? loadLib().core.collectLinks(dash.hrefs).threads : [];
     if (found.length > 0) {
       config.listUrls = [dash.finalUrl];
