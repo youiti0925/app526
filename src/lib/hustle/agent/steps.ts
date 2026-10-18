@@ -332,7 +332,9 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     const monthlyRate = monthlyHourly(engagement);
     if (engagement.kind === "hourly" && engagement.hourlyJpy !== null) {
       // 時給が書いてあるなら、それが答え。読み取っていたのに使っていなかった。
-      hourly = { low: engagement.hourlyJpy, high: engagement.hourlyJpy };
+      // ただし募集の時給は手数料を引く前の額なので、手取りにして基準と比べる
+      const net = Math.round(engagement.hourlyJpy * (1 - platform.feeRate));
+      hourly = { low: net, high: net };
     } else if (monthlyRate !== null) {
       // 月額契約は、こちらの見積り工数ではなく先方が決めた稼働時間で割る
       hourly = { low: monthlyRate, high: monthlyRate };
@@ -378,8 +380,8 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     // 30分で見積もると、数をこなす道が計算上つぶれる。
     const PROPOSAL_HOURS = 5 / 60;
     let expected: number | null = null;
-    if (engagement.kind === "monthly") {
-      // 月額契約は応募人数が公開されないことが多く、期待値も出せない
+    if (engagement.kind === "monthly" || engagement.kind === "hourly") {
+      // 月額契約・時給の募集は、1件いくらの請負の見積もり（作業量×報酬）が当てはまらず、期待値も出せない
       expected = null;
     } else if (offered && offered > 0 && yours.unitsRead) {
       // 期待値も、あなたの時間で割る。落選したときに失うのは
@@ -418,8 +420,9 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
     } else if (!deadlineCheck.fits) {
       verdict = "reject";
       reason = deadlineCheck.reason;
-    } else if (!yours.unitsRead && offered && offered > 0) {
+    } else if (!yours.unitsRead && !hourly && offered && offered > 0) {
       // 落とすのでも通すのでもなく、確認を先に立てる。
+      // （時給・月額で時給が出ている募集は、数量が読めなくても時給で判定できるので、ここに来ない）
       verdict = "verify_first";
       reason =
         `${offered.toLocaleString()}円 の提示ですが、募集文から数量（${byTypeEstimate?.workType.unit ?? "件"}数）を` +

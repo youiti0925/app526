@@ -402,6 +402,16 @@ test("時給表記があればそれを使う", () => {
   assert.equal(e.hourlyJpy, 2000);
 });
 
+test("クラウドワークスの時間単価制: 範囲は安いほうの時給、稼働は週の時間を月に直して読む", () => {
+  const e = readEngagement("時間単価制 1,500円 〜 2,000円\n稼働時間/週 10時間/週\n期間 6ヶ月以上");
+  assert.equal(e.kind, "hourly");
+  assert.equal(e.hourlyJpy, 1500);
+  assert.equal(e.monthlyHours, 43);
+  assert.equal(checkCapacity(e, 10).fits, true);
+  const heavy = readEngagement("時間単価制 1,500円 〜 2,000円\n稼働時間/週 25時間/週");
+  assert.equal(checkCapacity(heavy, 10).fits, false, "週25時間は、週10時間しか出せない人には引き受けられない");
+});
+
 test("金額の単位が無いものは請負として扱う", () => {
   assert.equal(readEngagement("記事を10本お願いします。予算は3万円です。").kind, "fixed");
 });

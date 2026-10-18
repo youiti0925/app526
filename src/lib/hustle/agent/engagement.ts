@@ -112,11 +112,13 @@ export function readEngagement(text: string, budgetHintJpy: number | null = null
   const looksMonthly = monthlyHours !== null || daysPerWeek !== null;
 
   if (hourly !== null) {
+    // 時給の募集は「稼働時間/週 10時間」のように週の時間で書かれる。月に直して、出せる時間を超えないかを見られるようにする
+    const weekly = readWeeklyHours(t);
     return {
       kind: "hourly",
       monthlyJpy: null,
       hourlyJpy: hourly,
-      monthlyHours,
+      monthlyHours: monthlyHours ?? (weekly !== null ? Math.round(weekly * WEEKS_PER_MONTH) : null),
       daysPerWeek,
       onsite,
       basis: `時給 ${hourly.toLocaleString()}円 と書かれています。`,
@@ -163,12 +165,20 @@ function readMonthlyHours(text: string): number | null {
   const m =
     // 「精算時間 140時間〜180時間」はエージェント案件の定番表記
     text.match(
-      /(?:精算時間|清算時間|稼働(?:時間|想定)?|想定稼働|月)[^0-9]{0,8}([0-9]{2,3})(?:\s*[〜~ー-]\s*[0-9]{2,3})?\s*(?:時間|h)/i
+      /(?:精算時間|清算時間|稼働(?:時間|想定)?|想定稼働|月)[^0-9週]{0,8}([0-9]{2,3})(?:\s*[〜~ー-]\s*[0-9]{2,3})?\s*(?:時間|h)/i
     ) ?? text.match(/([0-9]{2,3})(?:\s*[〜~ー-]\s*[0-9]{2,3})?\s*(?:時間|h)\s*[\/／]?\s*月/i);
   if (!m) return null;
   const n = Number(m[1]);
   // 月の稼働として現実的な範囲だけ通す（「2時間で終わります」を月稼働と読まない）
   return Number.isFinite(n) && n >= 20 && n <= 400 ? n : null;
+}
+
+/** 「稼働時間/週 10時間/週」「週10時間」。現実的な範囲（1〜60時間）だけ通す */
+function readWeeklyHours(text: string): number | null {
+  const m = text.match(/(?:稼働時間|稼働)\s*[\/／]?\s*週[^0-9]{0,4}([0-9]{1,2})\s*時間/) ?? text.match(/週\s*([0-9]{1,2})\s*時間/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n >= 1 && n <= 60 ? n : null;
 }
 
 function readDaysPerWeek(text: string): number | null {
