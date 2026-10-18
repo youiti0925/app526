@@ -31,6 +31,7 @@ const DIST = path.join(ROOT, "dist-e2e");
 const HOME = process.env.CW_PATROL_HOME || path.join(os.homedir(), ".cw-patrol");
 const CONFIG = path.join(HOME, "config.json");
 const SEEN = path.join(HOME, "seen.json");
+const BUDGET_LOG = path.join(HOME, "budget-log.jsonl");
 const LOCK = path.join(HOME, "running.lock");
 const PROFILE = path.join(HOME, "browser-profile");
 
@@ -428,6 +429,10 @@ async function run() {
             // 判定がおかしいときに見直せるよう、読んだ本文をPCの中にだけ残す（前回の分は上書き）
             fs.mkdirSync(path.join(HOME, "last-jobs"), { recursive: true });
             fs.writeFileSync(path.join(HOME, "last-jobs", `${String(judged.length + 1).padStart(2, "0")}.txt`), `${link.url}\n${title}\n\n${p.text}`);
+            // 予算の記録（Excel/VBA の単価の前提を確かめるため。PCの中だけ）
+            try {
+              fs.appendFileSync(BUDGET_LOG, `${JSON.stringify(core.budgetRecord(link, title, p.text))}\n`);
+            } catch {}
             log(`判定しています: ${title}`);
             const j = judgeJob(p.text, title, link.url);
             judged.push({ title, url: link.url, verdict: j.verdict, detail: j.detail });
@@ -444,6 +449,11 @@ async function run() {
     writeJson(SEEN, seen);
     const scan = loginExpired ? null : runScan(errors);
     const report = core.buildReport({ threads, jobs: judged, errors, loginExpired, scan });
+    // 単価の記録（Excel/VBA の前提を確かめるため）をまとめの末尾に付ける
+    try {
+      const recs = fs.readFileSync(BUDGET_LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+      if (recs.length) report.body += `\n\n■ ${core.summarizeBudgets(recs)}`;
+    } catch {}
     log(report.subject);
     if ((report.worthSending || argv.includes("--always")) && config.mail) {
       const message = core.buildMimeMessage({ from: config.mail.user, to: config.mail.to, subject: report.subject, body: report.body });
@@ -538,9 +548,34 @@ async function fill() {
   }
 }
 
-const commands = { setup, run, fill, "test-mail": () => testMail() };
+/** 検索画面のURLを足す（Edge で検索して新着順にした画面のURLを渡す）。設定のそれ以外は触らない。 */
+function addSearch() {
+  const url = argv[1];
+  if (!url || !/^https:\/\/crowdworks\.jp\//.test(url)) die("使い方: node scripts/cw-patrol.mjs add-search <クラウドワークスの検索結果のURL>");
+  const config = readJson(CONFIG, null);
+  if (!config) die("まだ設定されていません。先に setup を実行してください");
+  config.searchUrls = [...new Set([...(config.searchUrls ?? []), url])];
+  writeJson(CONFIG, config);
+  console.log(`検索画面を登録しました（全${config.searchUrls.length}件）`);
+}
+
+/** 記録した募集の予算をまとめて表示する */
+function budgets() {
+  ensureBuilt();
+  let text = "";
+  try {
+    text = fs.readFileSync(BUDGET_LOG, "utf8");
+  } catch {
+    console.log("まだ記録がありません（巡回で募集を読むと貯まります）");
+    return;
+  }
+  const records = text.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  console.log(loadLib().core.summarizeBudgets(records));
+}
+
+const commands = { setup, run, fill, "add-search": addSearch, budgets, "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();

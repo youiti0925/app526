@@ -7,6 +7,7 @@
  * 巡回そのもの（ブラウザ操作・メール送信）は scripts/cw-patrol.mjs。
  */
 import type { CwReview } from "./cw-thread";
+import { readBudgetFromText } from "./judge-core";
 
 export type LinkKind = "job" | "thread";
 
@@ -221,4 +222,71 @@ export function buildMimeMessage(m: { from: string; to: string; subject: string;
     "",
     ...lines,
   ].join("\r\n");
+}
+
+// --- 募集の予算の記録（単価の前提を確かめるため）-----------------------------------------
+
+export interface BudgetRecord {
+  at: string;
+  key: string;
+  title: string;
+  url: string;
+  /** 報酬の下限（読めなければ null）。「10,000円〜30,000円」なら10,000 */
+  budgetJpy: number | null;
+  /** 報酬の上限。幅が無ければ下限と同じ */
+  budgetMaxJpy: number | null;
+  /** 題名か本文に Excel・VBA・マクロ・スプレッドシートが出てくるか */
+  excelVba: boolean;
+  /** 品質・検査・測定・工程の言葉が出てくるか */
+  quality: boolean;
+  payType: "固定報酬" | "時間単価" | "コンペ" | "タスク" | "不明";
+}
+
+const EXCEL_VBA = /(excel|エクセル|vba|マクロ|スプレッドシート)/i;
+const QUALITY = /(品質|検査|測定|工程|不良|成績書|管理図)/;
+
+/** 読んだ募集から、予算と種類を1件分の記録にする。 */
+export function budgetRecord(link: { key: string; url: string }, title: string, text: string, at: Date = new Date()): BudgetRecord {
+  const t = text.normalize("NFKC");
+  const head = `${title}\n${t.slice(0, 4000)}`;
+  const range = t.match(/([0-9][0-9,]{2,})\s*円\s*[〜~～-]\s*([0-9][0-9,]{2,})\s*円/);
+  const min = readBudgetFromText(t);
+  const max = range ? parseInt(range[2].replace(/,/g, ""), 10) : min;
+  const payType = /コンペ/.test(head) ? "コンペ" : /タスク/.test(head) ? "タスク" : /時間単価|時給/.test(head) ? "時間単価" : /固定報酬/.test(head) ? "固定報酬" : "不明";
+  return {
+    at: at.toISOString(),
+    key: link.key,
+    title: title.slice(0, 80),
+    url: link.url,
+    budgetJpy: min,
+    budgetMaxJpy: max,
+    excelVba: EXCEL_VBA.test(head),
+    quality: QUALITY.test(head),
+    payType,
+  };
+}
+
+const median = (xs: number[]): number => {
+  const a = [...xs].sort((x, y) => x - y);
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
+};
+
+/** 記録をまとめる。同じ募集は最新の1件だけ数える。 */
+export function summarizeBudgets(records: BudgetRecord[]): string {
+  const latest = [...new Map(records.map((r) => [r.key, r])).values()];
+  const group = (label: string, rs: BudgetRecord[]): string => {
+    const priced = rs.filter((r) => r.budgetJpy !== null && r.payType !== "時間単価" && r.payType !== "タスク");
+    if (!rs.length) return `${label}: 記録なし`;
+    if (!priced.length) return `${label}: ${rs.length}件（報酬が読めたもの 0件）`;
+    const mins = priced.map((r) => r.budgetJpy as number);
+    const over20k = priced.filter((r) => (r.budgetMaxJpy ?? r.budgetJpy ?? 0) >= 20_000).length;
+    return `${label}: ${rs.length}件（報酬が読めた固定報酬 ${priced.length}件・下限の中央値 ${median(mins).toLocaleString()}円・最小 ${Math.min(...mins).toLocaleString()}円・最大 ${Math.max(...mins).toLocaleString()}円・上限が2万円以上 ${over20k}件）`;
+  };
+  return [
+    `募集の予算の記録（${latest.length}件）`,
+    group("Excel/VBA・マクロ・スプレッドシート", latest.filter((r) => r.excelVba)),
+    group("そのうち品質・検査・測定・工程の言葉あり", latest.filter((r) => r.excelVba && r.quality)),
+    group("すべて", latest),
+  ].join("\n");
 }
