@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
+import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, jobBodyForJudging, pickJobsRoundRobin, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -161,4 +161,19 @@ test("予算の記録: Excel/VBA・品質の言葉と報酬の幅を読み、中
   assert.ok(text.includes("募集の予算の記録（3件）"));
   assert.ok(text.includes("Excel/VBA・マクロ・スプレッドシート: 2件") && text.includes("中央値 12,500円") && text.includes("上限が2万円以上 1件"));
   assert.ok(summarizeBudgets([]).includes("記録なし"));
+});
+
+test("判定に渡す本文: 依頼者欄・おすすめ・ページ下部の定型文を落とす", () => {
+  const body = "紙資料をExcelへ入力します。".repeat(30);
+  const page = `${body}\nクライアント情報\n本人確認未提出\nおすすめの仕事\nアンケート\n個人情報保護方針`;
+  const out = jobBodyForJudging(page);
+  assert.ok(out.includes("Excelへ入力"));
+  assert.ok(!out.includes("本人確認") && !out.includes("個人情報保護方針") && !out.includes("アンケート"));
+});
+
+test("募集の選び方: 検索ごとに交互に取り、1つの検索で枠が埋まらない", () => {
+  const mk = (n, a) => Array.from({ length: n }, (_, i) => ({ kind: "job", key: `job:${a}${i}`, url: `u${a}${i}` }));
+  const picked = pickJobsRoundRobin([mk(10, "a"), mk(10, "b"), mk(10, "c")], emptySeen(), 10);
+  assert.equal(picked.length, 9);
+  assert.deepEqual(picked.slice(0, 3).map((l) => l.key), ["job:a0", "job:b0", "job:c0"]);
 });

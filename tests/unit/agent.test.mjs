@@ -505,3 +505,9 @@ test("予算: 依頼者の商品・コースの値段（括弧の中の個人○
   assert.equal(extractBudget("料金はご提案ください。ヒストリエコース（個人672,000円・税込）の営業です"), null);
   assert.equal(extractBudget("報酬 10,000円（税込）"), 10000);
 });
+
+test("機密・本人性の判定: 定型の表示や「記入しないでください」の注意書きでは立たない", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  assert.ok(!JSON.stringify(checkGates("アンケートです。個人情報は記入しないでください。")).includes("機密・NDA"));
+  assert.ok(JSON.stringify(checkGates("顧客の個人情報を含む名簿を入力します")).includes("機密・NDA"));
+});

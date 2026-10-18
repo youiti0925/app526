@@ -317,10 +317,10 @@ function judgeJob(text, title, url) {
  */
 function runScan(errors) {
   if (process.env.CW_PATROL_FAKE_DIR || argv.includes("--no-scan")) return null;
-  const r = spawnSync(process.execPath, [path.join(ROOT, "scripts", "job.mjs"), "scan", "--max", "40"], {
+  const r = spawnSync(process.execPath, [path.join(ROOT, "scripts", "job.mjs"), "scan", "--max", "25"], {
     cwd: ROOT,
     encoding: "utf8",
-    timeout: 12 * 60_000,
+    timeout: 40 * 60_000,
     env: { ...process.env, JOB_AUTO_PULL: "0" },
   });
   const out = `${r.stdout ?? ""}`.trim();
@@ -408,19 +408,20 @@ async function run() {
 
       // 2) 検索結果 → 新しい募集だけ判定
       if (!loginExpired) {
-        const jobLinks = [];
-        for (const url of config.searchUrls ?? []) {
+        const perSearch = [];
+        // データ入力（category_id=267）の新着は件数が多く枠を使い切るので、最後に回す
+        const searchUrls = [...(config.searchUrls ?? [])].sort((a, b) => Number(/category_id=267\b/.test(a)) - Number(/category_id=267\b/.test(b)));
+        for (const url of searchUrls) {
           try {
             log(`新着を見ています: ${url}`);
             const p = await readPage(page, url);
-            jobLinks.push(...core.collectLinks(p.hrefs).jobs);
+            perSearch.push(core.collectLinks(p.hrefs).jobs);
           } catch (e) {
             errors.push(`${url}: ${e.message}`);
           }
           await politeWait();
         }
-        const uniq = [...new Map(jobLinks.map((l) => [l.key, l])).values()];
-        for (const link of core.newJobs(uniq, seen, MAX_JOBS)) {
+        for (const link of core.pickJobsRoundRobin(perSearch, seen, MAX_JOBS)) {
           try {
             log(`募集を読んでいます: ${link.url}`);
             const p = await readPage(page, link.url);
@@ -434,7 +435,7 @@ async function run() {
               fs.appendFileSync(BUDGET_LOG, `${JSON.stringify(core.budgetRecord(link, title, p.text))}\n`);
             } catch {}
             log(`判定しています: ${title}`);
-            const j = judgeJob(p.text, title, link.url);
+            const j = judgeJob(core.jobBodyForJudging(p.text), title, link.url);
             judged.push({ title, url: link.url, verdict: j.verdict, detail: j.detail });
           } catch (e) {
             errors.push(`${link.url}: ${e.message}`);

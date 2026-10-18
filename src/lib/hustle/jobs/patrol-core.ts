@@ -290,3 +290,31 @@ export function summarizeBudgets(records: BudgetRecord[]): string {
     group("すべて", latest),
   ].join("\n");
 }
+
+/**
+ * 募集ページの全文から、判定に渡す本文を作る。
+ * 「クライアント情報」より後（依頼者の欄・おすすめの仕事・ページ下部の定型リンク）は、仕事の中身ではなく、
+ * 「本人確認未提出」「個人情報保護方針」などの飾りが判定を狂わせるので落とす。
+ */
+export function jobBodyForJudging(text: string): string {
+  const cut = text.search(/\n\s*(クライアント情報|依頼者情報|おすすめの仕事|この仕事に似た)/);
+  const head = cut > 200 ? text.slice(0, cut) : text;
+  return head.replace(/個人情報保護方針|プライバシーポリシー|特定商取引法に基づく表記/g, "");
+}
+
+/** 検索結果から読む募集を、検索ごとに少しずつ交互に選ぶ（1つの検索で枠が埋まらないように）。 */
+export function pickJobsRoundRobin(perSearch: PatrolLink[][], seen: SeenState, max: number, perSearchMax = 3): PatrolLink[] {
+  const queues = perSearch.map((links) => newJobs(links, seen, perSearchMax));
+  const out: PatrolLink[] = [];
+  const keys = new Set<string>();
+  for (let i = 0; i < perSearchMax && out.length < max; i++) {
+    for (const q of queues) {
+      const l = q[i];
+      if (l && !keys.has(l.key) && out.length < max) {
+        keys.add(l.key);
+        out.push(l);
+      }
+    }
+  }
+  return out;
+}
