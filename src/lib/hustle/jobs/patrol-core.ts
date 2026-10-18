@@ -7,7 +7,6 @@
  * 巡回そのもの（ブラウザ操作・メール送信）は scripts/cw-patrol.mjs。
  */
 import type { CwReview } from "./cw-thread";
-import { readBudgetFromText } from "./judge-core";
 
 export type LinkKind = "job" | "thread";
 
@@ -247,14 +246,38 @@ export interface BudgetRecord {
   payType: "固定報酬" | "時間単価" | "コンペ" | "タスク" | "不明";
 }
 
-const EXCEL_VBA = /(excel|エクセル|vba|マクロ|スプレッドシート)/gi;
+// 「マクロ経済」は Excel のマクロではない
+const EXCEL_VBA = /(excel|エクセル|vba|マクロ(?!経済)|スプレッドシート)/gi;
 const QUALITY = /(品質管理|品質保証|検査|測定|工程能力|工程管理|不良|成績書|管理図|cpk)/gi;
 const yen = (s: string): number => parseInt(s.replace(/,/g, ""), 10);
 
-/** 題名に出ていれば当たり。本文だけなら、飾りで1回出ただけの募集を拾わないよう2回以上出たものを当たりにする。 */
-function mentions(re: RegExp, title: string, body: string): boolean {
-  const once = new RegExp(re.source, "i");
-  return once.test(title) || (body.match(new RegExp(re.source, "gi")) ?? []).length >= 2;
+/**
+ * 題名に出ていれば当たり。本文だけなら、「Excel・PowerPoint等のスキル」のような飾りで出ただけの募集を拾わないよう、
+ * 本文に min 回以上出たものを当たりにする。
+ */
+function mentions(re: RegExp, title: string, body: string, min: number): boolean {
+  return new RegExp(re.source, "i").test(title) || (body.match(new RegExp(re.source, "gi")) ?? []).length >= min;
+}
+
+const AMOUNT = "(?<![0-9.,])([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(\\.[0-9]+)?\\s*円";
+const RANGE_TAIL = `(?:\\s*[〜~～-]\\s*${AMOUNT})?`;
+
+/**
+ * 支払い方式の表示（「固定報酬制」「時間単価制」…）のすぐ後ろだけから金額を読む。
+ * ページの別の場所にある金額（本文の例示・時給の換算・おすすめの仕事）は拾わない。
+ * 「ワーカーと相談」が金額より先に出れば相談（金額なし）、小数（1.1円＝文字単価）は単価なので金額なし。
+ */
+function readPayAmount(body: string, labelAt: number): { min: number; max: number } | null {
+  const section = body.slice(labelAt, labelAt + 90);
+  const m = new RegExp(`${AMOUNT}${RANGE_TAIL}`).exec(section);
+  if (!m) return null;
+  const talk = section.search(/相談/);
+  if (talk >= 0 && talk < m.index) return null;
+  // m[1]=下限 m[2]=下限の小数 m[3]=上限 m[4]=上限の小数
+  if (m[2] || m[4]) return null;
+  const min = yen(m[1]);
+  const max = m[3] ? yen(m[3]) : min;
+  return max >= min ? { min, max } : null;
 }
 
 /** 読んだ募集から、予算と種類を1件分の記録にする。分類は、依頼者欄・おすすめより前の本文だけで行う。 */
@@ -263,34 +286,24 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
   const head = body.slice(0, 600);
   // 募集ページの先頭に出る「固定報酬制」「時間単価制」「コンペ形式」「タスク形式」の最初のものがその募集の支払い方式
   const PAY_TYPES: Record<string, BudgetRecord["payType"]> = { 固定報酬制: "固定報酬", 時間単価制: "時間単価", コンペ形式: "コンペ", タスク形式: "タスク" };
-  const label = body.match(/(固定報酬制|時間単価制|コンペ形式|タスク形式)/)?.[1];
-  const payType: BudgetRecord["payType"] = label
-    ? PAY_TYPES[label]
+  const found = /(固定報酬制|時間単価制|コンペ形式|タスク形式)/.exec(body);
+  const payType: BudgetRecord["payType"] = found
+    ? PAY_TYPES[found[1]]
     : /コンペ/.test(head) ? "コンペ" : /タスク形式/.test(head) ? "タスク" : /時間単価|時給/.test(head) ? "時間単価" : /固定報酬/.test(head) ? "固定報酬" : "不明";
 
   let budgetJpy: number | null = null;
   let budgetMaxJpy: number | null = null;
   let hourlyJpy: number | null = null;
   let hourlyMaxJpy: number | null = null;
-  if (payType === "時間単価") {
-    const h = body.match(/(?:時間単価|時給)[^0-9]{0,20}([0-9][0-9,]{2,})\s*円(?:\s*[〜~～-]\s*([0-9][0-9,]{2,})\s*円)?/);
-    if (h) {
-      hourlyJpy = yen(h[1]);
-      hourlyMaxJpy = h[2] ? yen(h[2]) : hourlyJpy;
-    }
-  } else if (payType !== "タスク") {
-    const range = body.match(/(?:報酬|予算|金額|固定報酬)[^0-9]{0,20}([0-9][0-9,]{2,})\s*円\s*[〜~～-]\s*([0-9][0-9,]{2,})\s*円/);
-    if (range) {
-      budgetJpy = yen(range[1]);
-      budgetMaxJpy = yen(range[2]);
-    } else {
-      budgetJpy = readBudgetFromText(body);
-      budgetMaxJpy = budgetJpy;
-    }
-    // 下限が上限より大きいのは読み違い。当てずっぽうの数字を残さない
-    if (budgetJpy !== null && budgetMaxJpy !== null && budgetMaxJpy < budgetJpy) {
-      budgetJpy = null;
-      budgetMaxJpy = null;
+  // 支払い方式の表示が見つからない募集（アンケートなど）は、金額を当てずっぽうで読まない
+  if (found && (payType === "時間単価" || payType === "固定報酬")) {
+    const amount = readPayAmount(body, found.index);
+    if (amount && payType === "時間単価") {
+      hourlyJpy = amount.min;
+      hourlyMaxJpy = amount.max;
+    } else if (amount) {
+      budgetJpy = amount.min;
+      budgetMaxJpy = amount.max;
     }
   }
   return {
@@ -302,8 +315,8 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
     budgetMaxJpy,
     hourlyJpy,
     hourlyMaxJpy,
-    excelVba: mentions(EXCEL_VBA, title, body),
-    quality: mentions(QUALITY, title, body),
+    excelVba: mentions(EXCEL_VBA, title, body, 3),
+    quality: mentions(QUALITY, title, body, 2),
     payType,
   };
 }
@@ -318,7 +331,8 @@ const median = (xs: number[]): number => {
 export function summarizeBudgets(records: BudgetRecord[]): string {
   const latest = [...new Map(records.map((r) => [r.key, r])).values()];
   const group = (label: string, rs: BudgetRecord[]): string => {
-    const priced = rs.filter((r) => r.budgetJpy !== null && r.payType !== "時間単価" && r.payType !== "タスク" && r.payType !== "コンペ");
+    // 1,000円未満（アンケートなどの小さなタスク）は、受注の単価の話に混ぜない
+    const priced = rs.filter((r) => r.budgetJpy !== null && r.budgetJpy >= 1000 && r.payType !== "時間単価" && r.payType !== "タスク" && r.payType !== "コンペ");
     if (!rs.length) return `${label}: 記録なし`;
     const hourly = rs.filter((r) => r.hourlyJpy != null);
     const hourlyText = hourly.length ? `／時給の募集 ${hourly.length}件（時給の下限の中央値 ${median(hourly.map((r) => r.hourlyJpy as number)).toLocaleString()}円）` : "";
