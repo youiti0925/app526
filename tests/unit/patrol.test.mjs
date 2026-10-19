@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, jobBodyForJudging, pickJobsRoundRobin, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
+import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -211,4 +211,82 @@ test("募集の選び方: 検索ごとに交互に取り、1つの検索で枠�
   const picked = pickJobsRoundRobin([mk(10, "a"), mk(10, "b"), mk(10, "c")], emptySeen(), 10);
   assert.equal(picked.length, 9);
   assert.deepEqual(picked.slice(0, 3).map((l) => l.key), ["job:a0", "job:b0", "job:c0"]);
+});
+
+// --- 依頼者の信頼度・応募の下書き一覧（本物の画面の並びで）-----------------------------------
+
+const clientPage = (c, meta = "応募した人 56 人 契約した人 0 人 募集人数 1 人 気になる！リスト 12 人\n応募期限\n2026年10月30日") =>
+  `固定報酬制 20,000円 〜 30,000円\n${meta}\n${"仕事の説明です。".repeat(40)}\nクライアント情報\nフォローする\n○○\n${c}\n○○の詳細を見る\nおすすめの仕事\nアンケート`;
+
+test("依頼者の欄を読む: 募集実績が多く評価・完了率が高ければ優良", () => {
+  const c = readClientInfo(clientPage("ありがとう 137 件\n本人確認済み\n発注ルールチェック未回答\n総合評価 4.7\n募集実績 375 件\nプロジェクト完了率 89 %\nマーケティングエージェンシー"));
+  assert.equal(c.orders, 375);
+  assert.equal(c.rating, 4.7);
+  assert.equal(c.completionRate, 89);
+  assert.equal(c.thanks, 137);
+  assert.equal(c.identity, "済");
+  assert.equal(c.tier, "優良");
+  assert.ok(c.summary.includes("募集実績375件") && c.summary.includes("本人確認済み"));
+  assert.ok(!c.raw.includes("おすすめの仕事"), "おすすめ欄は含めない");
+});
+
+test("依頼者の欄を読む: 実績が1件で評価なしは初めて、完了率が低めは優良にしない、評価が低ければ注意", () => {
+  const first = readClientInfo(clientPage("ありがとう 0 件\n本人確認未提出\n発注ルールチェック未回答\n総合評価 -\n募集実績 1 件\nプロジェクト完了率 -"));
+  assert.equal(first.tier, "初めて");
+  assert.equal(first.rating, null);
+  assert.equal(first.completionRate, null);
+  assert.equal(first.identity, "未提出");
+  const mid = readClientInfo(clientPage("ありがとう 12 件\n本人確認未提出\n総合評価 5.0\n募集実績 19 件\nプロジェクト完了率 64 %"));
+  assert.equal(mid.tier, "普通");
+  const bad = readClientInfo(clientPage("ありがとう 3 件\n本人確認済み\n総合評価 2.9\n募集実績 40 件\nプロジェクト完了率 80 %"));
+  assert.equal(bad.tier, "注意");
+  assert.equal(readClientInfo("依頼者の欄がない文章").tier, "不明");
+});
+
+test("募集の状況を読む: 応募人数・募集人数・応募期限", () => {
+  const m = readJobMeta(clientPage("総合評価 4.7"));
+  assert.deepEqual(m, { applicants: 56, openings: 1, deadline: "2026年10月30日" });
+  assert.deepEqual(readJobMeta("何もない"), { applicants: null, openings: null, deadline: null });
+});
+
+test("判定の出力から提案文だけを取り出す", () => {
+  const detail = "結論: 応募してよい\n理由: 実効時給 1,170円\n\n--- 提案文 ---\n募集を拝見しました。\nよろしくお願いします。\n\n※ 経歴が未登録です\n\n使ったAI: sonnet 3回";
+  assert.equal(extractProposal(detail), "募集を拝見しました。\nよろしくお願いします。");
+  assert.equal(extractProposal("提案文なし"), "");
+});
+
+test("応募の下書き一覧: 依頼者の信頼度順・要確認の印と注意を出し、承認した件だけ送信待ちにする", () => {
+  const mk = (id, title, client, extra = {}) =>
+    buildQueueItem({
+      link: { key: `job:${id}`, url: `https://crowdworks.jp/public/jobs/${id}` },
+      applyUrl: `https://crowdworks.jp/proposals/new?job_offer_id=${id}`,
+      title,
+      pageText: clientPage(client, extra.meta),
+      judged: { verdict: extra.verdict ?? "応募してよい", detail: `理由: テスト\n\n--- 提案文 ---\n${extra.proposal ?? "はじめまして"}\n\n使ったAI: x` },
+    });
+  const first = mk("1", "初めての依頼者の仕事", "総合評価 -\n募集実績 1 件\nプロジェクト完了率 -");
+  const good = mk("2", "何度も発注している依頼者の仕事", "本人確認済み\n総合評価 4.8\n募集実績 80 件\nプロジェクト完了率 95 %", { proposal: "経験は【要確認: 年数】です" });
+  const bad = mk("3", "評価の低い依頼者の仕事", "総合評価 2.5\n募集実績 30 件\nプロジェクト完了率 90 %");
+  assert.equal(bad.verdict, "確認してから応募", "注意の依頼者は、応募してよいを確認してから応募に下げる");
+  assert.ok(good.checks.some((c) => c.includes("【要確認】が1か所")));
+  assert.ok(good.checks.some((c) => c.includes("応募56人")));
+  assert.equal(good.price, 20000);
+
+  let q = addToQueue(emptyQueue(), [first, good, bad]);
+  assert.deepEqual(q.items.map((i) => i.no), [1, 2, 3]);
+  q = addToQueue(q, [first]);
+  assert.equal(q.items.length, 3, "同じ募集は足さない");
+  assert.deepEqual(sortQueue(q.items).map((i) => i.id), ["2", "1", "3"], "優良 → 初めて → 注意");
+
+  const m = markQueue(q, [2, 9], "approved");
+  assert.deepEqual(m.changed, [2]);
+  assert.deepEqual(m.missing, [9]);
+  const md = queueMarkdown(m.state, new Date("2026-10-19T00:00:00Z"));
+  assert.ok(md.includes("「承認 3 5」のように"));
+  assert.ok(md.includes("承認待ち 2件／承認済み（送信待ち） 1件"));
+  assert.ok(md.indexOf("初めての依頼者") < md.indexOf("評価の低い依頼者"));
+  assert.ok(md.includes("proposals/new?job_offer_id=2"));
+  // 3週間たった未承認は外れ、承認済みは残る
+  const old = addToQueue(m.state, [], new Date("2026-12-01T00:00:00Z"));
+  assert.deepEqual(old.items.map((i) => i.id), ["2"]);
 });

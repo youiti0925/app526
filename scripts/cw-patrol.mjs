@@ -5,6 +5,10 @@
  *   node scripts/cw-patrol.mjs setup       # 初回だけ: ログイン・見る画面の登録・Gメールの設定
  *   node scripts/cw-patrol.mjs run         # 巡回して、知らせることがあればGメールに送る（タスクスケジューラから呼ぶ）
  *   node scripts/cw-patrol.mjs run --always    # 新しいことが無くてもまとめを送る
+ *   node scripts/cw-patrol.mjs queue                       # 応募の下書き一覧（承認待ち・承認済み）を表示する
+ *   node scripts/cw-patrol.mjs queue-add <募集URL> --proposal 提案文.txt   # 人が確かめた提案文つきで一覧に足す
+ *   node scripts/cw-patrol.mjs queue-mark approved|sent|skipped 3 5   # 一覧の番号に印を付ける（承認 = approved）
+ *   node scripts/cw-patrol.mjs fill --approved             # 承認した件だけ、入力済みの応募画面を開く（最大5件。「応募する」は自分で押す）
  *   node scripts/cw-patrol.mjs survey [--max 30] [--fresh]   # 登録した検索画面の募集の報酬だけを集める（判定・応募はしない）
  *   node scripts/cw-patrol.mjs schedule    # 自動実行の登録をやり直す（電池でも動く・寝ていた分も回す設定つき）
  *   node scripts/cw-patrol.mjs test-mail   # Gメールに試しの1通を送る
@@ -34,6 +38,8 @@ const HOME = process.env.CW_PATROL_HOME || path.join(os.homedir(), ".cw-patrol")
 const CONFIG = path.join(HOME, "config.json");
 const SEEN = path.join(HOME, "seen.json");
 const BUDGET_LOG = path.join(HOME, "budget-log.jsonl");
+const QUEUE_JSON = path.join(HOME, "queue.json");
+const QUEUE_MD = path.join(HOME, "queue.md");
 const LOCK = path.join(HOME, "running.lock");
 const PROFILE = path.join(HOME, "browser-profile");
 
@@ -376,6 +382,7 @@ async function run() {
     const threads = [];
     const judged = [];
     const toJudge = [];
+    const queueItems = [];
     let loginExpired = false;
 
     const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
@@ -447,7 +454,7 @@ async function run() {
             try {
               fs.appendFileSync(BUDGET_LOG, `${JSON.stringify(core.budgetRecord(link, title, p.text))}\n`);
             } catch {}
-            toJudge.push({ title, url: link.url, text: core.jobBodyForJudging(p.text) });
+            toJudge.push({ title, url: link.url, link, text: core.jobBodyForJudging(p.text), pageText: p.text });
           } catch (e) {
             errors.push(`${link.url}: ${e.message}`);
           }
@@ -468,11 +475,35 @@ async function run() {
         j = judgeJob(t.text, t.title, t.url);
       }
       judged.push({ title: t.title, url: t.url, verdict: j.verdict, detail: j.detail });
+      // 応募してよい／確認してから応募 は、依頼者の信頼度つきで「応募の下書き一覧」に足す（画面を開いて待たない）
+      if (/^(応募してよい|確認してから応募)/.test(j.verdict)) {
+        queueItems.push(
+          core.buildQueueItem({
+            link: t.link,
+            applyUrl: applyUrl(jobIdFromUrl(t.url)),
+            title: t.title,
+            pageText: t.pageText,
+            judged: { verdict: j.verdict, detail: j.detail },
+          })
+        );
+      }
+    }
+    let queue = null;
+    try {
+      const before = readJson(QUEUE_JSON, core.emptyQueue());
+      const after = core.addToQueue(before, queueItems);
+      const knownNos = new Set(before.items.map((i) => i.no));
+      const added = after.items.filter((i) => !knownNos.has(i.no));
+      writeJson(QUEUE_JSON, after);
+      fs.writeFileSync(QUEUE_MD, core.queueMarkdown(after));
+      queue = { added, pendingTotal: after.items.filter((i) => i.status === "pending").length };
+    } catch (e) {
+      errors.push(`応募の下書き一覧を保存できませんでした: ${e.message}`);
     }
 
     writeJson(SEEN, seen);
     const scan = loginExpired ? null : runScan(errors);
-    const report = core.buildReport({ threads, jobs: judged, errors, loginExpired, scan });
+    const report = core.buildReport({ threads, jobs: judged, errors, loginExpired, scan, queue });
     // 単価の記録（Excel/VBA の前提を確かめるため）をまとめの末尾に付ける
     try {
       const recs = fs.readFileSync(BUDGET_LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
@@ -505,7 +536,20 @@ function optValue(name) {
 async function fill() {
   const listFile = optValue("list");
   let entries;
-  if (listFile) {
+  if (argv.includes("--approved")) {
+    // 承認した件だけ。提案文と金額は一覧から取る
+    ensureBuilt();
+    const { core } = loadLib();
+    const state = readJson(QUEUE_JSON, core.emptyQueue());
+    const approved = state.items.filter((i) => i.status === "approved");
+    if (!approved.length) die("承認済みの件がありません（queue-mark approved 番号 で印を付けます）");
+    fs.mkdirSync(path.join(HOME, "queue-proposals"), { recursive: true });
+    entries = approved.map((i) => {
+      const file = path.join(HOME, "queue-proposals", `${i.no}.txt`);
+      fs.writeFileSync(file, i.proposal);
+      return { url: i.url, proposal: file, price: i.price ?? undefined, days: undefined, no: i.no };
+    });
+  } else if (listFile) {
     entries = parseList(fs.readFileSync(path.resolve(listFile), "utf8"));
   } else {
     const url = argv[1] && !argv[1].startsWith("--") ? argv[1] : undefined;
@@ -513,17 +557,22 @@ async function fill() {
     const days = optValue("days");
     entries = [{ url, proposal: optValue("proposal"), price: price ? Number(price.replace(/[,円]/g, "")) : undefined, days: days ? Number(days) : undefined }];
   }
-  if (!entries.length || !entries[0].url) die("使い方: node scripts/cw-patrol.mjs fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数]  または  fill --list 一覧.tsv");
+  if (!entries.length || !entries[0].url) die("使い方: node scripts/cw-patrol.mjs fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数]  または  fill --list 一覧.tsv  または  fill --approved");
   if (entries.length > MAX_TABS) {
     log(`1回に開くのは ${MAX_TABS} 件までです。先頭の ${MAX_TABS} 件だけ開きます`);
     entries = entries.slice(0, MAX_TABS);
   }
+  const ready = [];
   for (const e of entries) {
     if (!e.proposal) die(`提案文のファイルがありません: ${e.url}`);
     e.message = fs.readFileSync(path.resolve(e.proposal), "utf8").trim();
     const problems = validateEntry(e);
-    if (problems.length) die(problems.join("\n"));
+    if (problems.length && !argv.includes("--approved")) die(problems.join("\n"));
+    if (problems.length) log(`飛ばします（${problems.join(" / ")}）`);
+    else ready.push(e);
   }
+  entries = ready;
+  if (!entries.length) die("入力できる件がありません");
 
   if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
   fs.mkdirSync(HOME, { recursive: true });
@@ -565,6 +614,7 @@ async function fill() {
       return;
     }
     log(`${opened.length} 件の応募画面を、入力した状態で開いています。送信はしていません。`);
+    if (argv.includes("--approved")) log("金額・日数が空の欄は、画面で入れてください。送ったら `queue-mark sent 番号` で印を付けます");
     log("中身（提案文・金額・納期・源泉徴収のチェック）を確かめ、よければ自分で「応募する」を押してください。ブラウザを閉じると、このコマンドも終わります。");
     await new Promise((resolve) => ctx.on("close", resolve));
   } finally {
@@ -626,8 +676,10 @@ async function survey() {
           const body = core.jobBodyForJudging(p.text).normalize("NFKC");
           const at = body.search(/(固定報酬制|時間単価制|コンペ形式|タスク形式)/);
           const pay = at >= 0 ? body.slice(at, at + 90).replace(/\s+/g, " ") : "（報酬の欄が見つかりません）";
+          const client = core.readClientInfo(p.text);
+          const meta = core.readJobMeta(p.text);
           const money = rec.hourlyJpy != null ? `時給${rec.hourlyJpy}〜${rec.hourlyMaxJpy}` : rec.budgetJpy != null ? `${rec.budgetJpy}〜${rec.budgetMaxJpy}` : "報酬不明";
-          console.log(`- ${rec.payType} ${money}円 ${rec.excelVba ? "[Excel/VBA]" : ""}${rec.quality ? "[品質]" : ""} ${title.slice(0, 40)}\n    ${link.url}\n    画面の表示: ${pay}`);
+          console.log(`- ${rec.payType} ${money}円 ${rec.excelVba ? "[Excel/VBA]" : ""}${rec.quality ? "[品質]" : ""} ${title.slice(0, 40)}\n    ${link.url}\n    画面の表示: ${pay}\n    依頼者: ${client.tier}｜${client.summary}｜応募${meta.applicants ?? "?"}人・募集${meta.openings ?? "?"}人`);
         } catch (e) {
           log(`読めませんでした: ${link.url}  ${e.message}`);
         }
@@ -639,6 +691,75 @@ async function survey() {
     console.log(`\n${core.summarizeBudgets(records)}`);
   } finally {
     clearInterval(touch);
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
+/** 応募の下書き一覧を表示する（ゆうさんが後から見る用。queue.md にも同じものがある） */
+function queueShow() {
+  ensureBuilt();
+  const { core } = loadLib();
+  const state = readJson(QUEUE_JSON, core.emptyQueue());
+  console.log(core.queueMarkdown(state));
+}
+
+/** 一覧の番号に印を付ける: queue-mark approved|sent|skipped 3 5 */
+function queueMark() {
+  const status = argv[1];
+  const nos = argv.slice(2).map((a) => Number(a)).filter((n) => Number.isInteger(n) && n > 0);
+  if (!["approved", "sent", "skipped"].includes(status) || !nos.length) die("使い方: node scripts/cw-patrol.mjs queue-mark approved|sent|skipped <番号> [<番号>…]");
+  ensureBuilt();
+  const { core } = loadLib();
+  const r = core.markQueue(readJson(QUEUE_JSON, core.emptyQueue()), nos, status);
+  writeJson(QUEUE_JSON, r.state);
+  fs.writeFileSync(QUEUE_MD, core.queueMarkdown(r.state));
+  console.log(`${status} にしました: ${r.changed.join("・") || "なし"}${r.missing.length ? `（一覧にない番号: ${r.missing.join("・")}）` : ""}`);
+}
+
+/**
+ * 人が確かめて書き直した提案文つきで、募集を一覧に足す（ページを1回だけ読む。応募画面は開かない）。
+ *   queue-add <募集URL> --proposal 提案文.txt [--verdict "応募してよい"] [--reason "理由"]
+ * 同じ募集がすでに一覧にあるときは、提案文を差し替える。
+ */
+async function queueAdd() {
+  const url = argv[1] && !argv[1].startsWith("--") ? argv[1] : undefined;
+  const id = url ? jobIdFromUrl(url) : null;
+  const proposalFile = optValue("proposal");
+  if (!id || !proposalFile) die("使い方: node scripts/cw-patrol.mjs queue-add <募集URL> --proposal 提案文.txt [--verdict \"応募してよい\"] [--reason \"理由\"]");
+  const proposal = fs.readFileSync(path.resolve(proposalFile), "utf8").trim();
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  try {
+    ensureBuilt();
+    const { core } = loadLib();
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    let p;
+    try {
+      p = await readPage(page, jobUrl(id));
+    } finally {
+      await ctx.close();
+    }
+    if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
+    const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+    const verdict = optValue("verdict") ?? "応募してよい";
+    const item = core.buildQueueItem({
+      link: { key: `job:${id}`, url: jobUrl(id) },
+      applyUrl: applyUrl(id),
+      title,
+      pageText: p.text,
+      judged: { verdict, detail: `理由: ${optValue("reason") ?? "人が確かめた提案文つき"}` },
+      proposal,
+    });
+    let state = readJson(QUEUE_JSON, core.emptyQueue());
+    // すでにあれば取り除いて足し直す（番号は新しくなる）
+    state = { ...state, items: state.items.filter((i) => i.id !== item.id) };
+    state = core.addToQueue(state, [item]);
+    writeJson(QUEUE_JSON, state);
+    fs.writeFileSync(QUEUE_MD, core.queueMarkdown(state));
+    const added = state.items.find((i) => i.id === item.id);
+    console.log(`一覧に足しました: 【${added.no}】${title}（依頼者: ${item.client.tier}・${item.client.summary}）`);
+  } finally {
     fs.rmSync(LOCK, { force: true });
   }
 }
@@ -657,9 +778,9 @@ function budgets() {
   console.log(loadLib().core.summarizeBudgets(records));
 }
 
-const commands = { setup, run, fill, "add-search": addSearch, budgets, survey, schedule: () => registerSchedule(), "test-mail": () => testMail() };
+const commands = { setup, run, fill, "add-search": addSearch, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, schedule: () => registerSchedule(), "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | schedule | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();
