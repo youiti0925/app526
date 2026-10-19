@@ -12,6 +12,9 @@
  *   node scripts/cw-patrol.mjs page <募集IDまたはURL>…               # 募集の本文（判定に渡す部分）を表示する
  *   node scripts/cw-patrol.mjs read <https://crowdworks.jp/…のURL>…   # 画面の文字とリンクを表示する（メッセージの受信箱・スカウトの形を調べる用。読むだけ）
  *   node scripts/cw-patrol.mjs messages [--last 3] [--max 800]       # 受信箱のやり取りを読んで、状態・危険信号・最後の数通の本文を表示する（読むだけ）
+ *   node scripts/cw-patrol.mjs reply <契約のURL> --check [--dump]   # 返信の入力欄と送信ボタンを探すだけ（入力も送信もしない。--dump で画面の作りも出す）
+ *   node scripts/cw-patrol.mjs reply <契約のURL> --text 文.txt        # 返信を入力して止める（送信は自分で押す）
+ *   node scripts/cw-patrol.mjs autosend status|on|off               # 許可した種類（理由を聞く質問）だけの自動送信。初期はオフ
  *   node scripts/cw-patrol.mjs queue-mark approved|sent|skipped 3 5   # 一覧の番号に印を付ける（承認 = approved）
  *   node scripts/cw-patrol.mjs fill --approved             # 承認した件だけ、入力済みの応募画面を開く（最大5件。「応募する」は自分で押す）
  *   node scripts/cw-patrol.mjs survey [--max 30] [--fresh]   # 登録した検索画面の募集の報酬だけを集める（判定・応募はしない）
@@ -26,6 +29,8 @@
  * 守ること（変えない）:
  *   - 見るだけ。応募・返信・メッセージ送信・ボタン操作はしない（ページを開いて文字を読むだけ）
  *     fill だけは応募画面の欄に入力するが、送信系のボタンは押さない（scripts/lib/cw-fill.mjs）
+ *     例外: ゆうが許可した「理由を聞く質問」だけは、autosend をオンにしたときに限り reply --send で送れる
+ *     （ゆっくり1件ずつ・1日の上限つき・記録つき。応募・納品・金額や条件の交渉は含まない。scripts/lib/cw-reply.mjs）
  *   - 1回に開くページ数を絞り、ページごとに6〜12秒あける
  *   - パスワードはブラウザにあなたが入力する。このスクリプトもClaudeも受け取らない
  *   - 設定・ログイン状態・既読の記録は %USERPROFILE%\.cw-patrol に置き、リポジトリには入れない
@@ -38,6 +43,7 @@ import readline from "node:readline/promises";
 import Module from "node:module";
 import { sendMail } from "./lib/smtp.mjs";
 import { MAX_TABS, applyState, applyUrl, fillProposalForm, jobIdFromUrl, jobUrl, parseList, validateEntry } from "./lib/cw-fill.mjs";
+import { SEND_KINDS, isThreadUrl, parseSentLog, pickReplyForm, scanReplyForms, sendGate, sentTextAppears, validateReplyText } from "./lib/cw-reply.mjs";
 import { WIDE_KEYWORDS, WIDE_WORD_LIST, keywordOf, rotate, searchUrlFrom } from "./lib/cw-searches.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -1186,6 +1192,134 @@ async function messagesShow() {
   }
 }
 
+// --- reply / autosend（やり取りに返信を入れる。送ってよいのは許可した種類だけ）---------
+
+const SENT_LOG = path.join(HOME, "sent-log.jsonl");
+const readSentLog = () => parseSentLog(fs.existsSync(SENT_LOG) ? fs.readFileSync(SENT_LOG, "utf8") : "");
+
+/**
+ * 自動送信の設定。初期はオフ。オンにするには、規約の原文を確かめた記録が要る。
+ *   autosend status
+ *   autosend on --terms-checked "確かめた日と所見" [--min-gap 10] [--max-per-day 3]
+ *   autosend off
+ */
+function autosend() {
+  const sub = argv[1];
+  const config = readJson(CONFIG, null);
+  if (!config) die("まだ設定されていません。先に setup を実行してください");
+  const a = config.autoSend;
+  if (sub === "on") {
+    const checked = optValue("terms-checked");
+    if (!checked) die("規約の原文を確かめた日と所見を --terms-checked \"…\" で書いてください（自動送信の禁止が無いことを確かめてからオンにします）");
+    config.autoSend = {
+      enabled: true,
+      kinds: Object.keys(SEND_KINDS),
+      minGapMinutes: Number(optValue("min-gap")) || 10,
+      maxPerDay: Number(optValue("max-per-day")) || 3,
+      termsChecked: checked,
+      since: new Date().toISOString(),
+    };
+    writeJson(CONFIG, config);
+    console.log(`自動送信をオンにしました（${Object.keys(SEND_KINDS).join("・")} だけ。${config.autoSend.minGapMinutes}分以上あけて1日${config.autoSend.maxPerDay}件まで）`);
+  } else if (sub === "off") {
+    config.autoSend = { ...(a ?? {}), enabled: false };
+    writeJson(CONFIG, config);
+    console.log("自動送信をオフにしました");
+  } else if (sub !== "status") {
+    die("使い方: node scripts/cw-patrol.mjs autosend status | on --terms-checked \"確かめた日と所見\" | off");
+  }
+  const now = readJson(CONFIG, {}).autoSend;
+  console.log(`自動送信: ${now?.enabled ? "オン" : "オフ"}${now?.termsChecked ? `／規約の確認: ${now.termsChecked}` : ""}`);
+  const log = readSentLog();
+  console.log(`これまでの送信: ${log.length}件${log.length ? `（最後: ${log[log.length - 1].at} ${log[log.length - 1].url}）` : ""}`);
+}
+
+class ReplyStop extends Error {}
+const fail = (msg) => {
+  throw new ReplyStop(msg);
+};
+
+/**
+ * やり取りの画面に返信を入れる。
+ *   reply <やり取りのURL> --text 文.txt [--kind reason-question] --check      # 入力欄とボタンを探すだけ（入力も送信もしない）
+ *   reply <やり取りのURL> --text 文.txt [--kind reason-question]              # 入力して止める（送信はあなたが押す）
+ *   reply <やり取りのURL> --text 文.txt --kind reason-question --send --announced "スレッドで伝えた一言"
+ *       # 許可した種類だけ、設定がオンのときだけ送る（autosend on が先）。1回に1件
+ */
+async function reply() {
+  const url = argv[1];
+  const textFile = optValue("text");
+  const kind = optValue("kind") || "reason-question";
+  const send = argv.includes("--send");
+  const checkOnly = argv.includes("--check");
+  if (!isThreadUrl(url) || (!textFile && !checkOnly)) die("使い方: node scripts/cw-patrol.mjs reply <https://crowdworks.jp/contracts/番号> --text 文.txt [--kind reason-question] [--check | --send --announced \"スレッドで伝えた一言\"]");
+  const text = textFile ? fs.readFileSync(path.resolve(textFile), "utf8").replace(/\r\n/g, "\n").trim() : "";
+  const problems = checkOnly && !textFile ? [] : validateReplyText(text);
+  if (problems.length) die(problems.join("\n"));
+  const config = readJson(CONFIG, null);
+  if (!config) die("まだ設定されていません。先に setup を実行してください");
+  if (send) {
+    const announced = optValue("announced");
+    if (!announced) die("--announced \"スレッドで伝えた一言\" が要ります（送る前に一言伝える約束のため）");
+    const gate = sendGate({ config, sentLog: readSentLog(), url, kind });
+    if (!gate.ok) die(`送りません: ${gate.reason}`);
+  }
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  const touch = setInterval(() => fs.utimesSync(LOCK, new Date(), new Date()), 60_000);
+  let keepOpen = false;
+  try {
+    const { ctx, page } = await openBrowser({ headless: argv.includes("--headless") });
+    try {
+      const p = await readPage(page, url);
+      if (isLoginPage(p.finalUrl)) fail("ログインが切れています。setup でログインし直してください");
+      if (kind === "reason-question" && p.text.includes("外部でのやり取りが必要な理由")) fail("このやり取りには、同じ質問をもう送っています（画面に質問の文があります）。送りません");
+      const forms = await page.evaluate(scanReplyForms);
+      const pick = pickReplyForm(forms);
+      for (const s of pick.seen) log(`  画面の欄: ${s}`);
+      if (argv.includes("--dump")) {
+        // 画面の作りを調べる用(タグと属性だけ。本文や入力した値は出さない)
+        for (const f of forms) {
+          console.log(`\n--- textarea ${f.index}（${f.shown ? "見える" : "見えない"}${f.inDialog ? "・ダイアログ内" : ""}）\n  ${f.html}\n  form: ${f.formHtml || "（formの外）"}\n  上の階層: ${f.ancestors.join(" < ")}`);
+          for (const b of f.buttons) console.log(`  ボタン ${b.key}（${b.shown ? "見える" : "見えない"}${b.disabled ? "・押せない" : ""}）文字=「${b.label}」 ${b.html}`);
+        }
+      }
+      if (!pick.ok) fail(`${pick.reason}。入力も送信もしていません`);
+      log(`返信の欄と「${pick.buttonLabel}」ボタンを見つけました`);
+      if (checkOnly) return;
+      await page.locator(pick.textarea).first().fill(text);
+      const got = String(await page.locator(pick.textarea).first().inputValue()).replace(/\r\n/g, "\n").trim();
+      if (got !== text) fail("入力した文が画面の欄と一致しません。送りません");
+      log(`入力しました（${text.length}字）`);
+      if (!send) {
+        keepOpen = true;
+        log("送信はしていません。中身を確かめ、よければ自分で送信を押してください。ブラウザを閉じると、このコマンドも終わります。");
+        await new Promise((resolve) => ctx.on("close", resolve));
+        return;
+      }
+      // ゆっくり: 入力してから少しおいて押す
+      await politeWait();
+      await politeWait();
+      await page.locator(pick.button).first().click();
+      await page.waitForTimeout(4000);
+      const after = await readPage(page, url);
+      const confirmed = sentTextAppears(after.text, text);
+      fs.appendFileSync(SENT_LOG, `${JSON.stringify({ at: new Date().toISOString(), url, kind, text, announced: optValue("announced"), buttonLabel: pick.buttonLabel, confirmed })}\n`);
+      log(confirmed ? `送りました: ${url}` : `送信ボタンを押しましたが、画面に送った文が見えません。画面を確かめてください: ${url}`);
+    } finally {
+      if (!keepOpen) await ctx.close();
+    }
+  } catch (e) {
+    if (!(e instanceof ReplyStop)) throw e;
+    console.error(`エラー: ${e.message}`);
+    process.exitCode = 1;
+  } finally {
+    clearInterval(touch);
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
 /** 記録した募集の予算をまとめて表示する */
 function budgets() {
   ensureBuilt();
@@ -1200,9 +1334,9 @@ function budgets() {
   console.log(loadLib().core.summarizeBudgets(records));
 }
 
-const commands = { setup, run, fill, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, page: pageShow, read: readShow, messages: messagesShow, schedule: () => registerSchedule(), "test-mail": () => testMail() };
+const commands = { setup, run, fill, reply, autosend, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, page: pageShow, read: readShow, messages: messagesShow, schedule: () => registerSchedule(), "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | page <募集ID>… | read <crowdworks.jpのURL>… | messages [--last 3] | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | page <募集ID>… | read <crowdworks.jpのURL>… | messages [--last 3] | queue-mark approved|sent|skipped 番号… | fill --approved | reply <契約のURL> --check | autosend status | schedule | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();

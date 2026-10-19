@@ -56,10 +56,26 @@ test("スレッドを読み、発言者・日時・本文を分ける", () => {
 });
 
 test("最後が相手の発言なら、返事待ち（あなた）とその日数を出す", () => {
-  const r = reviewCwThread(parseCwThreads(SAMPLE, "taro_test")[0], now);
+  const plain = SAMPLE.replace(/testshoji\n2026年10月06日 09:00\n[\s\S]*?登録後、クラウドワークス名を送ってください。\n/, "testshoji\n2026年10月06日 09:00\nご連絡ありがとうございます。募集の内容を補足します。\n");
+  const r = reviewCwThread(parseCwThreads(plain, "taro_test")[0], now);
   assert.equal(r.waiting, "me");
   assert.equal(r.daysSinceLast, 6);
+  assert.notEqual(r.scam?.verdict, "danger");
   assert.ok(r.actions[0].includes("まだ返していません"));
+});
+
+test("危険信号が強い相手には「返事するか決めてください」と言わず、返信しないと伝える(まとめの言い方と合わせる)", () => {
+  const r = reviewCwThread(parseCwThreads(SAMPLE, "taro_test")[0], now);
+  assert.equal(r.scam?.verdict, "danger");
+  assert.ok(!r.actions.some((a) => a.includes("返事するか")));
+  assert.ok(r.actions.some((a) => a.includes("返信しない")));
+});
+
+test("メッセージ欄の下の画面の定型文(添付の容量・条件の提示ボタン)は、発言の本文に入れない", () => {
+  const withFooter = SAMPLE.replace("その後いかがでしょうか。\n", "その後いかがでしょうか。\n計 0 B/100MB\n新しい条件を提示する ▼\nテンプレートを選択\n");
+  const [t] = parseCwThreads(withFooter, "taro_test");
+  const last = t.messages[t.messages.length - 1];
+  assert.equal(last.text, "その後いかがでしょうか。");
 });
 
 test("最後が自分の発言で1週間たてば、見送りの目安を出す", () => {

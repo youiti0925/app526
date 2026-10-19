@@ -51,6 +51,8 @@ export interface CwReview {
 const DATE_LINE = /^(\d{4})年(\d{1,2})月(\d{1,2})日\s+(\d{1,2}):(\d{2})$/;
 const THREAD_HEAD = /^相談から契約まで[：:]/;
 const NOTICE_LINES = [/^問題報告$/, /^違反報告をする$/, /^【取り込み】/];
+/** メッセージ欄の下に出る画面の定型文(添付の容量・条件の提示ボタンなど)。ここから先は発言の本文ではない */
+const UI_FOOTER = [/^計\s*[\d.,]+\s*[KMG]?B\s*[\/／]\s*[\d.,]+\s*[KMG]?B/i, /^新しい条件を提示する/, /^テンプレートを選択/];
 
 function toIso(m: RegExpMatchArray): string {
   const p = (n: string) => n.padStart(2, "0");
@@ -99,8 +101,9 @@ function parseOne(lines: string[], myName: string): CwThread {
     const sp = speakerAt(di);
     if (sp < 0) return;
     const nextSp = k + 1 < dateIdx.length ? speakerAt(dateIdx[k + 1]) : lines.length;
-    const body = lines
-      .slice(di + 1, Math.max(di + 1, nextSp))
+    const rawBody = lines.slice(di + 1, Math.max(di + 1, nextSp));
+    const cut = rawBody.findIndex((l) => UI_FOOTER.some((re) => re.test(l.trim())));
+    const body = (cut >= 0 ? rawBody.slice(0, cut) : rawBody)
       .filter((l) => !NOTICE_LINES.some((re) => re.test(l.trim())))
       .join("\n")
       .trim();
@@ -282,6 +285,12 @@ export function reviewCwThread(thread: CwThread, now: Date): CwReview {
         flags.push("理由の質問に、相手の返事があります。外のチャットには誘っていません。内容を読んで、クラウドワークスの中で進められるか決めてください");
       }
     }
+  }
+
+  // 危険信号が強い相手には、「返事するか決めてください」と言わない(巡回のまとめで「返事をしなくてよい」と言うのと食い違うため)
+  if (!off && scam?.verdict === "danger") {
+    for (let i = actions.length - 1; i >= 0; i--) if (actions[i].includes("まだ返していません")) actions.splice(i, 1);
+    actions.push("返信しない(辞退の一言も不要)。連絡先やリンクは開かない");
   }
 
   return { thread, daysSinceLast, waiting, scam, flags, actions, ...(draftReply ? { draftReply } : {}) };

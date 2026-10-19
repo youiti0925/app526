@@ -163,7 +163,8 @@ export interface MessageNote {
 }
 
 const collapse = (t: string, n: number) => {
-  const c = t.replace(/\s+/g, " ").trim();
+  // 画面の定型文(添付の容量・条件の提示ボタンなど)は発言ではないので落とす
+  const c = t.replace(/\s+/g, " ").replace(/計\s*[\d.,]+\s*[KMG]?B\s*[\/／]\s*[\d.,]+\s*[KMG]?B.*$/i, "").trim();
   return c.length > n ? `${c.slice(0, n)}…` : c;
 };
 
@@ -266,7 +267,15 @@ export function buildReport(input: ReportInput): PatrolReport {
           .filter(Boolean)
           .join("・")}）`
   );
-  if (risky.length) out.push(`危険信号の出た相手 ${risky.length}件は、返事をしなくて大丈夫です（理由は下に）。`);
+  const askers = risky.filter((t) => t.review.scam?.verdict === "danger" && t.review.draftReply);
+  const silent = risky.filter((t) => !askers.includes(t));
+  if (risky.length) {
+    out.push(
+      askers.length
+        ? `危険信号の出た相手 ${risky.length}件のうち ${askers.length}件は、クラウドワークスの中で「外のチャットが必要な理由」を聞く質問の下書きを作りました。残り ${silent.length}件は、返事をしなくて大丈夫です（理由は下に）。`
+        : `危険信号の出た相手 ${risky.length}件は、返事をしなくて大丈夫です（理由は下に）。`
+    );
+  }
 
   if (picks.length) {
     section(`応募を考える ${picks.length}件（送るかどうかはあなたが決める。送信はしません）`);
@@ -299,8 +308,8 @@ export function buildReport(input: ReportInput): PatrolReport {
     }
   }
   if (risky.length) {
-    section(`返事をしなくてよい相手 ${risky.length}件（危険信号あり）`);
-    for (const t of risky) {
+    section(askers.length ? `危険信号のある相手 ${risky.length}件（仕事は受けません。連絡先は追加しません）` : `返事をしなくてよい相手 ${risky.length}件（危険信号あり）`);
+    for (const t of [...askers, ...silent]) {
       const why = t.review.scam?.signals[0]?.label ?? "危険信号あり";
       out.push(`・${shortTitle(t.review.thread.title)}${t.changed ? "【新着】" : ""} … ${why}`);
       if (t.review.scam?.verdict === "danger") {
