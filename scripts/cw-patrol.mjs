@@ -372,7 +372,8 @@ function runScan(errors) {
     errors.push(`公開募集の収集に失敗しました: ${(r.stderr || out).slice(-300)}`);
     return null;
   }
-  const candidates = Number(m[1]) + Number(m[2]);
+  // 「確認してから」の件数だけあっても、一覧に提案文つきの募集が出ていない(「今回は応募候補がありませんでした」)ときは、候補に数えない
+  const candidates = /今回は応募候補がありませんでした/.test(out) ? 0 : Number(m[1]) + Number(m[2]);
   if (candidates === 0) return { candidates: 0, body: "" };
   let body = out;
   const dirRel = out.match(/提案文の保存先: (.+)/)?.[1]?.trim();
@@ -549,6 +550,8 @@ async function run() {
       loginExpired = flow.loginExpired;
       threads.push(...flow.threads);
       inboxRead = flow.inboxRead;
+      // 危険信号が出たやり取りの募集の題名を覚えておく(同じ題名の別の募集が新着に出たら見送るため)
+      seen.dangerTitles = core.addDangerTitles(seen.dangerTitles, flow.threads);
 
       // 2) 検索結果 → 新しい募集だけ判定
       if (!loginExpired) {
@@ -595,6 +598,13 @@ async function run() {
     // 時間が足りなくなっても困らないよう、発注の多い依頼者（優良）の募集から先に判定する
     toJudge.sort((a, b) => core.clientRank(a.pageText) - core.clientRank(b.pageText));
     for (const t of toJudge) {
+      const sameAsDanger = core.matchDangerTitle(t.title, seen.dangerTitles);
+      if (sameAsDanger) {
+        // 危険信号が出たやり取りの募集と同じ題名。判定(AI)にかけず、見送り
+        log(`見送り(危険信号が出たやり取りと同じ題名): ${t.title}`);
+        judged.push({ title: t.title, url: t.url, verdict: "見送り", detail: `危険信号が出たやり取りの募集（「${sameAsDanger.slice(0, 40)}」）と同じ題名です。同じ依頼者の可能性が高いので、判定せずに見送りました` });
+        continue;
+      }
       log(`判定しています: ${t.title}`);
       let j = judgeJob(t.text, t.title, t.url);
       if (/VirtualAlloc|ENOMEM|out of memory/i.test(j.detail)) {
@@ -612,6 +622,7 @@ async function run() {
           pageText: t.pageText,
           judged: { verdict: j.verdict, detail: j.detail },
           background: readBackground(),
+          dangerTitles: seen.dangerTitles,
         });
         // 関門・危険信号で見送りをすすめる募集(AIの判定と食い違ったとき)は、一覧に足さない
         if (!/^見送り/.test(item.verdict)) queueItems.push(item);
@@ -1036,7 +1047,7 @@ async function rejudge() {
       const j = judgeJob(core.jobBodyForJudging(p.text, title), title, link.url);
       console.log(`判定: ${j.verdict}  ${title}  ${link.url}`);
       if (/^(応募してよい|確認してから応募)/.test(j.verdict)) {
-        const item = core.buildQueueItem({ link, applyUrl: applyUrl(id), title, pageText: p.text, judged: { verdict: j.verdict, detail: j.detail }, background: readBackground() });
+        const item = core.buildQueueItem({ link, applyUrl: applyUrl(id), title, pageText: p.text, judged: { verdict: j.verdict, detail: j.detail }, background: readBackground(), dangerTitles: readJson(SEEN, core.emptySeen()).dangerTitles });
         if (/^見送り/.test(item.verdict)) console.log(`  → 関門・危険信号で見送りをすすめるので、一覧には足しません`);
         else items.push(item);
       }
@@ -1101,6 +1112,7 @@ async function queueRedraft() {
         pageText: p.text,
         judged: { verdict: j.verdict, detail: j.detail },
         background: readBackground(),
+        dangerTitles: readJson(SEEN, core.emptySeen()).dangerTitles,
       });
       const reasonLine = j.detail.match(/^理由: (.+)$/m)?.[1] ?? "";
       if (/^見送り/.test(j.verdict) || /^見送り/.test(item.verdict)) {

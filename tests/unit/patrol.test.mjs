@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
 import { ruleChecks, setProposal, proposalChecks, cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, screenJob, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint, inboxRowInfo, selectInboxRows, messageNotes } from "../../dist-test/jobs/patrol-core.js";
-import { unbackedAvailability, strengthClaims, judgeRisks } from "../../dist-test/jobs/patrol-core.js";
+import { unbackedAvailability, strengthClaims, judgeRisks, matchDangerTitle, addDangerTitles } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -749,4 +749,34 @@ test("文字単価の募集: 契約金額(目安)が「〜 5,000円」（上限�
   assert.deepEqual([range.budgetJpy, range.budgetMaxJpy], [1000, 5000]);
   const none = budgetRecord({ key: "job:72", url: "u" }, "t", "固定報酬制 1.0円 契約金額(目安): ワーカーと相談 記事を書いてください");
   assert.equal(none.budgetJpy, null);
+});
+
+test("危険信号が出たやり取りと同じ題名の新しい募集は見送りをすすめる（同じ依頼者の別の募集）", () => {
+  const danger = "【未経験歓迎】安定副収入から独立まで！未経験から始める在宅ワークパートナー募集";
+  // 後ろが切れた題名・括弧や記号の違いがあっても同じとみなす
+  assert.equal(matchDangerTitle("【未経験歓迎】安定副収入から独立まで！未経験から始める在宅ワークパートナー募集のお仕事(その他)", [danger]), danger);
+  assert.equal(matchDangerTitle("未経験歓迎 安定副収入から独立まで 未経験から始める在宅ワークパートナー募集", [danger]), danger);
+  assert.equal(matchDangerTitle("【フルリモート】Excel・スプレッドシートの関数でレポート構築", [danger]), null);
+  // 短い題名は、よくある題名に当たってしまうので比べない
+  assert.equal(matchDangerTitle("データ入力のお仕事", ["データ入力のお仕事"]), null);
+  assert.equal(matchDangerTitle("何でも", undefined), null);
+
+  const mkThread = (title, verdict) => ({ review: { thread: { title }, scam: { verdict } } });
+  const titles = addDangerTitles(["古い題名のお仕事ですよ長い題名にします"], [mkThread(danger, "danger"), mkThread("普通の募集の長い題名ですよこれは", "safe"), mkThread(danger, "danger")]);
+  assert.deepEqual(titles, ["古い題名のお仕事ですよ長い題名にします", danger]);
+
+  const page = "固定報酬制 150,000円 〜 200,000円\n応募した人 3 人 契約した人 0 人 募集人数 3 人\n" + "仕事の説明です。".repeat(40) + "\nクライアント情報\n募集実績 12 件\n○○の詳細を見る";
+  const item = (dangerTitles) => buildQueueItem({ link: { key: "job:13540879", url: "u" }, applyUrl: "a", title: danger + "の…", pageText: page, judged: { verdict: "確認してから応募", detail: "理由: x\n\n--- 提案文 ---\n本文です。\n\n使ったAI: x" }, dangerTitles });
+  assert.equal(item([danger]).verdict, "見送り");
+  assert.ok(item([danger]).checks[0].startsWith("見送りをすすめます: 危険信号が出たやり取り"));
+  assert.equal(item(undefined).verdict, "確認してから応募");
+});
+
+test("提案文が年齢などの採用条件に「沿いません」と自分で書いている募集は見送りをすすめる", () => {
+  const page = "固定報酬制 契約金額(目安): 〜 2,200円\n応募した人 12 人 契約した人 0 人 募集人数 5 人\n" + "仕事の説明です。".repeat(40) + "\nクライアント情報\n募集実績 21 件\n○○の詳細を見る";
+  const mk = (proposal) => buildQueueItem({ link: { key: "job:80", url: "u" }, applyUrl: "a", title: "旅行ライター募集", pageText: page, judged: { verdict: "確認してから応募", detail: `理由: x\n\n--- 提案文 ---\n${proposal}\n\n使ったAI: x` } });
+  const bad = mk("なお、年齢は40代前半で、同世代採用の条件には沿いません。その点は正直にお伝えいたします。");
+  assert.equal(bad.verdict, "見送り");
+  assert.ok(bad.checks[0].includes("必須条件に合わないと自分で書いています"));
+  assert.equal(mk("募集の条件に沿って進めます。").verdict, "確認してから応募");
 });

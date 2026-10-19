@@ -60,9 +60,46 @@ export interface SeenState {
   jobs: Record<string, string>;
   /** やり取りの最後の発言（キー → 指紋）。変わったら知らせる */
   threads: Record<string, string>;
+  /** 危険信号が出たやり取りの募集の題名。同じ題名の新しい募集（同じ依頼者の別の募集）を見送るために覚えておく */
+  dangerTitles?: string[];
 }
 
 export const emptySeen = (): SeenState => ({ jobs: {}, threads: {} });
+
+/** 題名の比べ方: 括弧・空白・記号を除いた先頭30字 */
+const titleKey = (s: string): string =>
+  s.normalize("NFKC").replace(/[\s【】\[\]()（）「」『』!！?？。、,.・〜~|｜:：…\-]/g, "").slice(0, 30);
+
+/** 題名が短いと、よくある題名に当たってしまうので、これ未満は比べない */
+const MIN_TITLE_KEY = 20;
+
+/**
+ * 危険信号が出たやり取りの募集と、同じ題名の募集か。同じ題名の別の募集は、同じ依頼者が出していることが多い
+ * （実データ: LINEの個人アカウントだけに誘導する「安定副収入から独立まで」の募集と同じ題名の募集が、別の番号で新着に出た）。
+ * 後ろが「…」で切れている題名もあるので、短いほうの長さまでが同じなら同じとみなす。
+ */
+export function matchDangerTitle(title: string, dangerTitles: string[] | undefined): string | null {
+  const k = titleKey(title);
+  if (k.length < MIN_TITLE_KEY) return null;
+  for (const d of dangerTitles ?? []) {
+    const dk = titleKey(d);
+    if (dk.length < MIN_TITLE_KEY) continue;
+    const n = Math.min(k.length, dk.length);
+    if (k.slice(0, n) === dk.slice(0, n)) return d;
+  }
+  return null;
+}
+
+/** 今回の巡回で危険信号が出たやり取りの題名を、前回までの分に足す(新しいほうを残して100件まで) */
+export function addDangerTitles(prev: string[] | undefined, threads: { review: CwReview }[]): string[] {
+  const out = [...(prev ?? [])];
+  for (const t of threads) {
+    const title = t.review.thread.title;
+    if (t.review.scam?.verdict !== "danger" || !title || titleKey(title).length < MIN_TITLE_KEY) continue;
+    if (!out.some((d) => titleKey(d) === titleKey(title))) out.push(title);
+  }
+  return out.slice(-100);
+}
 
 export function newJobs(links: PatrolLink[], seen: SeenState, max: number): PatrolLink[] {
   return links.filter((l) => !seen.jobs[l.key]).slice(0, max);
@@ -1031,6 +1068,8 @@ export function buildQueueItem(args: {
   proposal?: string;
   /** 経歴（プロフィール）の文章。あれば、提案文が経歴に無い経験を書いていないか調べる */
   background?: string;
+  /** 危険信号が出たやり取りの募集の題名(seen.dangerTitles)。同じ題名なら見送りをすすめる */
+  dangerTitles?: string[];
   at?: Date;
 }): Omit<QueueItem, "no" | "status"> {
   const rec = budgetRecord(args.link, args.title, args.pageText, args.at);
@@ -1078,8 +1117,17 @@ export function buildQueueItem(args: {
     verdict = "見送り";
     checks.unshift(`見送りをすすめます: ${rules.blocking.join("・")}`);
   }
+  // 危険信号が出たやり取りの募集と同じ題名なら、同じ依頼者の別の募集の可能性が高い(募集ページだけでは危険信号が足りなくても見送りをすすめる)
+  const sameAsDanger = matchDangerTitle(args.title, args.dangerTitles);
+  if (sameAsDanger) {
+    verdict = "見送り";
+    checks.unshift(`見送りをすすめます: 危険信号が出たやり取りの募集（「${sameAsDanger.slice(0, 40)}」）と同じ題名です。同じ依頼者の可能性が高い（依頼者名は未確認）`);
+  }
   // 提案文自身が「必須条件に合致しない」と書いているなら、応募しても通らない(経験の無い営業職などを、一覧に「確認してから応募」で出さない)
-  const mismatch = proposal.match(/必須(?:条件|要件|経験|スキル)[^。\n]{0,30}(?:合致しない|合致しません|満たしていない|満たしていません|満たせない|満たせません|当てはまらない|当てはまりません)/);
+  const mismatch =
+    proposal.match(/必須(?:条件|要件|経験|スキル)[^。\n]{0,30}(?:合致しない|合致しません|満たしていない|満たしていません|満たせない|満たせません|当てはまらない|当てはまりません)/) ??
+    // 年齢・世代などの採用条件に、提案文が「沿いません」と自分で書いている(例: 「同世代採用の条件には沿いません」)
+    proposal.match(/(?:採用|応募|募集)?(?:条件|要件)(?:に|には)(?:沿いません|沿わない|合いません|合わない|あてはまりません|当てはまりません)/);
   if (mismatch) {
     verdict = "見送り";
     checks.unshift(`見送りをすすめます: 提案文が、必須条件に合わないと自分で書いています（「${mismatch[0].slice(0, 50)}」）`);
