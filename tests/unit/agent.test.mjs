@@ -511,3 +511,13 @@ test("機密・本人性の判定: 定型の表示や「記入しないでくだ
   assert.ok(!JSON.stringify(checkGates("アンケートです。個人情報は記入しないでください。")).includes("機密・NDA"));
   assert.ok(JSON.stringify(checkGates("顧客の個人情報を含む名簿を入力します")).includes("機密・NDA"));
 });
+
+test("AIの使用禁止の募集は見送り、AI関連の仕事そのものでは立たない", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const hit = (t) => JSON.stringify(checkGates(t)).includes("AIの使用禁止");
+  assert.ok(hit("記事はAI使用禁止です。コピペチェックも行います"));
+  assert.ok(hit("ChatGPTなどの生成AIの利用はご遠慮ください"));
+  assert.ok(hit("AIのみで作成した提案は不採用とします"));
+  assert.ok(!hit("ChatGPTを使った業務効率化のサポートをお願いします"));
+  assert.ok(!hit("AIツールの導入支援。社内向けの手順書を作ってください"));
+});

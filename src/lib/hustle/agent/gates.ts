@@ -29,7 +29,8 @@ export type GateId =
   | "personal_data"
   | "restricted_work"
   | "collection_source"
-  | "eligibility";
+  | "eligibility"
+  | "ai_banned";
 
 export interface GateHit {
   id: GateId;
@@ -86,7 +87,19 @@ const GATE_RULES: GateRule[] = [
       "生成AIのツールは、侵害クレームが来たら逆に**ユーザーが運営を補償する**条項を置いています（Midjourney・Descript・Runway・Google・NovelAI で確認）。賠償上限は直近12か月の支払額なので、無料枠なら0円です。さらに独占性は誰も売っていません（Google「Google may generate the same or similar content for others」、Runway「OUTPUTS MAY NOT BE UNIQUE」）。「他所で使われない」と約束すると履行不能になります。",
     negotiable: true,
     ask:
-      "生成AIを使う旨を先に伝え、独占的利用と第三者権利の表明保証を外してもらえるか確認してください。外せないなら、AI生成物を最終稿にせず、自分の手で作り直す前提で工数を見積もってください。",
+      "独占的利用と第三者権利の表明保証を外してもらえるか確認してください。外せないなら、AI生成物を最終稿にせず、自分の手で作り直す前提で工数を見積もってください。",
+  },
+  {
+    id: "ai_banned",
+    label: "AIの使用禁止",
+    patterns: [
+      /(生成AI|AI|ＡＩ|ChatGPT|チャットGPT|GPT)[^。\n]{0,15}(使用|利用|活用)?[^。\n]{0,4}(禁止|不可|NG|お断り|ご遠慮|厳禁|しないで|はできません)/i,
+      /(AI|ＡＩ)(のみ|だけ|任せ)[^。\n]{0,10}(不可|NG|お断り|ご遠慮|禁止|不採用)/i,
+      /(手書き|自力|ご自身)[^。\n]{0,8}(で|の)[^。\n]{0,6}(執筆|作成)[^。\n]{0,8}(AI|ＡＩ)/i,
+    ],
+    why: "募集がAIの使用を禁じています。この仕組みは Claude が作業する前提なので受けません（AIを使っていないと偽って納品すると、規約違反と信用の両方を失います）。",
+    negotiable: false,
+    ask: "この案件は見送ってください。",
   },
   {
     id: "format",
