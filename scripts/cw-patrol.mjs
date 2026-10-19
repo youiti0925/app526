@@ -10,6 +10,7 @@
  *   node scripts/cw-patrol.mjs queue-redraft [番号…] [--force]       # 提案文が空の件の提案文を作り直す（--force: 入っている件も）
  *   node scripts/cw-patrol.mjs queue-set <番号> --proposal 提案文.txt  # その件の提案文をファイルの文に差し替える
  *   node scripts/cw-patrol.mjs page <募集IDまたはURL>…               # 募集の本文（判定に渡す部分）を表示する
+ *   node scripts/cw-patrol.mjs read <https://crowdworks.jp/…のURL>…   # 画面の文字とリンクを表示する（メッセージの受信箱・スカウトの形を調べる用。読むだけ）
  *   node scripts/cw-patrol.mjs queue-mark approved|sent|skipped 3 5   # 一覧の番号に印を付ける（承認 = approved）
  *   node scripts/cw-patrol.mjs fill --approved             # 承認した件だけ、入力済みの応募画面を開く（最大5件。「応募する」は自分で押す）
  *   node scripts/cw-patrol.mjs survey [--max 30] [--fresh]   # 登録した検索画面の募集の報酬だけを集める（判定・応募はしない）
@@ -1007,6 +1008,51 @@ async function pageShow() {
   }
 }
 
+/**
+ * クラウドワークスの画面を1枚ずつ読んで、文字と、リンク（リンクの文字つき）を出す。読むだけ（ボタンは押さない）。
+ *   read <https://crowdworks.jp/…のURL>… [--max 6000] [--all-links]
+ * メッセージの受信箱・スカウトなど、巡回がまだ読めていない画面の形を調べる用。
+ * リンクは、メッセージ・スカウト・やり取り・通知に関わりそうなものだけを出す（--all-links で全部）。
+ */
+async function readShow() {
+  const urls = argv.slice(1).filter((a) => /^https:\/\/crowdworks\.jp\//.test(a));
+  if (!urls.length) die("使い方: node scripts/cw-patrol.mjs read <https://crowdworks.jp/…のURL>… [--max 6000] [--all-links]");
+  const max = Number(optValue("max")) || 6000;
+  const allLinks = argv.includes("--all-links");
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  try {
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    try {
+      for (const url of [...new Set(urls)].slice(0, 6)) {
+        try {
+          const p = await readPage(page, url);
+          if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
+          const anchors = await page.$$eval("a[href]", (as) =>
+            as.map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().slice(0, 80) }))
+          );
+          const seen = new Set();
+          const links = anchors.filter((a) => {
+            if (!/^https:\/\/crowdworks\.jp\//.test(a.href) || seen.has(a.href)) return false;
+            seen.add(a.href);
+            return allLinks || /message|scout|conversation|consult|proposal|contract|notification|inbox|dashboard|mypage/i.test(a.href) || /メッセージ|スカウト|未読|新着|通知|お知らせ|相談|契約|提案/.test(a.text);
+          });
+          console.log(`\n===== ${url}\n最終のURL: ${p.finalUrl}\n題名: ${p.title}\n--- 文字 ---\n${p.text.slice(0, max)}\n--- リンク（${links.length}件） ---`);
+          for (const l of links.slice(0, 120)) console.log(`${l.text || "（文字なし）"}\t${l.href}`);
+        } catch (e) {
+          console.log(`\n===== ${url}\n読めませんでした: ${e.message}`);
+        }
+        await politeWait();
+      }
+    } finally {
+      await ctx.close();
+    }
+  } finally {
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
 /** 記録した募集の予算をまとめて表示する */
 function budgets() {
   ensureBuilt();
@@ -1021,9 +1067,9 @@ function budgets() {
   console.log(loadLib().core.summarizeBudgets(records));
 }
 
-const commands = { setup, run, fill, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, page: pageShow, schedule: () => registerSchedule(), "test-mail": () => testMail() };
+const commands = { setup, run, fill, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, page: pageShow, read: readShow, schedule: () => registerSchedule(), "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | page <募集ID>… | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | page <募集ID>… | read <crowdworks.jpのURL>… | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();
