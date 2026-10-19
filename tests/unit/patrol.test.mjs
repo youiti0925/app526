@@ -383,6 +383,23 @@ test("応募の下書き一覧: AIの使用が禁止された募集は、禁止�
   assert.equal(plain.verdict, "応募してよい");
 });
 
+test("応募の下書き一覧: 提案文自身が「必須条件に合致しない」と書いている募集は、見送りをすすめる", () => {
+  const page = "固定報酬制 報酬 1,000,000円\nセールスマネージャーを募集します。営業経験が必須です。\nクライアント情報\n募集実績 2 件";
+  const base = { link: { key: "job:51", url: "https://crowdworks.jp/public/jobs/51" }, applyUrl: "x", title: "セールスマネージャー募集", pageText: page };
+  const ng = buildQueueItem({
+    ...base,
+    judged: { verdict: "確認してから応募", detail: "結論: 確認してから応募\n--- 提案文 ---\n先に正直にお伝えします。必須条件である営業経験には合致しない可能性が高いと感じております。" },
+  });
+  assert.equal(ng.verdict, "見送り");
+  assert.match(ng.checks[0], /必須条件に合わない/);
+  // 合致する書き方や、必須条件に触れない提案文は、そのまま
+  const ok = buildQueueItem({
+    ...base,
+    judged: { verdict: "確認してから応募", detail: "結論: 確認してから応募\n--- 提案文 ---\n必須条件のExcel経験は20年あります。" },
+  });
+  assert.equal(ok.verdict, "確認してから応募");
+});
+
 test("文字単価の募集: 画面の「契約金額(目安)」を金額として読む（確定ではないと分かるように）", () => {
   const page = "固定報酬制 1.2円（文字単価）\n契約金額(目安): 1,320円\nブログ記事を書いてください（1,100字）。";
   const r = budgetRecord({ key: "job:41", url: "u" }, "ブログ記事（1,000字）", page);

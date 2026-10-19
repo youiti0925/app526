@@ -989,6 +989,12 @@ export function buildQueueItem(args: {
     verdict = "見送り";
     checks.unshift(`見送りをすすめます: ${rules.blocking.join("・")}`);
   }
+  // 提案文自身が「必須条件に合致しない」と書いているなら、応募しても通らない(経験の無い営業職などを、一覧に「確認してから応募」で出さない)
+  const mismatch = proposal.match(/必須(?:条件|要件|経験|スキル)[^。\n]{0,30}(?:合致しない|合致しません|満たしていない|満たしていません|満たせない|満たせません|当てはまらない|当てはまりません)/);
+  if (mismatch) {
+    verdict = "見送り";
+    checks.unshift(`見送りをすすめます: 提案文が、必須条件に合わないと自分で書いています（「${mismatch[0].slice(0, 50)}」）`);
+  }
   // 上位の判定(Claude)が出なかった・反映できなかったときは、そのことを一覧に出す(ルールだけの判定になっている)
   const noJudge = args.judged.detail.match(/^(ルールで判定しきれず、Claudeの判定も得られませんでした[^\n]*|Claudeの判定を反映できませんでした[^\n]*)$/m)?.[1];
   if (noJudge) checks.unshift(`${noJudge.slice(0, 200)}。ルールだけの判定です。募集文を読んで決める`);
