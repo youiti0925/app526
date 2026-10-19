@@ -459,7 +459,7 @@ async function run() {
             try {
               fs.appendFileSync(BUDGET_LOG, `${JSON.stringify(core.budgetRecord(link, title, p.text))}\n`);
             } catch {}
-            toJudge.push({ title, url: link.url, link, text: core.jobBodyForJudging(p.text), pageText: p.text });
+            toJudge.push({ title, url: link.url, link, text: core.jobBodyForJudging(p.text, title), pageText: p.text });
           } catch (e) {
             errors.push(`${link.url}: ${e.message}`);
           }
@@ -781,7 +781,7 @@ async function survey() {
           const rec = core.budgetRecord(link, title, p.text);
           fs.appendFileSync(BUDGET_LOG, `${JSON.stringify(rec)}\n`);
           records.push(rec);
-          const body = core.jobBodyForJudging(p.text).normalize("NFKC");
+          const body = core.jobBodyForJudging(p.text, title).normalize("NFKC");
           const at = body.search(/(固定報酬制|時間単価制|コンペ形式|タスク形式)/);
           const pay = at >= 0 ? body.slice(at, at + 90).replace(/\s+/g, " ") : "（報酬の欄が見つかりません）";
           const client = core.readClientInfo(p.text);

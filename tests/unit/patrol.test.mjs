@@ -466,6 +466,33 @@ test("本人の回答・体験が商品の募集（アンケート・買って�
   assert.equal(make.delivers, true);
 });
 
+test("判定に渡す本文: ページ先頭のサイト共通メニュー・パンくずは、題名だけ残して落とす", () => {
+  const menu = "オススメの仕事 仕事を探す youitirou0925さん 3 マイページ 気になる!リスト 相談から契約まで 契約一覧 報酬 メッセージ 支援サービス クライアントメニューに切り替える ▲ ご意見箱 翻訳ツール 画像生成";
+  const crumbs = "仕事を探す\nデータ入力・事務の仕事・求人\nデータ入力の仕事・求人\n";
+  const title = "Excelで売上データを整理する仕事";
+  const body = `${title}\n仕事の概要\n固定報酬制 8,000円 〜 10,000円\n${"売上データをExcelで整理します。".repeat(20)}\nクライアント情報\n募集実績 20 件\n○○の詳細を見る`;
+  const page = `${menu}\n${crumbs}${body}`;
+  // 題名を渡さなくても、「仕事の概要」の直前の行が題名として残る
+  const a = jobBodyForJudging(page);
+  assert.ok(a.startsWith(title), a.slice(0, 80));
+  assert.ok(!a.includes("ご意見箱") && !a.includes("データ入力の仕事・求人") && !a.includes("画像生成"));
+  assert.ok(a.includes("固定報酬制 8,000円") && !a.includes("募集実績"));
+  // 題名を渡したときは、それを先頭に置く
+  const b = jobBodyForJudging(page, "渡された題名");
+  assert.ok(b.startsWith("渡された題名\n仕事の概要"), b.slice(0, 40));
+  // 「仕事の概要」が見つからないページは、これまでどおり（先頭を落とさない）
+  const c = jobBodyForJudging(`${menu}\n${"本文です。".repeat(60)}\nクライアント情報\n募集実績 1 件`);
+  assert.ok(c.includes("本文です") && !c.includes("募集実績"));
+  // 直前の行がメニューのように長いときは、それを題名として残さない
+  const d = jobBodyForJudging(`${menu}\n仕事の概要\n固定報酬制 5,000円\n${"本文です。".repeat(60)}`);
+  assert.ok(!d.includes("ご意見箱"));
+  // 判定（納品できる・種類）に、メニューの語（翻訳ツール・画像生成）が混ざらない
+  const r = budgetRecord({ key: "job:65", url: "u" }, title, page);
+  assert.equal(r.delivers, true);
+  assert.notEqual(r.genre, "図解・ロゴ・チャート");
+  assert.ok(!explainJob(title, page).includes("ご意見箱"));
+});
+
 test("パンくず（…の仕事・求人）は判定の本文に入れない。仕事の種類は題名に当たったものを先にする", () => {
   const crumbs = "マイページ\n仕事を探す\nシステム開発の仕事・求人\n保守・運用・更新の仕事・求人\n";
   const body = "⭐【VBA】ECシステムの構築・開発業務案件⭐\n仕事の概要\n固定報酬制 500,000円 〜 1,000,000円\n毎月の稼働時間：160時間程度の常駐型です。\n" + "詳細な作業内容は面談でご説明します。".repeat(8) + "\nクライアント情報\n募集実績 4,103 件\n○○の詳細を見る";

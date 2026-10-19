@@ -335,7 +335,7 @@ function skillsOf(body: string): string {
  * 当たった語は前後15文字つきで出すので、定型文・否定文・語の一部に当たっていないかを読んで確かめられる。
  */
 export function explainJob(title: string, text: string): string {
-  const body = jobBodyForJudging(text).normalize("NFKC").slice(0, 6000);
+  const body = jobBodyForJudging(text, title).normalize("NFKC").slice(0, 6000);
   const rec = budgetRecord({ key: "job:0", url: "" }, title, text);
   const d = judgeDeliverability(body);
   const g = checkGates(body);
@@ -364,7 +364,7 @@ export function explainJob(title: string, text: string): string {
 
 /** 読んだ募集から、予算と種類を1件分の記録にする。分類は、依頼者欄・おすすめより前の本文だけで行う。 */
 export function budgetRecord(link: { key: string; url: string }, title: string, text: string, at: Date = new Date()): BudgetRecord {
-  const body = jobBodyForJudging(text).normalize("NFKC").slice(0, 6000);
+  const body = jobBodyForJudging(text, title).normalize("NFKC").slice(0, 6000);
   const head = body.slice(0, 600);
   // 募集ページの先頭に出る「固定報酬制」「時間単価制」「コンペ形式」「タスク形式」の最初のものがその募集の支払い方式
   const PAY_TYPES: Record<string, BudgetRecord["payType"]> = { 固定報酬制: "固定報酬", 時間単価制: "時間単価", コンペ形式: "コンペ", タスク形式: "タスク" };
@@ -510,11 +510,29 @@ export function summarizeBudgets(records: BudgetRecord[]): string {
  * 募集ページの全文から、判定に渡す本文を作る。
  * 「クライアント情報」より後（依頼者の欄・おすすめの仕事・ページ下部の定型リンク）は、仕事の中身ではなく、
  * 「本人確認未提出」「個人情報保護方針」などの飾りが判定を狂わせるので落とす。
+ * 先頭も同じ。本物のページは、長いサイトのメニュー（オススメの仕事・仕事を探す・マイページ・ご意見箱…）と
+ * パンくずが先に来て、そのあとに題名と「仕事の概要」が来る。「仕事の概要」より前は、題名だけ残して落とす。
  */
-export function jobBodyForJudging(text: string): string {
-  const cut = text.search(/\n\s*(クライアント情報|依頼者情報|おすすめの仕事|この仕事に似た)/);
-  const head = cut > 200 ? text.slice(0, cut) : text;
+export function jobBodyForJudging(text: string, title?: string): string {
+  const trimmed = text.replace(/^[\s\S]*?(?=^[ \t]*仕事の(?:概要|詳細)[ \t]*$)/m, (before) => {
+    const t = titleBefore(before, title);
+    return t ? `${t}\n` : "";
+  });
+  const cut = trimmed.search(/\n\s*(クライアント情報|依頼者情報|おすすめの仕事|この仕事に似た)/);
+  const head = cut > 200 ? trimmed.slice(0, cut) : trimmed;
   return stripBreadcrumb(head).replace(/個人情報保護方針|プライバシーポリシー|特定商取引法に基づく表記/g, "");
+}
+
+/**
+ * 「仕事の概要」より前の部分から残す題名。渡された題名があればそれ、無ければ直前の1行
+ * （メニューやパンくずの行は題名ではないので、長すぎる行・メニューの語を含む行・「…の仕事・求人」だけの行は残さない）。
+ */
+function titleBefore(before: string, title?: string): string {
+  const given = title?.trim();
+  if (given) return given;
+  const last = before.split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
+  if (last.length > 120 || /マイページ|ご意見箱|クライアントメニュー|気になる!?リスト|^[^\n]{1,40}の仕事・求人$/.test(last)) return "";
+  return last;
 }
 
 /**
@@ -726,7 +744,7 @@ export function buildQueueItem(args: {
   const left = proposal.match(/【要確認[^】]*】/g);
   if (left) checks.push(`提案文に【要確認】が${left.length}か所残っています（${left.slice(0, 2).join("、")}）。事実を確かめて直してから送る`);
   // AIの使用の禁止・制限は、一律に見送らず、禁止の範囲を載せて人が決める
-  const ai = readAiRestriction(jobBodyForJudging(args.pageText));
+  const ai = readAiRestriction(jobBodyForJudging(args.pageText, args.title));
   if (ai.restricted) {
     checks.unshift(`${ai.summary}。この範囲を、ゆうさん自身が手でやれるか決めてください（やれなければ見送り）。提案文が、その範囲を手作業で行う前提になっているかも読んで確かめる`);
     if (verdict.startsWith("応募してよい")) verdict = "確認してから応募";
