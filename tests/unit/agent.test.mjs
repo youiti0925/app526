@@ -729,3 +729,20 @@ test("納期: 「即日スタート」「即日お支払い」は即日納品で
   assert.equal(readDeadline("本日中にご対応いただける方。", now).days, 0);
   assert.equal(readDeadline("至急対応お願いします。", now).rushed, true);
 });
+
+test("納期: 募集ページの「掲載日」「応募期限」は納期ではない。当日に掲載された募集を「即日納品」と読まない", async () => {
+  const { readDeadline, stripPostingDates } = await import("../../dist-test/agent/deadline.js");
+  const now = new Date("2026-10-19T12:00:00+09:00");
+  // 実データ: 納品希望日が「-」の募集が、掲載日=今日を納期と読まれて「即日納品で1.3時間は成立しません」で見送りになっていた
+  const today = "仕事の概要 固定報酬制 納品希望日 - 掲載日 2026年10月19日 応募期限 2026年10月31日 応募状況 応募した人 15 人";
+  const d = readDeadline(today, now);
+  assert.equal(d.days, null);
+  assert.equal(d.rushed, false);
+  // 納品希望日が書いてあれば、それを読む
+  assert.equal(readDeadline("納品希望日 2026年11月02日 掲載日 2026年10月19日 応募期限 2026年10月31日", now).days, 14);
+  // 本文の「納期は10月25日」も読む
+  assert.equal(readDeadline("掲載日 2026年10月19日\n納期は10月25日までにお願いします。", now).days, 6);
+  // 取り除くのは、ラベルつきの日付だけ
+  assert.equal(stripPostingDates("掲載日 2026年10月19日 応募期限 10月31日 納期 11月5日").includes("11月5日"), true);
+  assert.equal(stripPostingDates("掲載日 2026年10月19日 応募期限 10月31日").includes("10月"), false);
+});

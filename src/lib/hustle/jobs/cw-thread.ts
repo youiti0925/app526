@@ -44,8 +44,10 @@ export interface CwReview {
   scam: ScamScoreResult | null;
   flags: string[];
   actions: string[];
-  /** 外のチャットへ誘われたときに、クラウドワークスの中で理由を聞く返信の下書き。送るのはあなた */
+  /** 外のチャットへ誘われたときに、クラウドワークスの中で理由を聞く返信の下書き。自動送信がオフなら送るのはあなた */
   draftReply?: string;
+  /** 募集の内容を読んで「仕事として受けない型」と分かった理由(関門・危険信号・こちらでは納品できない型)。あれば返事は考えない */
+  skipReasons?: string[];
 }
 
 const DATE_LINE = /^(\d{4})年(\d{1,2})月(\d{1,2})日\s+(\d{1,2}):(\d{2})$/;
@@ -150,6 +152,29 @@ const OFFPLATFORM_CHAT = [
   /(LINE|ライン|スカイプ|Skype|テレグラム|Telegram|ディスコード|Discord|WhatsApp)[^。\n]{0,30}(にて|で|へ|に)[^。\n]{0,12}(ご?連絡|やり取り|やりとり|ご案内|追加|登録)/i,
 ];
 
+/**
+ * 外部の予約サイトで、説明会・面談・「ご案内」の予約を求めているか。
+ * クラウドワークスの仕事依頼ガイドラインは、契約前に説明会・面談などへの参加が必要な依頼を禁じている。
+ */
+const BOOKING_SITE = /(timerex\.net|spirinc\.com|calendly\.com|jicoo\.com|youcanbook\.me|coubic\.com|reserva\.be|airrsv\.net|tidycal\.com)/i;
+
+export function externalBookingSignal(clientText: string): ScamSignalHit | null {
+  const text = clientText.normalize("NFKC");
+  const m = text.match(BOOKING_SITE);
+  if (!m || m.index === undefined) return null;
+  const start = Math.max(0, m.index - 20);
+  return {
+    id: "thread_external_booking",
+    label: "メッセージで、外部の予約サイトでの説明会・面談・ご案内の予約を求めている",
+    weight: 9,
+    why:
+      "クラウドワークスの仕事依頼ガイドラインは、契約前に説明会・面談などへの参加が必要な依頼を禁じています。" +
+      "応募者を外のサイトに連れ出して、教材・サポート費・別サービスの勧誘に進む例が多い型です。\n" +
+      "→ 予約せず、クラウドワークスの中で仕事の内容・報酬・納期を聞いてください。",
+    excerpt: text.slice(start, m.index + m[0].length + 15).replace(/\s+/g, " "),
+  };
+}
+
 export function offplatformSignal(clientText: string): ScamSignalHit | null {
   const text = clientText.normalize("NFKC");
   for (const re of OFFPLATFORM_CHAT) {
@@ -247,6 +272,8 @@ export function reviewCwThread(thread: CwThread, now: Date): CwReview {
     .join("\n\n");
   let scam = clientText.trim().length >= 10 ? scoreScam(clientText) : null;
   const off = offplatformSignal(clientText);
+  const booking = externalBookingSignal(clientText);
+  if (booking) scam = combineSignals([...(scam?.signals ?? []), booking]);
   let draftReply: string | undefined;
   if (off) {
     scam = combineSignals([...(scam?.signals ?? []), ...(scam?.signals.some((s) => s.id === off.id) ? [] : [off])]);
@@ -273,7 +300,7 @@ export function reviewCwThread(thread: CwThread, now: Date): CwReview {
           denied,
           afterPayment: /仮払い/.test(clientText),
         });
-        actions.push("外部が必要な理由を聞く返信の下書きを作りました。クラウドワークスのメッセージ欄に貼って送ってください");
+        actions.push("外部が必要な理由を聞く返信の下書きを作りました。自動送信がオンなら、PCから1件ずつ送ります。オフなら、クラウドワークスのメッセージ欄に貼って送ってください");
       }
     } else {
       const after = thread.messages.slice(askIdx + 1).filter((m) => !m.mine);
@@ -287,10 +314,14 @@ export function reviewCwThread(thread: CwThread, now: Date): CwReview {
     }
   }
 
-  // 危険信号が強い相手には、「返事するか決めてください」と言わない(巡回のまとめで「返事をしなくてよい」と言うのと食い違うため)
-  if (!off && scam?.verdict === "danger") {
+  // 危険信号が出た相手には、「返事するか決めてください」と言わない(巡回のまとめで「返事をしなくてよい」と言うのと食い違うため)
+  if (!off && scam && scam.verdict !== "safe") {
     for (let i = actions.length - 1; i >= 0; i--) if (actions[i].includes("まだ返していません")) actions.splice(i, 1);
-    actions.push("返信しない(辞退の一言も不要)。連絡先やリンクは開かない");
+    actions.push(
+      scam.verdict === "danger"
+        ? "返信しない(辞退の一言も不要)。連絡先やリンクは開かない"
+        : "返信は急がない。連絡先やリンクは開かない。仕事の内容・報酬・納期が、クラウドワークスのメッセージで具体的に示されたら考える"
+    );
   }
 
   return { thread, daysSinceLast, waiting, scam, flags, actions, ...(draftReply ? { draftReply } : {}) };

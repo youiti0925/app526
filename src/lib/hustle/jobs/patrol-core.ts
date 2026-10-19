@@ -142,8 +142,8 @@ export interface MessageNote {
   key: string;
   title: string;
   url: string;
-  /** danger: 返信せず離れる／caution: 注意して確認／reply: 返事を考える */
-  kind: "danger" | "caution" | "reply";
+  /** danger: 返信せず離れる／skip: 募集の内容が受けられない型(返信しない)／caution: 注意して確認／reply: 返事を考える */
+  kind: "danger" | "skip" | "caution" | "reply";
   status: string;
   from: string;
   at: string | null;
@@ -175,7 +175,7 @@ export function messageNotes(threads: ReportInput["threads"]): MessageNote[] {
     const r = t.review;
     const scam = r.scam;
     const kind: MessageNote["kind"] | null =
-      scam?.verdict === "danger" ? "danger" : scam?.verdict === "caution" ? "caution" : r.waiting === "me" || r.flags.some((f) => f.includes("提示額")) ? "reply" : null;
+      scam?.verdict === "danger" ? "danger" : r.skipReasons?.length ? "skip" : scam?.verdict === "caution" ? "caution" : r.waiting === "me" || r.flags.some((f) => f.includes("提示額")) ? "reply" : null;
     if (!kind) continue;
     const lastClient = [...r.thread.messages].reverse().find((m) => !m.mine);
     notes.push({
@@ -195,7 +195,7 @@ export function messageNotes(threads: ReportInput["threads"]): MessageNote[] {
       fresh: t.changed,
     });
   }
-  const rank = { danger: 0, reply: 1, caution: 2 } as const;
+  const rank = { danger: 0, skip: 1, reply: 2, caution: 3 } as const;
   return notes.sort((a, b) => rank[a.kind] - rank[b.kind]);
 }
 
@@ -242,8 +242,11 @@ export function buildReport(input: ReportInput): PatrolReport {
   const risky = input.threads.filter((t) => t.review.scam && t.review.scam.verdict !== "safe");
   const riskySet = new Set(risky);
   // 返事を考えるもの = 相手の番を待っている／提示額のミスがあり、かつ危険信号が出ていないやり取り
+  // 募集の内容を読んで受けない型と分かったものは、返事を考える対象から外す
+  const skipped = input.threads.filter((t) => !riskySet.has(t) && t.review.skipReasons?.length);
+  const skippedSet = new Set(skipped);
   const reply = input.threads.filter(
-    (t) => !riskySet.has(t) && (t.review.waiting === "me" || t.review.flags.some((f) => f.includes("提示額")))
+    (t) => !riskySet.has(t) && !skippedSet.has(t) && (t.review.waiting === "me" || t.review.flags.some((f) => f.includes("提示額")))
   );
   const picks = input.jobs.filter((j) => WANT.some((w) => j.verdict.startsWith(w)));
   const others = input.jobs.filter((j) => !picks.includes(j));
@@ -320,6 +323,12 @@ export function buildReport(input: ReportInput): PatrolReport {
         if (t.review.draftReply) out.push("  返信の下書き:", ...t.review.draftReply.split("\n").map((l) => `    ${l}`));
         out.push(`  ${t.url}`);
       }
+    }
+  }
+  if (skipped.length) {
+    section(`募集の内容が受けられない型のやり取り ${skipped.length}件（返信しなくて大丈夫です）`);
+    for (const t of skipped) {
+      out.push(`・${shortTitle(t.review.thread.title)}${t.changed ? "【新着】" : ""} … ${t.review.skipReasons!.join("／")}`, `  ${t.url}`);
     }
   }
   if (input.jobs.length) {
@@ -909,6 +918,19 @@ export function ruleChecks(title: string, pageText: string): { lines: string[]; 
   return { lines, blocking };
 }
 
+/**
+ * 募集の内容が、仕事として受けない型か(受信箱のやり取りに返事を考える前の確認)。
+ * 関門で交渉では外せないもの・危険信号が強いもの・こちらでは納品できない型(現地作業・本人の感想など)のとき skip。
+ * 「納品物が読み取れない」だけでは skip にしない(募集文が短いだけの普通の仕事もあるため)。
+ */
+export function screenJob(title: string, pageText: string): { skip: boolean; reasons: string[] } {
+  const body = jobBodyForJudging(pageText, title).normalize("NFKC").slice(0, 6000);
+  const reasons = [...ruleChecks(title, pageText).blocking];
+  const d = judgeDeliverability(body);
+  if (!d.canDeliver && (d.routes.includes("physical") || d.routes.includes("taste"))) reasons.push(`こちらでは納品できない型（${d.note.replace(/。.*$/, "")}）`);
+  return { skip: reasons.length > 0, reasons };
+}
+
 /** 「送る前に見ること」のうち、提案文の中身から決まるものの先頭の言葉（提案文を差し替えるときに入れ替える） */
 const PROPOSAL_CHECK_PREFIXES = ["提案文が出ていません", "提案文に、AIを使って", "提案文に、経歴に書かれていない", "提案文に【要確認】"];
 
@@ -1118,7 +1140,7 @@ export function queueMarkdown(state: QueueState, at: Date = new Date()): string 
     `一覧 ${pending.length}件／承認済み ${approved.length}件${state.messages?.length ? `／受信箱で返事や確認が要るメッセージ ${state.messages.length}件（次の項）` : ""}`,
   ];
   if (state.messages?.length) {
-    const label = { danger: "危険（返信せず離れる）", caution: "注意（確認してから）", reply: "返事を考える" } as const;
+    const label = { danger: "危険（返信せず離れる）", skip: "募集の内容が受けられない型（返信しない）", caution: "注意（確認してから）", reply: "返事を考える" } as const;
     out.push("", "# 受信箱で返事や確認が要るメッセージ（巡回のたびに作り直します）", "");
     for (const [i, m] of state.messages.entries()) {
       out.push(
@@ -1130,7 +1152,7 @@ export function queueMarkdown(state: QueueState, at: Date = new Date()): string 
         `- 内容の冒頭: ${m.gist || "（読めませんでした）"}`,
         ...(m.notes ? [`- 画面の注意: ${m.notes}`] : []),
         ...(m.advice ? [`- 対応: ${m.advice}`] : []),
-        ...(m.draft ? ["- 返信の下書き（クラウドワークスのメッセージ欄に貼る。送るのはゆうさんです）:", "", ...m.draft.split("\n").map((l) => `> ${l}`)] : []),
+        ...(m.draft ? ["- 返信の下書き（クラウドワークスのメッセージ欄に入れる文。自動送信がオフのときは、ゆうさんが貼って送ります）:", "", ...m.draft.split("\n").map((l) => `> ${l}`)] : []),
         ""
       );
     }

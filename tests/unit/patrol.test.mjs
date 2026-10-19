@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { ruleChecks, setProposal, proposalChecks, cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint, inboxRowInfo, selectInboxRows, messageNotes } from "../../dist-test/jobs/patrol-core.js";
+import { ruleChecks, setProposal, proposalChecks, cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, screenJob, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint, inboxRowInfo, selectInboxRows, messageNotes } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -691,4 +691,23 @@ test("返事や確認が要るメッセージだけを取り出し、危険な�
   assert.ok(report.body.includes("内容: 仮払いが完了"), "危険な相手も、内容の冒頭と対応をメールに出す");
   assert.ok(report.body.includes("連絡先は追加しない"));
   assert.ok(report.worthSending);
+});
+
+test("受信箱のやり取り: 募集の内容が受けられない型なら、返事を考える対象から外し、返信しなくてよいと出す", () => {
+  // 関門(交渉では外せない)・こちらでは納品できない型(現地作業)は skip。普通の仕事は skip にしない
+  assert.equal(screenJob("体験レポ", "固定報酬制 49,000円\nクレジットカードの新規申し込みをして、空港ラウンジの現地の写真付きで感想を提出してください。").skip, true);
+  assert.equal(screenJob("事務", "固定報酬制 10,000円\nExcelでデータを集計してください。社外秘の資料を扱います。NDAを締結していただきます。").skip, true);
+  assert.equal(screenJob("集計", "固定報酬制 10,000円\nExcelでデータを集計し、グラフを作ってください。").skip, false);
+  // 本文が短くて何を納品するか読めないだけの募集は skip にしない
+  assert.equal(screenJob("ご相談", "固定報酬制 5,000円\nご相談ください。").skip, false);
+
+  const base = parseCwThreads(THREAD.replace(/詳細はこちらへ\s*https?:\/\/\S+/, "募集の内容を補足します。"), "taro_test")[0];
+  const review = reviewCwThread(base, new Date("2026-10-17T03:00:00+09:00"));
+  assert.notEqual(review.scam?.verdict, "danger");
+  const skipped = { ...review, skipReasons: ["こちらでは納品できない型（現地作業・電話 が含まれます）"] };
+  const input = { threads: [{ review: skipped, url: "https://crowdworks.jp/proposals/9", changed: false }], jobs: [], errors: [], loginExpired: false };
+  const rpt = buildReport(input);
+  assert.match(rpt.body, /募集の内容が受けられない型のやり取り 1件（返信しなくて大丈夫です）/);
+  assert.ok(!rpt.body.includes("■ 返事を考える"));
+  assert.equal(messageNotes(input.threads)[0].kind, "skip");
 });

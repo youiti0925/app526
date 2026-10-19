@@ -43,7 +43,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import Module from "node:module";
 import { sendMail } from "./lib/smtp.mjs";
-import { MAX_TABS, applyState, applyUrl, fillProposalForm, jobIdFromUrl, jobUrl, parseList, validateEntry } from "./lib/cw-fill.mjs";
+import { MAX_TABS, applyState, applyUrl, cleanJobTitle, fillProposalForm, jobIdFromUrl, jobUrl, parseList, validateEntry } from "./lib/cw-fill.mjs";
 import { SEND_KINDS, isThreadUrl, parseSentLog, pickReplyForm, scanReplyForms, sendGate, sentTextAppears, validateReplyText } from "./lib/cw-reply.mjs";
 import { WIDE_KEYWORDS, WIDE_WORD_LIST, keywordOf, rotate, searchUrlFrom } from "./lib/cw-searches.mjs";
 
@@ -53,6 +53,7 @@ const HOME = process.env.CW_PATROL_HOME || path.join(os.homedir(), ".cw-patrol")
 const CONFIG = path.join(HOME, "config.json");
 const SEEN = path.join(HOME, "seen.json");
 const BUDGET_LOG = path.join(HOME, "budget-log.jsonl");
+const JOB_SCREEN = path.join(HOME, "job-screen.json");
 const QUEUE_JSON = path.join(HOME, "queue.json");
 const QUEUE_MD = path.join(HOME, "queue.md");
 const LOCK = path.join(HOME, "running.lock");
@@ -468,19 +469,50 @@ async function readThreadsFlow(page, config, seen, errors) {
       }
       const parsed = cw.parseCwThreads(p.text, config.me)[0];
       if (!/^相談から契約まで/.test(p.text.trim().split("\n").find((l) => l.trim()) ?? "")) {
-        parsed.title = p.title.replace(/\s*[|｜].*$/, "").trim() || parsed.title;
+        parsed.title = cleanJobTitle(p.title) || parsed.title;
       }
       const review = cw.reviewCwThread(parsed, new Date());
       const fp = core.threadFingerprint(review);
       const changed = seen.threads[key] !== fp;
       seen.threads[key] = fp;
       if (parsed.messages.length === 0) errors.push(`メッセージが読めませんでした: ${link.url}`);
-      threads.push({ review, url: final?.url ?? link.url, changed, inboxStatus: inboxStatus.get(link.key) ?? "" });
+      const jobHref = p.hrefs.map((h) => h.match(/^https:\/\/crowdworks\.jp\/public\/jobs\/(\d+)/)?.[1]).find(Boolean);
+      threads.push({ review, url: final?.url ?? link.url, changed, inboxStatus: inboxStatus.get(link.key) ?? "", jobId: jobHref ?? null });
     } catch (e) {
       errors.push(`${link.url}: ${e.message}`);
     }
     await politeWait();
   }
+  // 返事を考える相手(危険信号なし)は、募集の内容も読んで、受けない型なら返事を考える対象から外す
+  // (外部の予約サイトへの誘導・カードの新規申込み・本人の感想が商品の仕事など、やり取りの文だけでは分からないもの)
+  const cache = readJson(JOB_SCREEN, {});
+  let screened = 0;
+  for (const t of threads) {
+    const r = t.review;
+    if (!t.jobId || r.waiting !== "me" || r.scam?.verdict === "danger") continue;
+    let res = cache[t.jobId];
+    if (!res || Date.now() - new Date(res.at).getTime() > 14 * 86_400_000) {
+      if (screened >= 6) continue;
+      try {
+        await politeWait();
+        const jp = await readPage(page, jobUrl(t.jobId));
+        if (isLoginPage(jp.finalUrl)) break;
+        res = { at: new Date().toISOString(), ...core.screenJob(cleanJobTitle(jp.title), jp.text) };
+        cache[t.jobId] = res;
+        screened++;
+      } catch (e) {
+        errors.push(`募集の確認 ${t.jobId}: ${e.message}`);
+        continue;
+      }
+    }
+    if (res.skip) {
+      r.skipReasons = res.reasons;
+      r.flags.push(`募集の内容から、受けられない型です: ${res.reasons.join("／")}`);
+      r.actions = r.actions.filter((a) => !a.includes("まだ返していません"));
+      r.actions.push("返信しない(募集の内容が受けられない型。辞退の一言も不要)");
+    }
+  }
+  writeJson(JOB_SCREEN, cache);
   return { threads, loginExpired: false, inboxRead };
 }
 
@@ -539,7 +571,7 @@ async function run() {
           try {
             log(`募集を読んでいます: ${link.url}`);
             const p = await readPage(page, link.url);
-            const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+            const title = cleanJobTitle(p.title) || "（題名不明）";
             seen.jobs[link.key] = new Date().toISOString();
             // 判定がおかしいときに見直せるよう、読んだ本文をPCの中にだけ残す（前回の分は上書き）
             fs.mkdirSync(path.join(HOME, "last-jobs"), { recursive: true });
@@ -756,7 +788,7 @@ async function explain() {
         try {
           const p = await readPage(page, url);
           if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
-          const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+          const title = cleanJobTitle(p.title) || "（題名不明）";
           console.log(`\n${url}\n${core.explainJob(title, p.text)}`);
         } catch (e) {
           console.log(`\n${url}\n読めませんでした: ${e.message}`);
@@ -870,7 +902,7 @@ async function survey() {
       for (const link of picked) {
         try {
           const p = await readPage(page, link.url);
-          const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+          const title = cleanJobTitle(p.title) || "（題名不明）";
           const rec = core.budgetRecord(link, title, p.text);
           fs.appendFileSync(BUDGET_LOG, `${JSON.stringify(rec)}\n`);
           records.push(rec);
@@ -942,7 +974,7 @@ async function queueAdd() {
       await ctx.close();
     }
     if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
-    const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+    const title = cleanJobTitle(p.title) || "（題名不明）";
     const verdict = optValue("verdict") ?? "応募してよい";
     const item = core.buildQueueItem({
       link: { key: `job:${id}`, url: jobUrl(id) },
@@ -989,7 +1021,7 @@ async function rejudge() {
         try {
           const p = await readPage(page, jobUrl(id));
           if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
-          const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+          const title = cleanJobTitle(p.title) || "（題名不明）";
           pages.push({ id, title, p });
         } catch (e) {
           console.log(`読めませんでした: ${jobUrl(id)} ${e.message}`);
@@ -1051,7 +1083,7 @@ async function queueRedraft() {
       for (const t of targets) {
         const p = await readPage(page, t.url);
         if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
-        pages.push({ t, p, title: p.title.replace(/\s*[|｜].*$/, "").trim() || t.title });
+        pages.push({ t, p, title: cleanJobTitle(p.title) || t.title });
         await politeWait();
       }
     } finally {
@@ -1130,7 +1162,7 @@ async function pageShow() {
       for (const id of ids) {
         const p = await readPage(page, jobUrl(id));
         if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
-        const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+        const title = cleanJobTitle(p.title) || "（題名不明）";
         console.log(`\n===== ${id} ${title}\n${jobUrl(id)}\n${core.jobBodyForJudging(p.text, title).slice(0, max)}`);
         await politeWait();
       }

@@ -1,7 +1,7 @@
 // 応募画面への入力（cw-patrol.mjs fill）の、通信しない部分。偽のページで「送信系に触らない」ことを確かめる。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { FIELDS, MAX_TABS, applyState, applyUrl, deadlineParts, fillProposalForm, jobIdFromUrl, parseList, validateEntry } from "../../scripts/lib/cw-fill.mjs";
+import { FIELDS, MAX_TABS, applyState, applyUrl, cleanJobTitle, deadlineParts, fillProposalForm, jobIdFromUrl, parseList, validateEntry } from "../../scripts/lib/cw-fill.mjs";
 
 /** Playwright の Page の、fill で使う部分だけを真似た偽物。操作をすべて記録する。 */
 function fakePage(present) {
@@ -99,4 +99,16 @@ test("提案文の欄が無い画面（応募できない状態）では何も�
   const page = fakePage({});
   await assert.rejects(() => fillProposalForm(page, { message: "x" }), /提案文の欄が見つかりません/);
   assert.equal(page.calls.length, 0);
+});
+
+test("募集ページの題名: 題名の中の「|」「｜」では切らず、最後の「| サイト名」と [ID:…] だけ取り除く", () => {
+  // 実データ(2026-10-19): 「【急募」で切れていた
+  assert.equal(
+    cleanJobTitle("【急募 | 初心者OK】動画編集およびSNS運用サポート｜完全在宅のお仕事(その他SNS集客・運用) | 在宅ワーク・副業するなら【クラウドワークス】 [ID:13544312]"),
+    "【急募 | 初心者OK】動画編集およびSNS運用サポート｜完全在宅のお仕事(その他SNS集客・運用)"
+  );
+  assert.equal(cleanJobTitle("データ入力のお仕事 | 在宅ワーク・副業するなら【クラウドワークス】 [ID:1]"), "データ入力のお仕事");
+  // サイト名が付いていない題名は、そのまま(途中の「｜」で切らない)
+  assert.equal(cleanJobTitle("【急募｜SNS運用】アシスタント"), "【急募｜SNS運用】アシスタント");
+  assert.equal(cleanJobTitle(""), "");
 });

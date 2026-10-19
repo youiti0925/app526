@@ -1,7 +1,7 @@
 // クラウドワークスの画面テキストの読み取り。実在の相手・内容は入れず、形だけを似せた作り話で確かめる。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseCwThreads, reviewCwThread, formatCwReview, scamLabel, ASKED_MARK, externalContactQuestion } from "../../dist-test/jobs/cw-thread.js";
+import { parseCwThreads, reviewCwThread, formatCwReview, scamLabel, ASKED_MARK, externalContactQuestion, externalBookingSignal } from "../../dist-test/jobs/cw-thread.js";
 
 const SAMPLE = `相談から契約まで：テスト商事 データ入力のお仕事
  詳しい説明はこちら
@@ -197,4 +197,23 @@ test("画面に否認の理由が書かれていれば、そのまま出す", ()
   const r = reviewCwThread(parseCwThreads(withReason, "taro_test")[0], new Date("2026-10-19T18:00:00+09:00"));
   assert.ok(r.flags.some((f) => f.includes("画面の表示") && f.includes("直接取引を目的とした申請と判断したため")));
   assert.ok(!r.flags.some((f) => f.includes("否認の理由は画面に出ていません")));
+});
+
+test("外部の予約サイト(timerex など)での説明会・面談の予約を求めるメッセージは危険にする。返事を考えるに出さず、返信しないと伝える", () => {
+  assert.equal(externalBookingSignal("こちらから日程をご予約ください https://timerex.net/s/abc/def")?.id, "thread_external_booking");
+  assert.equal(externalBookingSignal("ご応募ありがとうございます。業務内容は追ってお伝えします。"), null);
+  const text = SAMPLE.replace(/testshoji\n2026年10月06日 09:00\n[\s\S]*?登録後、クラウドワークス名を送ってください。\n/, "testshoji\n2026年10月06日 09:00\nお仕事の前に10分のご案内のお時間をいただいております。こちらから予約ください https://timerex.net/s/abc/def\n");
+  const r = reviewCwThread(parseCwThreads(text, "taro_test")[0], now);
+  assert.equal(r.scam?.verdict, "danger");
+  assert.ok(r.actions.some((a) => a.includes("返信しない")));
+  assert.ok(!r.actions.some((a) => a.includes("返事するか")));
+});
+
+test("注意(caution)の相手にも「返事するか決めてください」と言わない(まとめの「返事をしなくてよい」と食い違うため)", () => {
+  const text = SAMPLE.replace(/testshoji\n2026年10月06日 09:00\n[\s\S]*?登録後、クラウドワークス名を送ってください。\n/, "testshoji\n2026年10月06日 09:00\nスマホだけで簡単です。1日10分でOKです。\n");
+  const r = reviewCwThread(parseCwThreads(text, "taro_test")[0], now);
+  if (r.scam && r.scam.verdict !== "safe") {
+    assert.ok(!r.actions.some((a) => a.includes("返事するか")));
+    assert.ok(r.actions.some((a) => a.includes("返信")));
+  }
 });

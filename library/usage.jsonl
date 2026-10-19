@@ -1,2 +1,0 @@
-{"provider":"claude","model":"claude-sonnet-5-5","tier":"standard","purpose":"judge","ok":true,"durationMs":8390,"inputTokens":1664,"outputTokens":560,"cacheTokens":2044,"costUsd":0.013661199999999998,"jobId":null,"recipeId":null,"at":"2026-10-19T10:26:00.479Z"}
-{"provider":"claude","model":"claude-sonnet-5-5","tier":"standard","purpose":"judge","ok":true,"durationMs":41897,"inputTokens":2721,"outputTokens":5502,"cacheTokens":11958,"costUsd":0.08774190000000001,"jobId":null,"recipeId":null,"at":"2026-10-19T10:26:43.543Z"}
