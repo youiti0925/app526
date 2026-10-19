@@ -738,6 +738,31 @@ function daysLeft(deadline: string | null, now: Date): number | null {
   return Math.round((end - today) / 86_400_000);
 }
 
+/** 「送る前に見ること」のうち、提案文の中身から決まるものの先頭の言葉（提案文を差し替えるときに入れ替える） */
+const PROPOSAL_CHECK_PREFIXES = ["提案文が出ていません", "提案文に、AIを使って", "提案文に、経歴に書かれていない", "提案文に【要確認】"];
+
+/** 提案文の中身から決まる「送る前に見ること」。提案文が空・AIの使用・経歴に無い経験・【要確認】の残り */
+export function proposalChecks(proposal: string, background?: string): string[] {
+  const out: string[] = [];
+  if (!proposal) out.push("提案文が出ていません。書いてから送ってください");
+  // ゆうさんの方針: 提案文に「AIを使って作業・習得する」とは書かない（経歴にある「AIを使った〜の作成」は事実なのでよい）
+  if (/AI(を|も|で)(使って|活用して|利用して|使い)/.test(proposal.normalize("NFKC"))) {
+    out.push("提案文に、AIを使って作業・習得すると読める文があります。AIの使用は書かない方針なので、消してから送る");
+  }
+  const unbacked = unbackedSkillClaims(proposal, background);
+  if (unbacked.length) out.push(`提案文に、経歴に書かれていない経験があるように読める箇所があります（${unbacked.join("・")}）。使ったことがなければ消してから送る`);
+  const left = proposal.match(/【要確認[^】]*】/g);
+  if (left) out.push(`提案文に【要確認】が${left.length}か所残っています（${left.slice(0, 2).join("、")}）。事実を確かめて直してから送る`);
+  return out;
+}
+
+/** 一覧の件の提案文だけを差し替える（番号・状態・その他の注意はそのまま。提案文から決まる注意は付け直す） */
+export function setProposal(item: QueueItem, proposal: string, background?: string): QueueItem {
+  const next = cleanProposal(proposal);
+  const kept = item.checks.filter((c) => !PROPOSAL_CHECK_PREFIXES.some((p) => c.startsWith(p)));
+  return { ...item, proposal: next, checks: [...kept, ...proposalChecks(next, background)] };
+}
+
 export function buildQueueItem(args: {
   link: { key: string; url: string };
   applyUrl: string;
@@ -778,15 +803,7 @@ export function buildQueueItem(args: {
     checks.push("金額が読めませんでした。画面で確かめてから金額を入れてください");
   }
 
-  if (!proposal) checks.push("提案文が出ていません。書いてから送ってください");
-  // ゆうさんの方針: 提案文に「AIを使って作業・習得する」とは書かない（経歴にある「AIを使った〜の作成」は事実なのでよい）
-  if (/AI(を|も|で)(使って|活用して|利用して|使い)/.test(proposal.normalize("NFKC"))) {
-    checks.push("提案文に、AIを使って作業・習得すると読める文があります。AIの使用は書かない方針なので、消してから送る");
-  }
-  const unbacked = unbackedSkillClaims(proposal, args.background);
-  if (unbacked.length) checks.push(`提案文に、経歴に書かれていない経験があるように読める箇所があります（${unbacked.join("・")}）。使ったことがなければ消してから送る`);
-  const left = proposal.match(/【要確認[^】]*】/g);
-  if (left) checks.push(`提案文に【要確認】が${left.length}か所残っています（${left.slice(0, 2).join("、")}）。事実を確かめて直してから送る`);
+  checks.push(...proposalChecks(proposal, args.background));
   // AIの使用の禁止・制限は、一律に見送らず、禁止の範囲を載せて人が決める
   const ai = readAiRestriction(jobBodyForJudging(args.pageText, args.title));
   if (ai.restricted) {

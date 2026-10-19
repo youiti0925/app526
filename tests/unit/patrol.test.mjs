@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
+import { setProposal, proposalChecks, cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -538,6 +538,18 @@ test("提案文が経歴に無い道具の経験を言い切っていたら注�
   const mk = (proposal) => buildQueueItem({ link: { key: "job:2", url: "u" }, applyUrl: "a", title: "t", pageText: page, judged: { verdict: "応募してよい", detail: `理由: x\n\n--- 提案文 ---\n${proposal}\n\n使ったAI: x` } });
   assert.ok(mk("公式のヘルプとAIを使って習得し、お見せします。").checks.some((c) => c.includes("AIを使って作業・習得")));
   assert.ok(!mk("・AIを使った、業務を支えるアプリ（RPAアプリ）の作成").checks.some((c) => c.includes("AIを使って作業・習得")));
+});
+
+test("提案文の差し替え: 番号・状態・ほかの注意は残し、提案文から決まる注意だけ付け直す", () => {
+  const base = { no: 7, id: "7", title: "t", url: "u", applyUrl: "a", verdict: "確認してから応募", reason: "", payType: "固定報酬", payText: "固定報酬 10,000円", price: 10000, applicants: 60, openings: 1, deadline: null, client: { tier: "優良", summary: "s", orders: 300, rating: 4.7, completionRate: 90, thanks: null, identity: "済", raw: "" }, proposal: "", checks: ["応募60人・募集1人（競争が激しい）", "提案文が出ていません。書いてから送ってください"], status: "approved", at: "2026-10-19T00:00:00Z" };
+  const out = setProposal(base, "募集を拝見しました。Excel関数とVBAで対応します。\n\n--- メモ ---\n社内", "Excel関数・VBA");
+  assert.equal(out.no, 7);
+  assert.equal(out.status, "approved");
+  assert.equal(out.proposal, "募集を拝見しました。Excel関数とVBAで対応します。");
+  assert.deepEqual(out.checks, ["応募60人・募集1人（競争が激しい）"], "提案文の注意は消え、ほかの注意は残る");
+  const bad = setProposal(base, "【要確認: 年数】です。", "Excel");
+  assert.ok(bad.checks.some((c) => c.startsWith("提案文に【要確認】")) && bad.checks.some((c) => c.startsWith("応募60人")));
+  assert.deepEqual(proposalChecks("本文です。", undefined), []);
 });
 
 test("パンくず（…の仕事・求人）は判定の本文に入れない。仕事の種類は題名に当たったものを先にする", () => {

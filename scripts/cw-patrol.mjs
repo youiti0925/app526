@@ -7,7 +7,8 @@
  *   node scripts/cw-patrol.mjs run --always    # 新しいことが無くてもまとめを送る
  *   node scripts/cw-patrol.mjs queue                       # 応募の下書き一覧（一覧・承認済み）を表示する
  *   node scripts/cw-patrol.mjs queue-add <募集URL> --proposal 提案文.txt   # 人が確かめた提案文つきで一覧に足す
- *   node scripts/cw-patrol.mjs queue-redraft [番号…]                 # 提案文が空の件（または指した件）の提案文を作り直す
+ *   node scripts/cw-patrol.mjs queue-redraft [番号…] [--force]       # 提案文が空の件の提案文を作り直す（--force: 入っている件も）
+ *   node scripts/cw-patrol.mjs queue-set <番号> --proposal 提案文.txt  # その件の提案文をファイルの文に差し替える
  *   node scripts/cw-patrol.mjs queue-mark approved|sent|skipped 3 5   # 一覧の番号に印を付ける（承認 = approved）
  *   node scripts/cw-patrol.mjs fill --approved             # 承認した件だけ、入力済みの応募画面を開く（最大5件。「応募する」は自分で押す）
  *   node scripts/cw-patrol.mjs survey [--max 30] [--fresh]   # 登録した検索画面の募集の報酬だけを集める（判定・応募はしない）
@@ -895,7 +896,10 @@ async function queueRedraft() {
   const { core } = loadLib();
   const state0 = readJson(QUEUE_JSON, core.emptyQueue());
   const nos = argv.slice(1).filter((a) => /^[0-9]+$/.test(a)).map(Number);
-  const targets = state0.items.filter((i) => i.status === "pending" && (nos.length ? nos.includes(i.no) : !core.cleanProposal(i.proposal)));
+  const picked = state0.items.filter((i) => i.status === "pending" && (nos.length ? nos.includes(i.no) : !core.cleanProposal(i.proposal)));
+  // 提案文が入っている件は、人や前の判定が整えたものを上書きしてしまわないよう、--force のときだけ作り直す
+  const targets = argv.includes("--force") ? picked : picked.filter((i) => !core.cleanProposal(i.proposal));
+  for (const i of picked) if (!targets.includes(i)) console.log(`- 【${i.no}】提案文が入っているので作り直しません（作り直すなら --force）`);
   if (!targets.length) {
     console.log("提案文を作り直す件はありません");
     return;
@@ -947,6 +951,27 @@ async function queueRedraft() {
   }
 }
 
+/**
+ * 一覧の件の提案文を、ファイルの文に差し替える（番号と状態は変わらない。募集ページは読まない）。
+ *   queue-set <番号> --proposal 提案文.txt
+ */
+function queueSet() {
+  const no = Number(argv[1]);
+  const file = optValue("proposal");
+  if (!Number.isInteger(no) || !file) die("使い方: node scripts/cw-patrol.mjs queue-set <番号> --proposal 提案文.txt");
+  ensureBuilt();
+  const { core } = loadLib();
+  const state = readJson(QUEUE_JSON, core.emptyQueue());
+  const target = state.items.find((i) => i.no === no);
+  if (!target) die(`一覧に【${no}】がありません`);
+  const text = fs.readFileSync(path.resolve(file), "utf8").trim();
+  const next = { ...state, items: state.items.map((i) => (i.no === no ? core.setProposal(i, text, readBackground()) : i)) };
+  writeJson(QUEUE_JSON, next);
+  fs.writeFileSync(QUEUE_MD, core.queueMarkdown(next));
+  const done = next.items.find((i) => i.no === no);
+  console.log(`【${no}】の提案文を差し替えました（${done.proposal.length}字）。提案文に関する注意: ${done.checks.filter((c) => c.startsWith("提案文")).join(" / ") || "なし"}`);
+}
+
 /** 記録した募集の予算をまとめて表示する */
 function budgets() {
   ensureBuilt();
@@ -961,9 +986,9 @@ function budgets() {
   console.log(loadLib().core.summarizeBudgets(records));
 }
 
-const commands = { setup, run, fill, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, schedule: () => registerSchedule(), "test-mail": () => testMail() };
+const commands = { setup, run, fill, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, schedule: () => registerSchedule(), "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();
