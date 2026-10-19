@@ -273,6 +273,8 @@ function reportJudge(r, started) {
   const lines = [`【案件判定】${r.lead.title}（id: ${r.lead.id.slice(0, 8)}）`];
   lines.push(`結論: ${VERDICT[r.lead.verdict] ?? r.lead.verdict}${r.escalated ? "（ルールで決めきれず、Claudeが判定）" : ""}`);
   if (t.reason) lines.push(`理由: ${t.reason}`);
+  // 一覧（ランサーズ巡回など）はこの行を拾って「AI禁止あり」の印を付ける
+  if (t.aiBan?.length) lines.push(`AI禁止あり: 「${t.aiBan.join("」「")}」（禁止された部分は、あなた自身が作業する前提。やれないなら見送り）`);
   if (t.hourly) lines.push(`手取り時給: ${t.hourly.low.toLocaleString()}〜${t.hourly.high.toLocaleString()}円（手数料を引いた後）`);
   else lines.push("手取り時給: 判定できていません（報酬か作業量が読めない）");
   if (t.yourTime?.highHours) lines.push(`あなたが手を動かす時間: ${t.yourTime.lowHours}〜${t.yourTime.highHours}時間`);

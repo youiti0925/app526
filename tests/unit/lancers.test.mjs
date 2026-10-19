@@ -70,6 +70,14 @@ test("一覧は「応募してよい」が先、同じ判定なら依頼者の�
   assert.match(md, /work\/detail\/3\?purpose=lancer/);
 });
 
+test("一覧: 判定に「AI禁止あり」があれば、印と禁止の範囲を載せる", () => {
+  const md = formatList([
+    { id: "7", title: "記事", verdict: "確認してから応募", score: 20, detail: "結論: 確認してから応募\nAI禁止あり: 「AI使用禁止です。」（禁止された部分は、あなた自身が作業する前提。やれないなら見送り）" },
+  ]);
+  assert.match(md, /\| 1 \| 確認してから応募・AI禁止あり \|/);
+  assert.match(md, /- AI禁止あり: 「AI使用禁止です。」/);
+});
+
 test("一覧: 題名の空白をまとめ、終わった募集と「当選者数」を提案数と取り違えない", () => {
   const it = normalizeListItem({
     href: "https://www.lancers.jp/work/detail/5",

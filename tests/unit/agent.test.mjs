@@ -512,12 +512,18 @@ test("機密・本人性の判定: 定型の表示や「記入しないでくだ
   assert.ok(JSON.stringify(checkGates("顧客の個人情報を含む名簿を入力します")).includes("機密・NDA"));
 });
 
-test("AIの使用禁止の募集は見送り、AI関連の仕事そのものでは立たない", async () => {
-  const { checkGates } = await import("../../dist-test/agent/gates.js");
-  const hit = (t) => JSON.stringify(checkGates(t)).includes("AIの使用禁止");
+test("AI禁止の募集は自動で見送らず、禁止の範囲を抜き出して「確認」に回す", async () => {
+  const { checkGates, readAiBan } = await import("../../dist-test/agent/gates.js");
+  const hit = (t) => checkGates(t).hits.find((h) => h.id === "ai_banned");
   assert.ok(hit("記事はAI使用禁止です。コピペチェックも行います"));
   assert.ok(hit("ChatGPTなどの生成AIの利用はご遠慮ください"));
   assert.ok(hit("AIのみで作成した提案は不採用とします"));
   assert.ok(!hit("ChatGPTを使った業務効率化のサポートをお願いします"));
   assert.ok(!hit("AIツールの導入支援。社内向けの手順書を作ってください"));
+  // 交渉（確認）で通る扱い。理由には禁止の範囲がそのまま入る
+  const g = checkGates("ロゴのデザインをお願いします。\n・画像生成AIの使用は禁止です。\n・ラフはAIで作ってもかまいません。");
+  assert.equal(g.negotiable, true);
+  assert.match(g.note, /AI禁止あり（範囲:「画像生成AIの使用は禁止です。」/);
+  assert.deepEqual(readAiBan("記事作成です。構成はお任せします。AI使用禁止です。よろしくお願いします。"), ["AI使用禁止です。"]);
+  assert.deepEqual(readAiBan("データ入力のお仕事です。"), []);
 });

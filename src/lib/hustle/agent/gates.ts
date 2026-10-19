@@ -57,6 +57,29 @@ interface GateRule {
 const UNPRODUCIBLE_FORMATS =
   /(\.?prproj|premiere.{0,10}プロジェクト|プロジェクトファイル|\.aep|after ?effects.{0,10}プロジェクト|\.psd|photoshop.{0,8}(データ|形式|ファイル)|\.ai\b|illustrator.{0,8}(データ|形式|ファイル)|\.clip\b|クリスタ.{0,6}(データ|ファイル)|\.fig\b|figma.{0,8}(データ|ファイル)|レイヤー.{0,6}(分け|構造).{0,10}(納品|渡)|編集データ.{0,6}(も|込|付))/i;
 
+/** 募集の「AIを使わないで」の書き方。全部禁止のことも、一部（画像だけ・AIのみは不可 など）のこともある。 */
+const AI_BAN_PATTERNS: RegExp[] = [
+  /(生成AI|AI|ＡＩ|ChatGPT|チャットGPT|GPT)[^。\n]{0,15}(使用|利用|活用)?[^。\n]{0,4}(禁止|不可|NG|お断り|ご遠慮|厳禁|しないで|はできません)/i,
+  /(AI|ＡＩ)(のみ|だけ|任せ)[^。\n]{0,10}(不可|NG|お断り|ご遠慮|禁止|不採用)/i,
+  /(手書き|自力|ご自身)[^。\n]{0,8}(で|の)[^。\n]{0,6}(執筆|作成)[^。\n]{0,8}(AI|ＡＩ)/i,
+];
+
+/**
+ * AIの使用を禁じている文を、募集文からそのまま抜き出す（禁止の範囲を人が判断するため）。
+ * 禁止がなければ空の配列。
+ */
+export function readAiBan(text: string): string[] {
+  const sentences = text.normalize("NFKC").slice(0, 8000).split(/(?<=[。！？!?])|\n/);
+  const found: string[] = [];
+  for (const raw of sentences) {
+    const s = raw.trim().replace(/^[・\-*※●■◆]+\s*/, "");
+    if (!s || !AI_BAN_PATTERNS.some((p) => p.test(s))) continue;
+    if (!found.includes(s)) found.push(s.length > 120 ? `${s.slice(0, 120)}…` : s);
+    if (found.length >= 3) break;
+  }
+  return found;
+}
+
 const GATE_RULES: GateRule[] = [
   {
     id: "confidentiality",
@@ -91,15 +114,12 @@ const GATE_RULES: GateRule[] = [
   },
   {
     id: "ai_banned",
-    label: "AIの使用禁止",
-    patterns: [
-      /(生成AI|AI|ＡＩ|ChatGPT|チャットGPT|GPT)[^。\n]{0,15}(使用|利用|活用)?[^。\n]{0,4}(禁止|不可|NG|お断り|ご遠慮|厳禁|しないで|はできません)/i,
-      /(AI|ＡＩ)(のみ|だけ|任せ)[^。\n]{0,10}(不可|NG|お断り|ご遠慮|禁止|不採用)/i,
-      /(手書き|自力|ご自身)[^。\n]{0,8}(で|の)[^。\n]{0,6}(執筆|作成)[^。\n]{0,8}(AI|ＡＩ)/i,
-    ],
-    why: "募集がAIの使用を禁じています。この仕組みは Claude が作業する前提なので受けません（AIを使っていないと偽って納品すると、規約違反と信用の両方を失います）。",
-    negotiable: false,
-    ask: "この案件は見送ってください。",
+    label: "AI禁止あり",
+    patterns: AI_BAN_PATTERNS,
+    why:
+      "募集がAIの使用を禁じています（全部か一部かは範囲を見てください）。禁止された部分をあなた自身が作れるなら応募できます。禁止された部分をAIで作って納品することはしません（偽って納品すると、規約違反と信用の両方を失います）。",
+    negotiable: true,
+    ask: "禁止の範囲を読んで、その部分をあなた自身でやれるかを判断してください。やれないなら見送ってください。",
   },
   {
     id: "format",
@@ -205,7 +225,8 @@ export function checkGates(text: string): GateResult {
       hits.push({
         id: rule.id,
         label: rule.label,
-        matched: m[0].slice(0, 60),
+        // AI禁止は、禁止の範囲が分かるように文ごと出す
+        matched: rule.id === "ai_banned" ? (readAiBan(t)[0] ?? m[0].slice(0, 60)) : m[0].slice(0, 60),
         why: rule.why,
         negotiable: rule.negotiable,
         ask: rule.ask,
@@ -227,8 +248,12 @@ export function checkGates(text: string): GateResult {
     negotiable,
     note: blocking.length
       ? `${blocking.map((h) => h.label).join("・")} があります。交渉では外せないので、無料枠のAIを使う前提では受けられません。`
-      : `${hits.map((h) => h.label).join("・")} があります。応募前に確認すれば通る可能性があります。`,
+      : `${hits.map(hitLabel).join("・")} があります。応募前に確認すれば通る可能性があります。`,
   };
+}
+
+function hitLabel(h: GateHit): string {
+  return h.id === "ai_banned" ? `AI禁止あり（範囲:「${h.matched}」。禁止された部分をあなた自身でやれるなら応募可）` : h.label;
 }
 
 /** 確認事項を1本の文面にする。承認キューに出す。 */

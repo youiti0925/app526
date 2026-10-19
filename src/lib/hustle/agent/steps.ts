@@ -10,7 +10,7 @@ import { judgeDeliverability } from "./deliverability";
 import { expectedHourly, readCompetition } from "./competition";
 import { checkCapacity, monthlyHourly, readEngagement } from "./engagement";
 import { checkDeadline, readDeadline } from "./deadline";
-import { checkGates, renderGateQuestions } from "./gates";
+import { checkGates, readAiBan, renderGateQuestions } from "./gates";
 import { buildChecklist } from "./coverage";
 import { buildRenegotiation } from "./renegotiate";
 import { buildListing, listableWorkTypes, renderListing } from "./listing";
@@ -532,6 +532,8 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       fitNotes,
       reason,
       minHourlyJpy: minHourly,
+      // AIの使用を禁じる文（範囲）。禁止された部分は本人が作業する前提で、一覧と提案文に反映する
+      aiBan: readAiBan(lead.rawText),
       gates: {
         passed: gates.passed,
         negotiable: gates.negotiable,
@@ -770,6 +772,7 @@ export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
       risks?: string[];
       reason?: string;
       estimate?: WorkEstimate | null;
+      aiBan?: string[];
     };
 
     let body = "";
@@ -779,7 +782,7 @@ export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
     if (hasApiKey() && ctx.budget.take()) {
       try {
         const result = await generateJson<ProposalOut>(
-          buildProposalPrompt(lead, background, learned),
+          buildProposalPrompt(lead, background, learned, triage.aiBan ?? []),
           { temperature: 0.8, maxOutputTokens: 4096, purpose: "proposal" }
         );
         const best = result?.variants?.find((v) => v?.body?.trim());
@@ -813,6 +816,9 @@ export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
 
     const header = [
       `【この案件の判定】${triage.reason ?? ""}`,
+      (triage.aiBan ?? []).length
+        ? `【AI禁止あり】範囲:「${(triage.aiBan ?? []).join("」「")}」— 禁止された部分は、あなた自身が作業する前提です。やれないなら見送ってください`
+        : "",
       engineLine,
       triage.hourly
         ? `【あなたの時間あたりの手取り】${triage.hourly.low.toLocaleString()}〜${triage.hourly.high.toLocaleString()}円（手数料控除後）`
@@ -857,7 +863,7 @@ export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
   return { summary: `${queued}件の提案文を用意`, queued };
 }
 
-function buildProposalPrompt(lead: Lead, background: string, learned: LearnedParams): string {
+function buildProposalPrompt(lead: Lead, background: string, learned: LearnedParams, aiBan: string[] = []): string {
   const angles = learned.preferredAngles.length
     ? `\n過去に反応が良かった切り口: ${learned.preferredAngles.join(" / ")}。これを優先してください。`
     : "";
@@ -875,7 +881,12 @@ function buildProposalPrompt(lead: Lead, background: string, learned: LearnedPar
 - 事実として確認できないこと（実績数値、資格、経歴）を創作しない。埋める箇所は 【要確認: 何を書くか】 の形で残す。
 - 冒頭2行で「この募集を読んだ上で書いている」ことが伝わること。
 - 相手が一番不安なこと（納期、途中で消えないか、指示が通じるか）を先回りして潰す。
-- 質問は最後に1〜2個だけ。${angles}${avoid}
+- 質問は最後に1〜2個だけ。
+- AIを使うことには触れない。${
+    aiBan.length
+      ? `\n- この募集はAIの使用を禁じています（「${aiBan.join("」「")}」）。禁止された部分は応募者本人が自分で作業する前提で書き、その部分をAIで作る・AIで効率化するといった内容は書かない。`
+      : ""
+  }${angles}${avoid}
 
 次のJSONだけを返してください:
 { "variants": [ { "angle": "この案の切り口", "subject": "件名", "body": "提案文の本文" } ] }

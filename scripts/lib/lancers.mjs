@@ -246,6 +246,7 @@ export function formatList(items, { when = new Date() } = {}) {
     "| # | 判定 | 依頼者の点数 | 題名 | 報酬 | 残り | 提案数 | 依頼者 |",
     "|---|---|---|---|---|---|---|---|",
   ];
+  const aiBan = (j) => j.detail?.match(/^AI禁止あり: (.+)$/m)?.[1] ?? null;
   sorted.forEach((j, i) => {
     const who = [
       j.awarded != null ? `発注${j.awarded}${j.posted != null ? `/${j.posted}` : ""}` : j.orders != null ? `発注${j.orders}` : "",
@@ -255,11 +256,12 @@ export function formatList(items, { when = new Date() } = {}) {
       .filter(Boolean)
       .join(" ");
     lines.push(
-      `| ${i + 1} | ${j.verdict} | ${j.score} | [${j.title.replace(/\|/g, "／")}](${publicUrl(j.id)}) | ${j.budget || j.price || "—"} | ${j.remaining || "—"} | ${j.proposals ?? "—"} | ${who} |`
+      `| ${i + 1} | ${j.verdict}${aiBan(j) ? "・AI禁止あり" : ""} | ${j.score} | [${j.title.replace(/\|/g, "／")}](${publicUrl(j.id)}) | ${j.budget || j.price || "—"} | ${j.remaining || "—"} | ${j.proposals ?? "—"} | ${who} |`
     );
   });
   sorted.forEach((j, i) => {
     lines.push("", `## ${i + 1}. ${j.title}`, "", `- 判定: ${j.verdict}`, `- 応募画面: ${detailUrl(j.id)}`);
+    if (aiBan(j)) lines.push(`- AI禁止あり: ${aiBan(j)}`);
     if (j.schedule?.length) lines.push(`- 日程: ${j.schedule.join(" ／ ")}`);
     if (j.detail) lines.push("", "```", j.detail.trim(), "```");
   });

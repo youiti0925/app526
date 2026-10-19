@@ -5,6 +5,7 @@ import { readAgentConfig, readLeads, readLeadsByIds, updateLead, pushInbox, logE
 import type { Lead } from "./types";
 import { reconcileVerdict } from "./reconcile";
 import { trackRecordException } from "./track-record";
+import { readAiBan } from "./gates";
 
 /**
  * ルールでも無料枠のAIでも判定しきれなかった案件を、能力の高いモデルに回す層。
@@ -166,6 +167,9 @@ export function buildBrief(items: EscalationItem[]): string {
    - **AIで速くできることを売りにしないでください。** 実測で、AIで代替しやすい作業ほど
      応募者が殺到して単価が壊れています。売るべきは、AIで代替されない部分
      （現場ヒアリングの設計、専門分野の判断、安全上の妥当性確認、最終確認の手順）です。
+   - 募集がAIの使用を禁じている（全部または一部）ときは、それだけで reject にしないでください。
+     reason の先頭に「AI禁止あり（範囲: 募集文の該当箇所）」と書き、禁止された部分は応募者本人が
+     自分で作業する前提で判定してください。提案文に、禁止された部分をAIで作る・AIで効率化する内容は書かないでください。
 
 ${
   config.learned.avoidNotes.length
@@ -212,7 +216,9 @@ ${
 - 下位エンジンが読み取った報酬額: ${item.partial.budgetJpy ? `${item.partial.budgetJpy.toLocaleString()}円` : "読み取れず"}
 - 下位エンジンの詐欺スコア: ${item.partial.scamScore}/100（${item.partial.scamVerdict}）${
         item.partial.scamSignals.length ? `\n- 検出済みの危険シグナル: ${item.partial.scamSignals.join(" / ")}` : ""
-      }${item.partial.scopeRisks.length ? `\n- 検出済みの地雷: ${item.partial.scopeRisks.join(" / ")}` : ""}
+      }${item.partial.scopeRisks.length ? `\n- 検出済みの地雷: ${item.partial.scopeRisks.join(" / ")}` : ""}${
+        readAiBan(item.rawText).length ? `\n- AI禁止の文: 「${readAiBan(item.rawText).join("」「")}」` : ""
+      }
 
 ### 募集文
 
