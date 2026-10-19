@@ -74,6 +74,124 @@ export function threadFingerprint(r: CwReview): string {
   return last ? `${r.thread.messages.length}|${last.from}|${last.at ?? ""}` : "0";
 }
 
+// --- 受信箱（クラウドワークスの「メッセージ」一覧） -------------------------------------
+
+export interface InboxRow {
+  href: string;
+  /** 一覧の1行ぶんの画面の文字 */
+  text: string;
+}
+
+export interface InboxEntry extends PatrolLink {
+  /** 契約／応募・スカウト／相談／辞退／見てみて（行の文字から読めたときだけ） */
+  status: string;
+  at: Date | null;
+  text: string;
+}
+
+const INBOX_STATUS = ["契約", "応募・スカウト", "相談", "辞退", "見てみて"];
+
+/** 受信箱の1行から、状態と日時を読む。読めないものは空・null。 */
+export function inboxRowInfo(text: string, now: Date = new Date()): { status: string; at: Date | null } {
+  const lines = text.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const status =
+    INBOX_STATUS.find((st) => lines.some((l) => l === st || l === `${st}！`)) ??
+    INBOX_STATUS.find((st) => lines.some((l) => l.length <= 12 && l.includes(st))) ??
+    INBOX_STATUS.find((st) => new RegExp(`(?:^|\\s)${st}！?(?:\\s|$)`).test(lines.join(" "))) ??
+    "";
+  const joined = lines.join(" ");
+  const p = (n: string) => n.padStart(2, "0");
+  let at: Date | null = null;
+  const full = joined.match(/(\d{4})[\/年](\d{1,2})[\/月](\d{1,2})日?(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (full) {
+    at = new Date(`${full[1]}-${p(full[2])}-${p(full[3])}T${p(full[4] ?? "0")}:${full[5] ?? "00"}:00+09:00`);
+  } else {
+    const short = joined.match(/(?<![\d\/])(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/);
+    if (short) {
+      const jstYear = new Date(now.getTime() + 9 * 3_600_000).getUTCFullYear();
+      const make = (y: number) => new Date(`${y}-${p(short[1])}-${p(short[2])}T${p(short[3])}:${short[4]}:00+09:00`);
+      at = make(jstYear);
+      if (at.getTime() > now.getTime() + 2 * 86_400_000) at = make(jstYear - 1);
+    }
+  }
+  if (at && Number.isNaN(at.getTime())) at = null;
+  return { status, at };
+}
+
+/**
+ * 受信箱の行から、読むやり取りを選ぶ。辞退した相手と、古いもの(60日より前。契約中は除く)は読まない。
+ * 新しい順に max 件。
+ */
+export function selectInboxRows(rows: InboxRow[], now: Date = new Date(), max = 15): InboxEntry[] {
+  const seen = new Set<string>();
+  const out: InboxEntry[] = [];
+  for (const r of rows) {
+    const link = classifyLink(r.href);
+    if (!link || link.kind !== "thread" || seen.has(link.key)) continue;
+    seen.add(link.key);
+    const info = inboxRowInfo(r.text, now);
+    if (info.status === "辞退") continue;
+    if (info.status !== "契約" && info.at && now.getTime() - info.at.getTime() > 60 * 86_400_000) continue;
+    out.push({ ...link, ...info, text: r.text });
+  }
+  out.sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0));
+  return out.slice(0, max);
+}
+
+export interface MessageNote {
+  key: string;
+  title: string;
+  url: string;
+  /** danger: 返信せず離れる／caution: 注意して確認／reply: 返事を考える */
+  kind: "danger" | "caution" | "reply";
+  status: string;
+  from: string;
+  at: string | null;
+  daysAgo: number | null;
+  /** 相手の最後の発言の冒頭 */
+  gist: string;
+  /** 危険信号の名前(上位2つ) */
+  why: string;
+  /** すすめる対応 */
+  advice: string;
+  /** 前回の巡回から変わった(新着) */
+  fresh: boolean;
+}
+
+const collapse = (t: string, n: number) => {
+  const c = t.replace(/\s+/g, " ").trim();
+  return c.length > n ? `${c.slice(0, n)}…` : c;
+};
+
+/** 受信箱・やり取りの読み取り結果から、返事や確認が要るものを取り出す(巡回のたびに作り直す)。 */
+export function messageNotes(threads: ReportInput["threads"]): MessageNote[] {
+  const notes: MessageNote[] = [];
+  for (const t of threads) {
+    const r = t.review;
+    const scam = r.scam;
+    const kind: MessageNote["kind"] | null =
+      scam?.verdict === "danger" ? "danger" : scam?.verdict === "caution" ? "caution" : r.waiting === "me" || r.flags.some((f) => f.includes("提示額")) ? "reply" : null;
+    if (!kind) continue;
+    const lastClient = [...r.thread.messages].reverse().find((m) => !m.mine);
+    notes.push({
+      key: t.url,
+      title: shortTitle(r.thread.title),
+      url: t.url,
+      kind,
+      status: t.inboxStatus ?? "",
+      from: lastClient?.from ?? "",
+      at: lastClient?.at ?? null,
+      daysAgo: r.daysSinceLast,
+      gist: collapse(lastClient?.text ?? "", 160),
+      why: (scam?.signals ?? []).slice(0, 2).map((s) => s.label).join(" / "),
+      advice: r.actions.slice(0, 2).join(" ／ "),
+      fresh: t.changed,
+    });
+  }
+  const rank = { danger: 0, reply: 1, caution: 2 } as const;
+  return notes.sort((a, b) => rank[a.kind] - rank[b.kind]);
+}
+
 export interface JudgedJob {
   title: string;
   url: string;
@@ -91,7 +209,7 @@ export interface PatrolReport {
 }
 
 export interface ReportInput {
-  threads: { review: CwReview; url: string; changed: boolean }[];
+  threads: { review: CwReview; url: string; changed: boolean; inboxStatus?: string }[];
   jobs: JudgedJob[];
   errors: string[];
   loginExpired: boolean;
@@ -127,6 +245,8 @@ export function buildReport(input: ReportInput): PatrolReport {
 
   const out: string[] = [];
   const section = (title: string) => out.push("", `■ ${title}`);
+  const noteMap = new Map(messageNotes(input.threads).map((n) => [n.url, n]));
+  const noteOf = (t: ReportInput["threads"][number]) => noteMap.get(t.url);
 
   // 1行目で結論が分かるように
   out.push(
@@ -166,6 +286,8 @@ export function buildReport(input: ReportInput): PatrolReport {
       const last = t.review.thread.messages[t.review.thread.messages.length - 1];
       out.push(`・${t.review.thread.title}${t.changed ? "【新着】" : ""}`);
       if (last) out.push(`  最後の発言: ${last.from}さん${t.review.daysSinceLast !== null ? `（${t.review.daysSinceLast}日前）` : ""}`);
+      const gist = noteOf(t)?.gist;
+      if (gist) out.push(`  内容: ${gist}`);
       for (const f of t.review.flags) out.push(`  - ${f}`);
       out.push(`  ${t.url}`);
     }
@@ -174,7 +296,14 @@ export function buildReport(input: ReportInput): PatrolReport {
     section(`返事をしなくてよい相手 ${risky.length}件（危険信号あり）`);
     for (const t of risky) {
       const why = t.review.scam?.signals[0]?.label ?? "危険信号あり";
-      out.push(`・${shortTitle(t.review.thread.title)} … ${why}`);
+      out.push(`・${shortTitle(t.review.thread.title)}${t.changed ? "【新着】" : ""} … ${why}`);
+      if (t.review.scam?.verdict === "danger") {
+        const gist = noteOf(t)?.gist;
+        if (gist) out.push(`  内容: ${gist}`);
+        for (const f of t.review.flags) out.push(`  - ${f}`);
+        for (const a of t.review.actions) out.push(`  → ${a}`);
+        out.push(`  ${t.url}`);
+      }
     }
   }
   if (input.jobs.length) {
@@ -682,6 +811,8 @@ export interface QueueItem {
 export interface QueueState {
   nextNo: number;
   items: QueueItem[];
+  /** 受信箱の確認結果(返事や確認が要るもの)。巡回のたびに作り直す */
+  messages?: MessageNote[];
 }
 
 export const emptyQueue = (): QueueState => ({ nextNo: 1, items: [] });
@@ -888,7 +1019,7 @@ export function addToQueue(state: QueueState, items: Omit<QueueItem, "no" | "sta
   // 3週間たった未承認・見送りは一覧から外す（承認済みと送信済みは残す）
   const cutoff = now.getTime() - 21 * 86_400_000;
   const kept = state.items.filter((i) => i.status === "approved" || i.status === "sent" || new Date(i.at).getTime() >= cutoff);
-  return { nextNo, items: [...kept, ...added] };
+  return { ...state, nextNo, items: [...kept, ...added] };
 }
 
 export function markQueue(state: QueueState, nos: number[], status: QueueStatus): { state: QueueState; changed: number[]; missing: number[] } {
@@ -962,8 +1093,24 @@ export function queueMarkdown(state: QueueState, at: Date = new Date()): string 
     "送らない件は「見送り 2」と返すと一覧から外します。返事がなくても、巡回と下書きづくりは続き、この一覧に足されていきます。",
     "並べ方: 募集実績が多く、評価と完了率が高い依頼者を上に出しています。",
     "",
-    `一覧 ${pending.length}件／承認済み ${approved.length}件`,
+    `一覧 ${pending.length}件／承認済み ${approved.length}件${state.messages?.length ? `／受信箱で返事や確認が要るメッセージ ${state.messages.length}件（次の項）` : ""}`,
   ];
+  if (state.messages?.length) {
+    const label = { danger: "危険（返信せず離れる）", caution: "注意（確認してから）", reply: "返事を考える" } as const;
+    out.push("", "# 受信箱で返事や確認が要るメッセージ（巡回のたびに作り直します）", "");
+    for (const [i, m] of state.messages.entries()) {
+      out.push(
+        `## 【M${i + 1}】${m.from ? `${m.from}｜` : ""}${m.title}${m.fresh ? "　【新着】" : ""}`,
+        "",
+        `- 見立て: ${label[m.kind]}${m.status ? `／状態: ${m.status}` : ""}${m.why ? `／${m.why}` : ""}`,
+        `- 画面: ${m.url}`,
+        `- 相手の最後の発言: ${m.at ? m.at.slice(0, 16).replace("T", " ") : "日時不明"}${m.daysAgo !== null ? `（${m.daysAgo}日前）` : ""}`,
+        `- 内容の冒頭: ${m.gist || "（読めませんでした）"}`,
+        ...(m.advice ? [`- 対応: ${m.advice}`] : []),
+        ""
+      );
+    }
+  }
   if (approved.length) out.push("", "# 承認済み（応募画面を開いてあります。「応募する」を押すだけ）", ...approved.map((i) => `- 【${i.no}】${shortTitle(i.title)} ${i.applyUrl}`));
   if (pending.length) {
     out.push(

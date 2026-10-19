@@ -100,3 +100,43 @@ test("複数のスレッドを続けて貼っても分けて読む／見出し�
   assert.equal(none[0].messages.length, 0);
   assert.ok(formatCwReview(reviewCwThread(none[0], now)).includes("読めませんでした"));
 });
+
+// 契約・仮払いのあとに、外のチャット(チャットワーク)へ誘うメッセージ。画面には外部連絡の申請が否認と出ている
+const CONTRACT_CHATWORK = `契約詳細：【初心者歓迎】選んで入力するだけのデータ入力【個別指導で安心】
+業務を開始しています
+サービス外連絡申請が否認されました。サービス外連絡申請ステータス： 否認（申請者：テスト企画 さん）
+※もし、外部の連絡先に誘導されても応じることなく、必ずクラウドワークス内でやり取りを行ってください。
+※現在やりとりしているメッセージは、契約終了後2年間経過すると自動的に削除されます。
+
+taro_test
+2026年10月04日 21:32
+お世話になります。お仕事の内容に興味がありご連絡いたしました。
+
+テスト企画
+2026年10月19日 12:37
+仮払いが完了いたしました。
+つきましては、調査員リーダーの 「tester」 より、詳しいお仕事内容をチャットワークにてご連絡させていただきます。
+（チャットワークのコンタクトURL: chatwork.com/tester24）
+【パソコンの場合】
+1.チャットワークWebサイトにログインし、「コンタクト管理」画面へ移動します。
+`;
+
+test("契約後に、外のチャット(チャットワーク)へ誘うメッセージは危険にし、否認の表示も知らせる", () => {
+  const r = reviewCwThread(parseCwThreads(CONTRACT_CHATWORK, "taro_test")[0], new Date("2026-10-19T18:00:00+09:00"));
+  assert.equal(r.scam.verdict, "danger");
+  assert.ok(r.scam.signals.some((s) => s.id === "thread_offplatform_chat"));
+  assert.ok(r.flags.some((f) => f.includes("否認")), "否認の表示を知らせる");
+  assert.ok(r.actions.some((a) => a.includes("連絡先は追加しない")));
+  assert.ok(formatCwReview(r).includes("危険"));
+});
+
+test("外のチャットへの誘いでない普通の連絡や、自分の発言には反応しない", () => {
+  const text = CONTRACT_CHATWORK.replace(/つきましては[\s\S]*$/, "つきましては、作業の流れを、このメッセージ内でご説明します。\n1. ファイルをお送りします。\n");
+  const r = reviewCwThread(parseCwThreads(text, "taro_test")[0], new Date("2026-10-19T18:00:00+09:00"));
+  assert.ok(!r.scam?.signals.some((s) => s.id === "thread_offplatform_chat"));
+  assert.ok(!r.flags.some((f) => f.includes("否認")), "外へ誘っていないのに否認の注意は出さない");
+  // 自分が「チャットワークでの連絡はできません」と書いた文は、相手の発言ではないので当てない
+  const mine = CONTRACT_CHATWORK.replace("お仕事の内容に興味がありご連絡いたしました。", "チャットワークでのご連絡は控えております。");
+  const r2 = reviewCwThread(parseCwThreads(mine.replace(/テスト企画\n2026年10月19日[\s\S]*$/, "テスト企画\n2026年10月19日 12:37\n承知しました。このままここでお願いします。\n"), "taro_test")[0], new Date("2026-10-19T18:00:00+09:00"));
+  assert.ok(!r2.scam?.signals.some((s) => s.id === "thread_offplatform_chat"));
+});

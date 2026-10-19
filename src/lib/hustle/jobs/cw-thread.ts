@@ -5,7 +5,8 @@
  * このコードは通信をしない。AIも使わない（ルールだけ）ので、使用量はかからない。
  * 詐欺ルールは相手（クライアント）の発言にだけ当てる。自分の発言には当てない。
  */
-import { scoreScam, type ScamScoreResult } from "../scam-rules";
+import { combineSignals, scoreScam, type ScamScoreResult } from "../scam-rules";
+import type { ScamSignalHit } from "../types";
 
 export interface CwMessage {
   from: string;
@@ -28,6 +29,8 @@ export interface CwThread {
   postedOffer: CwOffer | null;
   myLatestOffer: number | null;
   noWorkNotice: boolean;
+  /** 画面全体の文字（画面の注意書きの確認用。保存はしない） */
+  rawText?: string;
 }
 
 export interface CwReview {
@@ -113,7 +116,40 @@ function parseOne(lines: string[], myName: string): CwThread {
     postedOffer: posted ? { min: yen(posted[1]), max: yen(posted[2]) } : null,
     myLatestOffer: mine ? yen(mine[1]) : null,
     noWorkNotice: /まだ業務を開始しないでください/.test(joined),
+    rawText: joined,
   };
+}
+
+/**
+ * 相手のメッセージが、クラウドワークスの外のチャット(チャットワーク・LINE など)へ誘っているか。
+ * 募集文のほうは「連絡はチャットワークで」と普通に書かれるので、ここ(契約・応募後のメッセージ)にだけ当てる。
+ */
+const OFFPLATFORM_CHAT = [
+  /chatwork\.com\/[A-Za-z0-9_\-]{3,}/i,
+  /(チャットワーク|chatwork)[^。\n]{0,40}(コンタクト|追加|検索|登録|接続)/i,
+  /(チャットワーク|chatwork)[^。\n]{0,20}(にて|で|から)[^。\n]{0,12}(ご?連絡|やり取り|やりとり|ご案内)/i,
+  /(LINE|ライン|スカイプ|Skype|テレグラム|Telegram|ディスコード|Discord|WhatsApp)[^。\n]{0,30}(にて|で|へ|に)[^。\n]{0,12}(ご?連絡|やり取り|やりとり|ご案内|追加|登録)/i,
+];
+
+export function offplatformSignal(clientText: string): ScamSignalHit | null {
+  const text = clientText.normalize("NFKC");
+  for (const re of OFFPLATFORM_CHAT) {
+    const m = text.match(re);
+    if (m && m.index !== undefined) {
+      const start = Math.max(0, m.index - 15);
+      return {
+        id: "thread_offplatform_chat",
+        label: "メッセージで、クラウドワークスの外のチャット（チャットワーク・LINEなど）へ誘っている",
+        weight: 9,
+        why:
+          "クラウドワークスでは、外部の連絡先の交換は事務局の「サービス外連絡申請」で承認された場合だけ認められています。" +
+          "外のチャットに連れ出して、教材・サポート費・別サービスの勧誘や、記録の残らないやり取りに進む例が多い型です。\n" +
+          "→ 連絡先は追加せず、クラウドワークスの中でやり取りするよう伝えてください。応じなければ「違反報告」ができます。",
+        excerpt: text.slice(start, m.index + m[0].length + 15).replace(/\s+/g, " "),
+      };
+    }
+  }
+  return null;
 }
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -154,7 +190,17 @@ export function reviewCwThread(thread: CwThread, now: Date): CwReview {
     .filter((m) => !m.mine)
     .map((m) => m.text)
     .join("\n\n");
-  const scam = clientText.trim().length >= 10 ? scoreScam(clientText) : null;
+  let scam = clientText.trim().length >= 10 ? scoreScam(clientText) : null;
+  const off = offplatformSignal(clientText);
+  if (off) {
+    scam = combineSignals([...(scam?.signals ?? []), ...(scam?.signals.some((s) => s.id === off.id) ? [] : [off])]);
+    if (/サービス外連絡申請[^\n]{0,30}否認/.test(thread.rawText ?? "")) {
+      flags.push("依頼者のサービス外連絡申請は、クラウドワークスに否認されています。外のチャットへの誘いには応じないでください");
+    }
+    // 危険な相手には「返事するか決めてください」より、外へ出ないことを先に伝える
+    for (let i = actions.length - 1; i >= 0; i--) if (actions[i].includes("まだ返していません")) actions.splice(i, 1);
+    actions.push("チャットワークなどの連絡先は追加しない。クラウドワークスの中で「ここでやり取りしたい」と1回だけ伝え、応じなければ違反報告する");
+  }
 
   return { thread, daysSinceLast, waiting, scam, flags, actions };
 }

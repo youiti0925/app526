@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { ruleChecks, setProposal, proposalChecks, cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
+import { ruleChecks, setProposal, proposalChecks, cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint, inboxRowInfo, selectInboxRows, messageNotes } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -599,4 +599,79 @@ test("パンくず（…の仕事・求人）は判定の本文に入れない�
     "【主婦の方大歓迎！】Youtubeサムネイル作成のお仕事\n固定報酬制 5,000円\nYouTube動画のサムネイル制作をお願いいたします。自然な日本語に翻訳できる方歓迎。\n" + "ご要望は都度チャットでお伝えします。".repeat(10) + "\nクライアント情報\n募集実績 338 件\n○○の詳細を見る"
   );
   assert.equal(thumb.genre, "図解・ロゴ・チャート");
+});
+
+// --- 受信箱 ---
+
+const NOW = new Date("2026-10-19T18:00:00+09:00");
+
+test("受信箱の行から、状態と日時を読む(今年の月日・年つき・読めない)", () => {
+  const a = inboxRowInfo("テスト企画\n【初心者歓迎】データ入力\nお疲れ様です。…\n契約\n10/19 12:37", NOW);
+  assert.equal(a.status, "契約");
+  assert.equal(a.at.toISOString(), "2026-10-19T03:37:00.000Z");
+  const b = inboxRowInfo("某社 ポイ活アプリ 突然のメッセージ失礼いたします 相談 2023/07/26", NOW);
+  assert.equal(b.status, "相談");
+  assert.equal(b.at.getUTCFullYear(), 2023);
+  // 年末に見る1月の行は、来年ではなく今年(または去年)の日付にする
+  const c = inboxRowInfo("応募・スカウト\n12/30 09:00", new Date("2027-01-02T10:00:00+09:00"));
+  assert.equal(c.at.getUTCFullYear(), 2026);
+  assert.deepEqual(inboxRowInfo("読めない行", NOW), { status: "", at: null });
+});
+
+test("受信箱から読むやり取りを選ぶ: 辞退と古いものは外し、新しい順、同じ相手は1回", () => {
+  const rows = [
+    { href: "https://crowdworks.jp/messages/100", text: "A社\n応募・スカウト\n10/15 18:12" },
+    { href: "https://crowdworks.jp/messages/101", text: "B社\n辞退\n10/18 10:00" },
+    { href: "https://crowdworks.jp/messages/102", text: "C社\n契約\n10/19 12:37" },
+    { href: "https://crowdworks.jp/messages/102", text: "C社 (同じ行のもう1つのリンク)" },
+    { href: "https://crowdworks.jp/messages/103", text: "D社\n相談\n2023/07/26" },
+    { href: "https://crowdworks.jp/messages/104", text: "E社\n契約\n2023/07/26" },
+    { href: "https://crowdworks.jp/help", text: "ヘルプ" },
+  ];
+  const out = selectInboxRows(rows, NOW, 10);
+  assert.deepEqual(out.map((e) => e.key), ["messages:102", "messages:100", "messages:104"]);
+  assert.equal(out[0].status, "契約");
+  assert.deepEqual(selectInboxRows(rows, NOW, 1).map((e) => e.key), ["messages:102"]);
+});
+
+const DANGER_CONTRACT = `契約詳細：【初心者歓迎】選んで入力するだけのデータ入力
+サービス外連絡申請が否認されました。
+taro_test
+2026年10月04日 21:32
+お世話になります。応募します。
+
+テスト企画
+2026年10月19日 12:37
+仮払いが完了いたしました。詳しいお仕事内容はチャットワークにてご連絡します。
+（チャットワークのコンタクトURL: chatwork.com/tester24）
+`;
+
+test("返事や確認が要るメッセージだけを取り出し、危険なものを先に並べる。一覧とメールにも内容の冒頭を出す", () => {
+  const mk = (text, url, changed = true) => ({ review: reviewCwThread(parseCwThreads(text, "taro_test")[0], NOW), url, changed, inboxStatus: "契約" });
+  const danger = mk(DANGER_CONTRACT, "https://crowdworks.jp/contracts/1");
+  const plain = mk(THREAD, "https://crowdworks.jp/proposals/2");
+  const ok = mk(DANGER_CONTRACT.replace(/テスト企画\n[\s\S]*$/, "taro_test\n2026年10月19日 12:37\nよろしくお願いします。\n"), "https://crowdworks.jp/contracts/3");
+  const notes = messageNotes([plain, ok, danger]);
+  assert.ok(notes.length >= 1);
+  const n1 = notes.find((n) => n.url === "https://crowdworks.jp/contracts/1");
+  assert.equal(n1.kind, "danger");
+  assert.ok(n1.gist.includes("チャットワーク"));
+  assert.ok(n1.advice.includes("連絡先は追加しない"));
+  // 危険なものが先、返事を考えるものは後
+  const order = notes.map((n) => n.kind);
+  assert.deepEqual(order, [...order].sort((a, b) => ({ danger: 0, reply: 1, caution: 2 })[a] - ({ danger: 0, reply: 1, caution: 2 })[b]));
+  assert.ok(!notes.some((n) => n.url === "https://crowdworks.jp/contracts/3"), "自分の発言で終わっているものは出さない");
+
+  const md = queueMarkdown({ nextNo: 1, items: [], messages: notes }, NOW);
+  assert.ok(md.includes("受信箱で返事や確認が要るメッセージ"));
+  assert.ok(md.includes("危険（返信せず離れる）"));
+  assert.ok(md.includes("https://crowdworks.jp/contracts/1"));
+  assert.ok(!md.includes("待ち"));
+  // 一覧に足すだけの操作(addToQueue)でも、受信箱の欄は消えない
+  assert.equal(addToQueue({ nextNo: 1, items: [], messages: notes }, []).messages.length, notes.length);
+
+  const report = buildReport({ threads: [danger], jobs: [], errors: [], loginExpired: false });
+  assert.ok(report.body.includes("内容: 仮払いが完了"), "危険な相手も、内容の冒頭と対応をメールに出す");
+  assert.ok(report.body.includes("連絡先は追加しない"));
+  assert.ok(report.worthSending);
 });

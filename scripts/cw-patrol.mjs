@@ -11,6 +11,7 @@
  *   node scripts/cw-patrol.mjs queue-set <番号> --proposal 提案文.txt  # その件の提案文をファイルの文に差し替える
  *   node scripts/cw-patrol.mjs page <募集IDまたはURL>…               # 募集の本文（判定に渡す部分）を表示する
  *   node scripts/cw-patrol.mjs read <https://crowdworks.jp/…のURL>…   # 画面の文字とリンクを表示する（メッセージの受信箱・スカウトの形を調べる用。読むだけ）
+ *   node scripts/cw-patrol.mjs messages [--last 3] [--max 800]       # 受信箱のやり取りを読んで、状態・危険信号・最後の数通の本文を表示する（読むだけ）
  *   node scripts/cw-patrol.mjs queue-mark approved|sent|skipped 3 5   # 一覧の番号に印を付ける（承認 = approved）
  *   node scripts/cw-patrol.mjs fill --approved             # 承認した件だけ、入力済みの応募画面を開く（最大5件。「応募する」は自分で押す）
  *   node scripts/cw-patrol.mjs survey [--max 30] [--fresh]   # 登録した検索画面の募集の報酬だけを集める（判定・応募はしない）
@@ -50,7 +51,8 @@ const QUEUE_MD = path.join(HOME, "queue.md");
 const LOCK = path.join(HOME, "running.lock");
 const PROFILE = path.join(HOME, "browser-profile");
 
-const MAX_THREADS = 15;
+const MAX_THREADS = 20;
+const MAX_INBOX = 15;
 const MAX_JOBS = 20;
 const LOGIN_URL = "https://crowdworks.jp/login";
 
@@ -377,6 +379,104 @@ function runScan(errors) {
   return { candidates, body };
 }
 
+/** 受信箱(メッセージ一覧)の行を読む。メッセージへのリンクごとに、その行の文字を付ける */
+async function readInboxRows(page) {
+  return page.evaluate(() => {
+    const out = [];
+    const seen = new Set();
+    const isMsg = (el) => el.matches?.('a[href*="/messages/"]') || el.querySelector?.('a[href*="/messages/"]');
+    for (const a of document.querySelectorAll('a[href*="/messages/"]')) {
+      const m = a.href.match(/\/messages\/(\d+)\/?(\?|#|$)/);
+      if (!m || seen.has(m[1])) continue;
+      seen.add(m[1]);
+      // 行 = このリンクを含み、同じ形のリンクを含む兄弟が3つ以上ある、いちばん内側の要素
+      let el = a;
+      while (el.parentElement && el.parentElement !== document.body) {
+        if ([...el.parentElement.children].filter(isMsg).length >= 3) break;
+        el = el.parentElement;
+      }
+      out.push({ href: a.href, text: (el.innerText || a.innerText || "").trim() });
+    }
+    return out;
+  });
+}
+
+/**
+ * やり取りを読む: 受信箱（メッセージ一覧。新しい順に最大 MAX_INBOX 件。辞退と古いものは除く）と、マイページのリンク。
+ * 同じやり取りに行き着くリンク(メッセージ→契約など)は1回だけ読む。見るだけ（ボタンは押さない）。
+ */
+async function readThreadsFlow(page, config, seen, errors) {
+  const { cw, core } = loadLib();
+  const links = [];
+  const inboxStatus = new Map();
+  let inboxRead = false;
+
+  const inboxUrl = config.inboxUrl ?? "https://crowdworks.jp/messages";
+  try {
+    log(`受信箱を見ています: ${inboxUrl}`);
+    const p = await readPage(page, inboxUrl);
+    if (isLoginPage(p.finalUrl)) return { threads: [], loginExpired: true, inboxRead };
+    const rows = await readInboxRows(page);
+    if (rows.length === 0) errors.push(`受信箱の行が読めませんでした（画面の形が変わったかもしれません）: ${p.finalUrl}`);
+    else inboxRead = true;
+    for (const e of core.selectInboxRows(rows, new Date(), MAX_INBOX)) {
+      links.push(e);
+      inboxStatus.set(e.key, e.status);
+    }
+  } catch (e) {
+    errors.push(`受信箱: ${e.message}`);
+  }
+  await politeWait();
+
+  for (const url of config.listUrls) {
+    try {
+      log(`一覧を見ています: ${url}`);
+      const p = await readPage(page, url);
+      if (isLoginPage(p.finalUrl)) return { threads: [], loginExpired: true, inboxRead };
+      links.push(...core.collectLinks(p.hrefs).threads);
+    } catch (e) {
+      errors.push(`${url}: ${e.message}`);
+    }
+    await politeWait();
+  }
+
+  const threads = [];
+  const readKeys = new Set();
+  const uniq = [...new Map(links.map((l) => [l.key, l])).values()].slice(0, MAX_THREADS);
+  for (const link of uniq) {
+    if (readKeys.has(link.key)) continue;
+    try {
+      log(`やり取りを読んでいます: ${link.url}`);
+      const p = await readPage(page, link.url);
+      if (isLoginPage(p.finalUrl)) return { threads, loginExpired: true, inboxRead };
+      // メッセージのリンクは、契約・応募の画面に移る。移った先で同じものを読んでいれば重ねない
+      const final = core.classifyLink(p.finalUrl);
+      const key = final?.key ?? link.key;
+      const duplicate = key !== link.key && readKeys.has(key);
+      readKeys.add(link.key);
+      readKeys.add(key);
+      if (duplicate) {
+        await politeWait();
+        continue;
+      }
+      const parsed = cw.parseCwThreads(p.text, config.me)[0];
+      if (!/^相談から契約まで/.test(p.text.trim().split("\n").find((l) => l.trim()) ?? "")) {
+        parsed.title = p.title.replace(/\s*[|｜].*$/, "").trim() || parsed.title;
+      }
+      const review = cw.reviewCwThread(parsed, new Date());
+      const fp = core.threadFingerprint(review);
+      const changed = seen.threads[key] !== fp;
+      seen.threads[key] = fp;
+      if (parsed.messages.length === 0) errors.push(`メッセージが読めませんでした: ${link.url}`);
+      threads.push({ review, url: final?.url ?? link.url, changed, inboxStatus: inboxStatus.get(link.key) ?? "" });
+    } catch (e) {
+      errors.push(`${link.url}: ${e.message}`);
+    }
+    await politeWait();
+  }
+  return { threads, loginExpired: false, inboxRead };
+}
+
 async function run() {
   const config = readJson(CONFIG, null);
   if (!config?.listUrls?.length) die("まだ設定されていません。先に setup を実行してください");
@@ -401,47 +501,15 @@ async function run() {
     const toJudge = [];
     const queueItems = [];
     let loginExpired = false;
+    let inboxRead = false;
 
     const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
     try {
-      // 1) やり取りの一覧 → 各やり取り
-      const threadLinks = [];
-      for (const url of config.listUrls) {
-        log(`一覧を見ています: ${url}`);
-        const p = await readPage(page, url);
-        if (isLoginPage(p.finalUrl)) {
-          loginExpired = true;
-          break;
-        }
-        threadLinks.push(...core.collectLinks(p.hrefs).threads);
-        await politeWait();
-      }
-      if (!loginExpired) {
-        const uniq = [...new Map(threadLinks.map((l) => [l.key, l])).values()].slice(0, MAX_THREADS);
-        for (const link of uniq) {
-          try {
-            log(`やり取りを読んでいます: ${link.url}`);
-            const p = await readPage(page, link.url);
-            if (isLoginPage(p.finalUrl)) {
-              loginExpired = true;
-              break;
-            }
-            const parsed = cw.parseCwThreads(p.text, config.me)[0];
-            if (!/^相談から契約まで/.test(p.text.trim().split("\n").find((l) => l.trim()) ?? "")) {
-              parsed.title = p.title.replace(/\s*[|｜].*$/, "").trim() || parsed.title;
-            }
-            const review = cw.reviewCwThread(parsed, new Date());
-            const fp = core.threadFingerprint(review);
-            const changed = seen.threads[link.key] !== fp;
-            seen.threads[link.key] = fp;
-            if (parsed.messages.length === 0) errors.push(`メッセージが読めませんでした: ${link.url}`);
-            threads.push({ review, url: link.url, changed });
-          } catch (e) {
-            errors.push(`${link.url}: ${e.message}`);
-          }
-          await politeWait();
-        }
-      }
+      // 1) 受信箱（メッセージの一覧）とマイページ → 各やり取り
+      const flow = await readThreadsFlow(page, config, seen, errors);
+      loginExpired = flow.loginExpired;
+      threads.push(...flow.threads);
+      inboxRead = flow.inboxRead;
 
       // 2) 検索結果 → 新しい募集だけ判定
       if (!loginExpired) {
@@ -514,7 +582,9 @@ async function run() {
     let queue = null;
     try {
       const before = readJson(QUEUE_JSON, core.emptyQueue());
-      const after = core.addToQueue(before, queueItems);
+      const added0 = core.addToQueue(before, queueItems);
+      // 受信箱を読めたときだけ、返事や確認が要るメッセージを作り直す(読めなかった回は前回のまま)
+      const after = inboxRead || threads.length ? { ...added0, messages: core.messageNotes(threads) } : added0;
       const knownNos = new Set(before.items.map((i) => i.no));
       const added = after.items.filter((i) => !knownNos.has(i.no));
       writeJson(QUEUE_JSON, after);
@@ -1040,6 +1110,12 @@ async function readShow() {
           });
           console.log(`\n===== ${url}\n最終のURL: ${p.finalUrl}\n題名: ${p.title}\n--- 文字 ---\n${p.text.slice(0, max)}\n--- リンク（${links.length}件） ---`);
           for (const l of links.slice(0, 120)) console.log(`${l.text || "（文字なし）"}\t${l.href}`);
+          // 返信の入力欄の形を調べる用(入力はしない)
+          const fields = await page.$$eval("textarea, input[type=text], input[type=file], button[type=submit], input[type=submit]", (els) =>
+            els.map((e) => `${e.tagName.toLowerCase()}${e.type ? `[${e.type}]` : ""} name=${e.getAttribute("name") ?? ""} id=${e.id} placeholder=${(e.getAttribute("placeholder") ?? "").slice(0, 40)} 文字=${(e.innerText || e.value || "").replace(/\s+/g, " ").slice(0, 20)}`)
+          );
+          console.log(`--- 入力欄・ボタン（${fields.length}件。押さない・入力しない） ---`);
+          for (const f of fields.slice(0, 20)) console.log(f);
         } catch (e) {
           console.log(`\n===== ${url}\n読めませんでした: ${e.message}`);
         }
@@ -1049,6 +1125,47 @@ async function readShow() {
       await ctx.close();
     }
   } finally {
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
+/**
+ * 受信箱のやり取りを読んで、1件ずつ「状態・最後の発言・危険信号・すすめる対応」と、最後の数通の本文を出す。読むだけ。
+ * 既読の記録は更新しない(巡回の「新着」判定に影響しない)。
+ *   messages [--last 3] [--max 800]
+ * --last: 1件につき何通ぶん本文を出すか／--max: 1通の本文の最大文字数
+ */
+async function messagesShow() {
+  const config = readJson(CONFIG, null);
+  if (!config?.listUrls?.length) die("まだ設定されていません。先に setup を実行してください");
+  const last = Number(optValue("last")) || 3;
+  const max = Number(optValue("max")) || 800;
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  ensureBuilt();
+  const { cw, core } = loadLib();
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  const touch = setInterval(() => fs.utimesSync(LOCK, new Date(), new Date()), 60_000);
+  try {
+    const seenCopy = JSON.parse(JSON.stringify(readJson(SEEN, core.emptySeen())));
+    const errors = [];
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    try {
+      const flow = await readThreadsFlow(page, config, seenCopy, errors);
+      if (flow.loginExpired) die("ログインが切れています。setup でログインし直してください");
+      console.log(`受信箱から ${flow.threads.length}件のやり取りを読みました`);
+      for (const t of flow.threads) {
+        console.log(`\n===== ${t.url}（状態: ${t.inboxStatus || "不明"}）\n${cw.formatCwReview(t.review)}`);
+        for (const m of t.review.thread.messages.slice(-last)) {
+          console.log(`--- ${m.mine ? "あなた" : m.from}（${m.at ? m.at.slice(0, 16).replace("T", " ") : "日時不明"}）\n${m.text.slice(0, max)}`);
+        }
+      }
+      for (const e of errors) console.log(`読めなかったもの: ${e}`);
+    } finally {
+      await ctx.close();
+    }
+  } finally {
+    clearInterval(touch);
     fs.rmSync(LOCK, { force: true });
   }
 }
@@ -1067,9 +1184,9 @@ function budgets() {
   console.log(loadLib().core.summarizeBudgets(records));
 }
 
-const commands = { setup, run, fill, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, page: pageShow, read: readShow, schedule: () => registerSchedule(), "test-mail": () => testMail() };
+const commands = { setup, run, fill, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, page: pageShow, read: readShow, messages: messagesShow, schedule: () => registerSchedule(), "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | page <募集ID>… | read <crowdworks.jpのURL>… | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | page <募集ID>… | read <crowdworks.jpのURL>… | messages [--last 3] | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();
