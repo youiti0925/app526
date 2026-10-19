@@ -357,6 +357,7 @@ export function explainJob(title: string, text: string): string {
     ...scam.signals.map((sg) => `  - ${sg.label}（重み${sg.weight}） ← ${sg.excerpt}`),
     `AIの使用: ${ai.restricted ? ai.summary : "禁止の記載なし"}`,
     `記録: 納品できる=${rec.delivers} 種類=${rec.genre ?? "—"}`,
+    `判定に渡す本文の頭: ${body.slice(0, 160).replace(/\s+/g, " ")}`,
   ];
   return lines.join("\n");
 }
@@ -410,7 +411,7 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
     quality: mentions(QUALITY, `${title}\n${skillsOf(body)}`, body, 3),
     payType,
     ...(budgetEstimated ? { budgetEstimated } : {}),
-    ...deliveryOf(body),
+    ...deliveryOf(body, title),
   };
 }
 
@@ -418,11 +419,14 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
  * 募集の本文から、Claude が作業して納品できるか・どんな種類の仕事か・AIの使用が禁止されていないかを
  * （AIを使わず、ルールだけで）読む。確認すれば通る関門（AIの禁止・納品形式など）は、納品できる側に数える。
  */
-function deliveryOf(body: string): { delivers: boolean; genre: string | null; aiRestricted: boolean } {
+function deliveryOf(body: string, title = ""): { delivers: boolean; genre: string | null; aiRestricted: boolean } {
   const d = judgeDeliverability(body);
   const gates = checkGates(body);
   const delivers = d.canDeliver && gates.hits.every((h) => h.negotiable);
-  const first = d.canDeliver ? d.matched.map((id) => getCapability(id)).find((c) => c && !c.needsPaid) : undefined;
+  // 仕事の種類は、題名に当たった能力を先に見る（本文の端の語に引っ張られないように）
+  const free = d.canDeliver ? d.matched.map((id) => getCapability(id)).filter((c) => c && !c.needsPaid) : [];
+  const byTitle = title ? free.find((c) => c && explainDeliverability(title).some((m) => m.id === c.id)) : undefined;
+  const first = byTitle ?? free[0];
   return { delivers, genre: delivers ? (first?.label ?? null) : null, aiRestricted: readAiRestriction(body).restricted };
 }
 
@@ -510,7 +514,22 @@ export function summarizeBudgets(records: BudgetRecord[]): string {
 export function jobBodyForJudging(text: string): string {
   const cut = text.search(/\n\s*(クライアント情報|依頼者情報|おすすめの仕事|この仕事に似た)/);
   const head = cut > 200 ? text.slice(0, cut) : text;
-  return head.replace(/個人情報保護方針|プライバシーポリシー|特定商取引法に基づく表記/g, "");
+  return stripBreadcrumb(head).replace(/個人情報保護方針|プライバシーポリシー|特定商取引法に基づく表記/g, "");
+}
+
+/**
+ * ページ上部のパンくず（マイページ ＞ 仕事を探す ＞ システム開発の仕事・求人 ＞ …の仕事・求人）を落とす。
+ * 仕事のカテゴリ名なので、募集の中身ではない（実データで、データ入力のパンくずが「データ処理」、
+ * システム開発のパンくずが「コード・スクリプト」の根拠に使われていた）。
+ * 先頭15行のうち、最後の「…の仕事・求人」だけの短い行までを落とす。
+ */
+function stripBreadcrumb(text: string): string {
+  const lines = text.split("\n");
+  let last = -1;
+  for (let i = 0; i < Math.min(lines.length, 15); i++) {
+    if (/^\s*[^\n]{1,40}の仕事・求人\s*$/.test(lines[i])) last = i;
+  }
+  return last < 0 ? text : lines.slice(last + 1).join("\n");
 }
 
 /** 検索結果から読む募集を、検索ごとに少しずつ交互に選ぶ（1つの検索で枠が埋まらないように）。 */

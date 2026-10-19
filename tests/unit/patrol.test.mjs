@@ -442,3 +442,44 @@ test("explainJob: 判定の理由を、当たった語（前後つき）とい�
   assert.match(phone, /納品の判定: 出せない/);
   assert.match(phone, /現地作業・電話〔physical〕 ← 「.*電話対応/);
 });
+
+test("本人の回答・体験が商品の募集（アンケート・買ってよかった・レビュー募集）は、納品できる側に数えない", async () => {
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const pad = "ご協力いただいた回答は統計的に集計し、個人が特定されない形で編集・要約し、研究、記事、動画、プレスリリースなどで公開させていただくことがあります。アンケート完了コードを、コピー&ペーストしてください。必須項目にすべて入力した方のみ報酬をお支払いします。";
+  const survey = `【18歳〜49歳の方限定】服に関するアンケート（選択36問＋記述3問/30円・約5分）\nタスク形式\n${pad}\nクライアント情報\n募集実績 1,649 件\n○○の詳細を見る`;
+  const r1 = budgetRecord({ key: "job:61", url: "u" }, "【18歳〜49歳の方限定】服に関するアンケート（選択36問＋記述3問/30円・約5分）", survey);
+  assert.equal(r1.delivers, false);
+  assert.equal(scoreScam(survey).signals.some((s) => s.id === "effortless_claim"), false, "完了コードをコピー&ペーストする手順の説明を、楽して稼ぐ訴求と読まない");
+
+  const exp =
+    "【初心者歓迎・写真不要♪】2026年に買ってよかったものを教えてください！お気に入り商品レビュー募集\n固定報酬制 契約金額(目安): 400円 1記事あたりの文字数 800 文字\n" +
+    "✅ 画像の提出は不要 ✅ 新しく商品を購入する必要なし ✅ 身近な商品やプチプラ商品でもOK。あなたが実際に使ってみて良かったと感じたものを、ご自由に書いてください。\nクライアント情報\n募集実績 8 件\n○○の詳細を見る";
+  const r2 = budgetRecord({ key: "job:62", url: "u" }, "【初心者歓迎・写真不要♪】2026年に買ってよかったものを教えてください！お気に入り商品レビュー募集", exp);
+  assert.equal(r2.delivers, false);
+  const ids = scoreScam(exp).signals.map((s) => s.id);
+  assert.ok(!ids.includes("inventory_purchase") && !ids.includes("no_legal_disclosure"), "「購入する必要なし」を買い取り前提と読まない");
+  // 「在庫を買い取っていただく」は従来どおり拾う
+  assert.ok(scoreScam("商品を仕入れ購入していただく必要があります。").signals.some((s) => s.id === "inventory_purchase"));
+
+  // アンケートの作成・集計は回答する仕事ではない。納品できる側のまま
+  const make = budgetRecord({ key: "job:63", url: "u" }, "アンケートの集計とグラフ作成", `アンケートの集計とグラフ作成\n固定報酬制 5,000円\n${pad.replace("アンケート完了コードを、コピー&ペーストしてください。", "")}回収済みのアンケート結果をExcelで集計し、グラフにまとめてください。`);
+  assert.equal(make.delivers, true);
+});
+
+test("パンくず（…の仕事・求人）は判定の本文に入れない。仕事の種類は題名に当たったものを先にする", () => {
+  const crumbs = "マイページ\n仕事を探す\nシステム開発の仕事・求人\n保守・運用・更新の仕事・求人\n";
+  const body = "⭐【VBA】ECシステムの構築・開発業務案件⭐\n仕事の概要\n固定報酬制 500,000円 〜 1,000,000円\n毎月の稼働時間：160時間程度の常駐型です。\n" + "詳細な作業内容は面談でご説明します。".repeat(8) + "\nクライアント情報\n募集実績 4,103 件\n○○の詳細を見る";
+  const out = jobBodyForJudging(crumbs + body);
+  assert.ok(!out.includes("システム開発の仕事・求人") && !out.includes("マイページ"));
+  assert.ok(out.includes("【VBA】ECシステム"));
+  // パンくずが無いページは、そのまま
+  assert.equal(jobBodyForJudging(body).startsWith("⭐【VBA】"), true);
+
+  // 題名が「サムネイル作成」なら、本文の端に翻訳の語があっても、仕事の種類は図解・ロゴ・チャート側
+  const thumb = budgetRecord(
+    { key: "job:64", url: "u" },
+    "【主婦の方大歓迎！】Youtubeサムネイル作成のお仕事",
+    "【主婦の方大歓迎！】Youtubeサムネイル作成のお仕事\n固定報酬制 5,000円\nYouTube動画のサムネイル制作をお願いいたします。自然な日本語に翻訳できる方歓迎。\n" + "ご要望は都度チャットでお伝えします。".repeat(10) + "\nクライアント情報\n募集実績 338 件\n○○の詳細を見る"
+  );
+  assert.equal(thumb.genre, "図解・ロゴ・チャート");
+});
