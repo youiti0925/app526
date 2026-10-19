@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
 import { ruleChecks, setProposal, proposalChecks, cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, screenJob, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint, inboxRowInfo, selectInboxRows, messageNotes } from "../../dist-test/jobs/patrol-core.js";
-import { unbackedAvailability, strengthClaims, judgeRisks, matchDangerTitle, addDangerTitles } from "../../dist-test/jobs/patrol-core.js";
+import { SCREEN_VERSION, unbackedAvailability, strengthClaims, judgeRisks, matchDangerTitle, addDangerTitles } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -703,6 +703,12 @@ test("受信箱のやり取り: 募集の内容が受けられない型なら、
   assert.equal(screenJob("DM送信", "固定報酬制 110円\nテンプレートでDMを送ってください。").skip, true);
   assert.equal(screenJob("読書", "固定報酬制 100円\nnoteの記事を読んで感想を書いてください。").skip, true);
   assert.equal(screenJob("記事", "固定報酬制 2,000円\nWebライティングをお願いします。2000字です。").skip, false);
+  // 実際の募集ページの形（概要の次の行に支払い方式）でも同じに読む
+  const real = screenJob("【急募】メッセージ送信", "【急募】メッセージ送信のお仕事(その他)\n仕事の概要\n固定報酬制 110円\n納品希望日 -\n応募期限 2026年10月17日\n仕事の詳細\n【 依頼内容 】こちらが指定するリストへのテンプレメッセージ送信及び返信");
+  assert.equal(real.skip, true);
+  assert.match(real.reasons.join(""), /固定報酬が110円/);
+  // 規則を直したら番号を上げて、巡回が保存した前の結果を読み直す
+  assert.equal(typeof SCREEN_VERSION, "number");
   // 本文が短くて何を納品するか読めないだけの募集は skip にしない
   assert.equal(screenJob("ご相談", "固定報酬制 5,000円\nご相談ください。").skip, false);
 

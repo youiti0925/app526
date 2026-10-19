@@ -493,13 +493,15 @@ async function readThreadsFlow(page, config, seen, errors) {
     const r = t.review;
     if (!t.jobId || r.waiting !== "me" || r.scam?.verdict === "danger") continue;
     let res = cache[t.jobId];
-    if (!res || Date.now() - new Date(res.at).getTime() > 14 * 86_400_000) {
+    // 判定の規則を直したときは(SCREEN_VERSION)、前の規則で出した結果を使い回さない。読み直せる数に限りがあるので、読み直せなかった分は前の結果を使う
+    const stale = !res || res.v !== core.SCREEN_VERSION || Date.now() - new Date(res.at).getTime() > 14 * 86_400_000;
+    if (stale && (screened < 6 || !res)) {
       if (screened >= 6) continue;
       try {
         await politeWait();
         const jp = await readPage(page, jobUrl(t.jobId));
         if (isLoginPage(jp.finalUrl)) break;
-        res = { at: new Date().toISOString(), ...core.screenJob(cleanJobTitle(jp.title), jp.text) };
+        res = { at: new Date().toISOString(), v: core.SCREEN_VERSION, ...core.screenJob(cleanJobTitle(jp.title), jp.text) };
         cache[t.jobId] = res;
         screened++;
       } catch (e) {

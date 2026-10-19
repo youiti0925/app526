@@ -983,6 +983,9 @@ export function ruleChecks(title: string, pageText: string): { lines: string[]; 
 /** 固定報酬がこの額以下の仕事は、受けても時給の基準に届かない */
 const LOW_FIXED_PAY_JPY = 500;
 
+/** screenJob の規則を直したら上げる。巡回が保存している前の確認結果(14日分)を読み直すための番号 */
+export const SCREEN_VERSION = 2;
+
 export function screenJob(title: string, pageText: string): { skip: boolean; reasons: string[] } {
   const body = jobBodyForJudging(pageText, title).normalize("NFKC").slice(0, 6000);
   const reasons = [...ruleChecks(title, pageText).blocking];
