@@ -194,7 +194,19 @@ export function extractDetailInPage() {
     posted: box?.querySelector("span.result_summary_posted")?.textContent ?? "",
     checks,
     completedNote: !!document.querySelector(".p-work-detail-client__is-completed"),
-    text: document.body?.innerText ?? "",
+    // 判定に渡すのは募集の部分だけ。ページ全体だと、依頼者の欄の「本人確認」「電話確認」や
+    // 下の「新着の仕事」まで入り、どの募集も「本人であることが要る・現地作業・電話」で落ちる
+    text:
+      [
+        "h1",
+        ".c-2016-tableSummary",
+        ".p-work-detail-schedule",
+        ".p-work-detail-lancer__postscript",
+      ]
+        .map((s) => document.querySelector(s)?.innerText?.trim() ?? "")
+        .concat([...document.querySelectorAll("li.c-tag")].map((t) => t.innerText?.trim() ?? "").join(" "))
+        .filter(Boolean)
+        .join("\n\n") || (document.body?.innerText ?? ""),
   };
 }
 
