@@ -2,7 +2,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
+import { ruleChecks, setProposal, proposalChecks, cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, screenJob, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint, inboxRowInfo, selectInboxRows, messageNotes } from "../../dist-test/jobs/patrol-core.js";
+import { unbackedAvailability, strengthClaims, judgeRisks, matchDangerTitle, addDangerTitles } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -265,7 +266,7 @@ test("判定の出力から提案文だけを取り出す", () => {
   assert.equal(extractProposal("提案文なし"), "");
 });
 
-test("応募の下書き一覧: 依頼者の信頼度順・要確認の印と注意を出し、承認した件だけ送信待ちにする", () => {
+test("応募の下書き一覧: 依頼者の信頼度順・要確認の印と注意を出し、承認した件だけ承認済みにする", () => {
   const mk = (id, title, client, extra = {}) =>
     buildQueueItem({
       link: { key: `job:${id}`, url: `https://crowdworks.jp/public/jobs/${id}` },
@@ -293,7 +294,9 @@ test("応募の下書き一覧: 依頼者の信頼度順・要確認の印と注
   assert.deepEqual(m.missing, [9]);
   const md = queueMarkdown(m.state, new Date("2026-10-19T00:00:00Z"));
   assert.ok(md.includes("「承認 3 5」のように"));
-  assert.ok(md.includes("承認待ち 2件／承認済み（送信待ち） 1件"));
+  assert.ok(md.includes("一覧 2件／承認済み 1件"));
+  assert.ok(!md.includes("待ち"), "一覧に「待ち」と書かない");
+  assert.ok(md.includes("| 番号 | 案件 | 報酬 | 応募期限 | 依頼者 | AI禁止 | 判定 |"));
   assert.ok(md.indexOf("初めての依頼者") < md.indexOf("評価の低い依頼者"));
   assert.ok(md.includes("proposals/new?job_offer_id=2"));
   // 3週間たった未承認は外れ、承認済みは残る
@@ -379,4 +382,405 @@ test("応募の下書き一覧: AIの使用が禁止された募集は、禁止�
   });
   assert.equal(plain.aiRestriction, undefined);
   assert.equal(plain.verdict, "応募してよい");
+});
+
+test("応募の下書き一覧: 提案文自身が「必須条件に合致しない」と書いている募集は、見送りをすすめる", () => {
+  const page = "固定報酬制 報酬 1,000,000円\nセールスマネージャーを募集します。営業経験が必須です。\nクライアント情報\n募集実績 2 件";
+  const base = { link: { key: "job:51", url: "https://crowdworks.jp/public/jobs/51" }, applyUrl: "x", title: "セールスマネージャー募集", pageText: page };
+  const ng = buildQueueItem({
+    ...base,
+    judged: { verdict: "確認してから応募", detail: "結論: 確認してから応募\n--- 提案文 ---\n先に正直にお伝えします。必須条件である営業経験には合致しない可能性が高いと感じております。" },
+  });
+  assert.equal(ng.verdict, "見送り");
+  assert.match(ng.checks[0], /必須条件に合わない/);
+  // 合致する書き方や、必須条件に触れない提案文は、そのまま
+  const ok = buildQueueItem({
+    ...base,
+    judged: { verdict: "確認してから応募", detail: "結論: 確認してから応募\n--- 提案文 ---\n必須条件のExcel経験は20年あります。" },
+  });
+  assert.equal(ok.verdict, "確認してから応募");
+});
+
+test("文字単価の募集: 画面の「契約金額(目安)」を金額として読む（確定ではないと分かるように）", () => {
+  const page = "固定報酬制 1.2円（文字単価）\n契約金額(目安): 1,320円\nブログ記事を書いてください（1,100字）。";
+  const r = budgetRecord({ key: "job:41", url: "u" }, "ブログ記事（1,000字）", page);
+  assert.equal(r.budgetJpy, 1320);
+  assert.equal(r.budgetEstimated, true);
+  // 全角のかっこ・改行をはさんだ形でも読む
+  assert.equal(budgetRecord({ key: "job:42", url: "u" }, "t", "固定報酬制 0.8円\n契約金額（目安）\n40,000円\n記事").budgetJpy, 40000);
+  // 目安が無く「相談」だけなら、金額は読まない
+  const talk = budgetRecord({ key: "job:43", url: "u" }, "t", "固定報酬制 1.0円（文字単価）ワーカーと相談\n記事を書いてください");
+  assert.equal(talk.budgetJpy, null);
+  assert.equal(talk.budgetEstimated, undefined);
+  // 普通の固定報酬は従来どおり（目安扱いにしない）
+  const fixed = budgetRecord({ key: "job:44", url: "u" }, "t", "固定報酬制 5,000円\n記事を書いてください");
+  assert.equal(fixed.budgetJpy, 5000);
+  assert.equal(fixed.budgetEstimated, undefined);
+
+  // 一覧: 目安の金額は応募画面に自動で入れない（price なし）。確かめる注意を付ける
+  const item = buildQueueItem({
+    link: { key: "job:41", url: "https://crowdworks.jp/public/jobs/41" },
+    applyUrl: "x",
+    title: "ブログ記事",
+    pageText: page,
+    judged: { verdict: "応募してよい", detail: "結論: 応募してよい\n--- 提案文 ---\nはじめまして。" },
+  });
+  assert.equal(item.price, null);
+  assert.match(item.payText, /契約金額の目安 1,320円/);
+  assert.ok(item.checks.some((c) => /文字単価からの目安/.test(c)));
+});
+
+test("応募の下書き一覧: 応募期限が今日・明日なら知らせる（日本時間の日付で数える）", () => {
+  const make = (deadline, now) =>
+    buildQueueItem({
+      link: { key: "job:51", url: "https://crowdworks.jp/public/jobs/51" },
+      applyUrl: "x",
+      title: "t",
+      pageText: `固定報酬制 5,000円\n応募期限 ${deadline}\n記事を書いてください`,
+      judged: { verdict: "応募してよい", detail: "結論: 応募してよい\n--- 提案文 ---\nはじめまして。" },
+      at: new Date(now),
+    }).checks.join("|");
+  // 2026-10-19 23:30 JST = 14:30 UTC
+  assert.match(make("2026年10月19日", "2026-10-19T14:30:00Z"), /応募期限が今日です/);
+  assert.match(make("2026年10月20日", "2026-10-19T14:30:00Z"), /応募期限が明日です/);
+  assert.doesNotMatch(make("2026年10月30日", "2026-10-19T14:30:00Z"), /応募期限/);
+  assert.match(make("2026年10月18日", "2026-10-19T14:30:00Z"), /過ぎています/);
+});
+
+test("explainJob: 判定の理由を、当たった語（前後つき）といっしょに出す", () => {
+  const page =
+    "固定報酬制 5,000円\n完全在宅（出社なし）です。電話連絡は一切ありません。\nデータの整理をお願いします。商品の一覧表を見て、必要な項目をExcelの表に整理してください。件数は約300件で、締め切りまでに順次ご提出いただきます。項目の名前や並び順は、お渡しする見本のとおりにそろえてください。分からない点があれば、メッセージでご質問ください。丁寧に進めていただける方を探しています。\nChatGPTなどの生成AIの使用は禁止です。\nクライアント情報\nありがとう 3 件\n本人確認 済み\n総合評価 4.5\n募集実績 20 件\nプロジェクト完了率 90 %\n○○の詳細を見る";
+  const text = explainJob("データ整理", page);
+  assert.match(text, /■ データ整理/);
+  assert.match(text, /納品の判定: 出せる/);
+  assert.match(text, /AIの使用: AI禁止あり/);
+  assert.match(text, /関門: AIの使用の禁止・制限（確認すれば通る）/);
+  assert.match(text, /← 「.*生成AIの使用は禁止/);
+  // 否定文の「電話」「出社」は現地作業として数えない
+  assert.doesNotMatch(text, /現地作業/);
+  const phone = explainJob("電話受付", "固定報酬制 5,000円\nお客様からの電話対応をお願いします。");
+  assert.match(phone, /納品の判定: 出せない/);
+  assert.match(phone, /現地作業・電話〔physical〕 ← 「.*電話対応/);
+});
+
+test("本人の回答・体験が商品の募集（アンケート・買ってよかった・レビュー募集）は、納品できる側に数えない", async () => {
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const pad = "ご協力いただいた回答は統計的に集計し、個人が特定されない形で編集・要約し、研究、記事、動画、プレスリリースなどで公開させていただくことがあります。アンケート完了コードを、コピー&ペーストしてください。必須項目にすべて入力した方のみ報酬をお支払いします。";
+  const survey = `【18歳〜49歳の方限定】服に関するアンケート（選択36問＋記述3問/30円・約5分）\nタスク形式\n${pad}\nクライアント情報\n募集実績 1,649 件\n○○の詳細を見る`;
+  const r1 = budgetRecord({ key: "job:61", url: "u" }, "【18歳〜49歳の方限定】服に関するアンケート（選択36問＋記述3問/30円・約5分）", survey);
+  assert.equal(r1.delivers, false);
+  assert.equal(scoreScam(survey).signals.some((s) => s.id === "effortless_claim"), false, "完了コードをコピー&ペーストする手順の説明を、楽して稼ぐ訴求と読まない");
+
+  const exp =
+    "【初心者歓迎・写真不要♪】2026年に買ってよかったものを教えてください！お気に入り商品レビュー募集\n固定報酬制 契約金額(目安): 400円 1記事あたりの文字数 800 文字\n" +
+    "✅ 画像の提出は不要 ✅ 新しく商品を購入する必要なし ✅ 身近な商品やプチプラ商品でもOK。あなたが実際に使ってみて良かったと感じたものを、ご自由に書いてください。\nクライアント情報\n募集実績 8 件\n○○の詳細を見る";
+  const r2 = budgetRecord({ key: "job:62", url: "u" }, "【初心者歓迎・写真不要♪】2026年に買ってよかったものを教えてください！お気に入り商品レビュー募集", exp);
+  assert.equal(r2.delivers, false);
+  const ids = scoreScam(exp).signals.map((s) => s.id);
+  assert.ok(!ids.includes("inventory_purchase") && !ids.includes("no_legal_disclosure"), "「購入する必要なし」を買い取り前提と読まない");
+  // 「在庫を買い取っていただく」は従来どおり拾う
+  assert.ok(scoreScam("商品を仕入れ購入していただく必要があります。").signals.some((s) => s.id === "inventory_purchase"));
+
+  // アンケートの作成・集計は回答する仕事ではない。納品できる側のまま
+  const make = budgetRecord({ key: "job:63", url: "u" }, "アンケートの集計とグラフ作成", `アンケートの集計とグラフ作成\n固定報酬制 5,000円\n${pad.replace("アンケート完了コードを、コピー&ペーストしてください。", "")}回収済みのアンケート結果をExcelで集計し、グラフにまとめてください。`);
+  assert.equal(make.delivers, true);
+});
+
+test("判定に渡す本文: ページ先頭のサイト共通メニュー・パンくずは、題名だけ残して落とす", () => {
+  const menu = "オススメの仕事 仕事を探す youitirou0925さん 3 マイページ 気になる!リスト 相談から契約まで 契約一覧 報酬 メッセージ 支援サービス クライアントメニューに切り替える ▲ ご意見箱 翻訳ツール 画像生成";
+  const crumbs = "仕事を探す\nデータ入力・事務の仕事・求人\nデータ入力の仕事・求人\n";
+  const title = "Excelで売上データを整理する仕事";
+  const body = `${title}\n仕事の概要\n固定報酬制 8,000円 〜 10,000円\n${"売上データをExcelで整理します。".repeat(20)}\nクライアント情報\n募集実績 20 件\n○○の詳細を見る`;
+  const page = `${menu}\n${crumbs}${body}`;
+  // 題名を渡さなくても、「仕事の概要」の直前の行が題名として残る
+  const a = jobBodyForJudging(page);
+  assert.ok(a.startsWith(title), a.slice(0, 80));
+  assert.ok(!a.includes("ご意見箱") && !a.includes("データ入力の仕事・求人") && !a.includes("画像生成"));
+  assert.ok(a.includes("固定報酬制 8,000円") && !a.includes("募集実績"));
+  // 題名を渡したときは、それを先頭に置く
+  const b = jobBodyForJudging(page, "渡された題名");
+  assert.ok(b.startsWith("渡された題名\n仕事の概要"), b.slice(0, 40));
+  // 「仕事の概要」が見つからないページは、これまでどおり（先頭を落とさない）
+  const c = jobBodyForJudging(`${menu}\n${"本文です。".repeat(60)}\nクライアント情報\n募集実績 1 件`);
+  assert.ok(c.includes("本文です") && !c.includes("募集実績"));
+  // 直前の行がメニューのように長いときは、それを題名として残さない
+  const d = jobBodyForJudging(`${menu}\n仕事の概要\n固定報酬制 5,000円\n${"本文です。".repeat(60)}`);
+  assert.ok(!d.includes("ご意見箱"));
+  // 判定（納品できる・種類）に、メニューの語（翻訳ツール・画像生成）が混ざらない
+  const r = budgetRecord({ key: "job:65", url: "u" }, title, page);
+  assert.equal(r.delivers, true);
+  assert.notEqual(r.genre, "図解・ロゴ・チャート");
+  assert.ok(!explainJob(title, page).includes("ご意見箱"));
+});
+
+test("タスク形式は「タスク 33円 / 件」の表示でも支払い方式をタスクと読む。プラットフォーム自身へのリンクは紹介リンクにしない", async () => {
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const page = `マイページ\n仕事を探す\n【18歳〜49歳の方限定】服に関するアンケート\n仕事の概要\nタスク\n\n33円 / 件\n募集件数\n120件\n仕事の詳細\n${"回答をお願いします。".repeat(20)}\nクライアント情報\n○○の詳細を見る`;
+  const r = budgetRecord({ key: "job:66", url: "u" }, "【18歳〜49歳の方限定】服に関するアンケート", page);
+  assert.equal(r.payType, "タスク");
+  assert.equal(r.budgetJpy, null);
+  // CW自身のページへのリンクは紹介リンクではない。業者の紹介リンクは従来どおり拾う
+  const own = "詳細はこちら https://tech.crowdworks.jp/job_offers/30966?ref=job_offers_show をご覧ください。";
+  assert.ok(!scoreScam(own).signals.some((s) => s.id === "referral_signup"));
+  assert.ok(scoreScam("登録はこちら https://example.com/signup?ref=abc123 から。").signals.some((s) => s.id === "referral_signup"));
+});
+
+test("提案文: 判定の出力の「--- 応募前に確認すること ---」以降（社内メモ）は提案文に入れない", () => {
+  const detail = "結論: 確認してから応募\n\n--- 提案文 ---\n募集を拝見しました。\n\nよろしくお願いいたします。\n\n--- 応募前に確認すること ---\n# 応募前に確認すること\n権利の表明保証があります\n\n使ったAI: x";
+  assert.equal(extractProposal(detail), "募集を拝見しました。\n\nよろしくお願いいたします。");
+  assert.equal(cleanProposal("本文です。\n\n---\nメモ"), "本文です。");
+  // 以前の記録に混ざっていた分も、一覧と応募画面への入力では落とす
+  const item = { no: 1, id: "1", title: "t", url: "u", applyUrl: "a", verdict: "確認してから応募", reason: "", payType: "固定報酬", payText: "固定報酬 10,000円", price: 10000, applicants: 1, openings: 1, deadline: null, client: { tier: "普通", summary: "s", orders: 1, rating: null, completionRate: null, thanks: null, identity: "不明", raw: "" }, proposal: "本文です。\n\n--- 応募前に確認すること ---\n社内メモ", checks: [], status: "pending", at: "2026-10-19T00:00:00Z" };
+  const md = queueMarkdown({ nextNo: 2, items: [item] });
+  assert.ok(md.includes("> 本文です。") && !md.includes("社内メモ"));
+});
+
+test("提案文が経歴に無い道具の経験を言い切っていたら注意を出す（募集の言い換えや「経験はありません」は拾わない）", () => {
+  const bg = "本業で約20年、精密部品の検査。Excel関数・VBAマクロ・Word・PowerPointを使っています。ウェブ会議に対応できます。";
+  assert.deepEqual(unbackedSkillClaims("Googleスプレッドシート操作、ウェブ会議対応は可能です。", bg), ["Googleスプレッドシート"]);
+  assert.deepEqual(unbackedSkillClaims("Googleスプレッドシートでの、集計レポートの新規構築のお仕事と理解しております。", bg), []);
+  assert.deepEqual(unbackedSkillClaims("QUERY関数を使った経験はありません。Excel関数は使えます。", bg), []);
+  assert.deepEqual(unbackedSkillClaims("Excel関数・VBAの経験があります。", bg), []);
+  assert.deepEqual(unbackedSkillClaims("動画編集自体は新しい取り組みですが、丁寧に進めます。", bg), []);
+  assert.deepEqual(unbackedSkillClaims("動画編集の経験があります。", undefined), [], "経歴が読めないときは調べない");
+  // 一覧の注意にも出る
+  const page = "固定報酬制 10,000円\n応募した人 3 人 契約した人 0 人 募集人数 1 人\n" + "仕事の説明です。".repeat(40) + "\nクライアント情報\n○○の詳細を見る";
+  const it = buildQueueItem({
+    link: { key: "job:1", url: "u" }, applyUrl: "a", title: "転記のお仕事", pageText: page,
+    judged: { verdict: "応募してよい", detail: "理由: x\n\n--- 提案文 ---\nGoogleスプレッドシート操作は可能です。\n\n使ったAI: x" },
+    background: bg,
+  });
+  assert.ok(it.checks.some((c) => c.includes("経歴に書かれていない") && c.includes("Googleスプレッドシート")));
+
+  // 「AIを使って習得し」は注意。経歴にある「AIを使った、〜アプリの作成」は事実なので注意しない
+  const mk = (proposal) => buildQueueItem({ link: { key: "job:2", url: "u" }, applyUrl: "a", title: "t", pageText: page, judged: { verdict: "応募してよい", detail: `理由: x\n\n--- 提案文 ---\n${proposal}\n\n使ったAI: x` } });
+  assert.ok(mk("公式のヘルプとAIを使って習得し、お見せします。").checks.some((c) => c.includes("AIを使って作業・習得")));
+  assert.ok(!mk("・AIを使った、業務を支えるアプリ（RPAアプリ）の作成").checks.some((c) => c.includes("AIを使って作業・習得")));
+});
+
+test("提案文の差し替え: 番号・状態・ほかの注意は残し、提案文から決まる注意だけ付け直す", () => {
+  const base = { no: 7, id: "7", title: "t", url: "u", applyUrl: "a", verdict: "確認してから応募", reason: "", payType: "固定報酬", payText: "固定報酬 10,000円", price: 10000, applicants: 60, openings: 1, deadline: null, client: { tier: "優良", summary: "s", orders: 300, rating: 4.7, completionRate: 90, thanks: null, identity: "済", raw: "" }, proposal: "", checks: ["応募60人・募集1人（競争が激しい）", "提案文が出ていません。書いてから送ってください"], status: "approved", at: "2026-10-19T00:00:00Z" };
+  const out = setProposal(base, "募集を拝見しました。Excel関数とVBAで対応します。\n\n--- メモ ---\n社内", "Excel関数・VBA");
+  assert.equal(out.no, 7);
+  assert.equal(out.status, "approved");
+  assert.equal(out.proposal, "募集を拝見しました。Excel関数とVBAで対応します。");
+  assert.deepEqual(out.checks, ["応募60人・募集1人（競争が激しい）"], "提案文の注意は消え、ほかの注意は残る");
+  const bad = setProposal(base, "【要確認: 年数】です。", "Excel");
+  assert.ok(bad.checks.some((c) => c.startsWith("提案文に【要確認】")) && bad.checks.some((c) => c.startsWith("応募60人")));
+  assert.deepEqual(proposalChecks("本文です。", undefined), []);
+});
+
+test("一覧の注意に関門・危険信号を載せる。交渉で外せないものがあれば見送りをすすめ、機械が見送りにした件は理由つきで別に載せる", () => {
+  const page = (body) => `固定報酬制 5,000円 〜 10,000円\n応募した人 10 人 契約した人 0 人 募集人数 3 人\n応募期限 2026年10月29日\n${body}\n${"仕事の説明です。".repeat(30)}\nクライアント情報\n募集実績 300 件\n総合評価 4.8\nプロジェクト完了率 95 %\n○○の詳細を見る`;
+  const judged = { verdict: "確認してから応募", detail: "理由: テスト" };
+  const mk = (body, extra = {}) => buildQueueItem({ link: { key: "job:50", url: "u" }, applyUrl: "a", title: "テストの仕事", pageText: page(body), judged: extra.judged ?? judged });
+
+  // 士業の独占業務(補助金の事業計画書)は、交渉で外せないので見送りをすすめる
+  const sub = mk("補助金コンサル業務の事業計画作成業務を依頼します。");
+  assert.equal(sub.verdict, "見送り");
+  assert.ok(sub.checks[0].startsWith("見送りをすすめます") && sub.checks[0].includes("士業の独占業務"));
+  // 確認すれば通る関門(平日昼の会議)は、注意に載せて「確認してから応募」のまま
+  const hours = mk("以下のうち1つに参加必須です。木曜 13:00〜16:00 金曜 13:00〜16:00");
+  assert.equal(hours.verdict, "確認してから応募");
+  assert.ok(hours.checks.some((c) => c.includes("平日の日中に参加が必須の予定")));
+  // 関門に当たらない普通の募集には、関門の注意が付かない
+  const plain = mk("Excelでデータを集計してください。");
+  assert.deepEqual(ruleChecks("テストの仕事", page("Excelでデータを集計してください。")), { lines: [], blocking: [] });
+  assert.equal(plain.verdict, "確認してから応募");
+  assert.ok(!plain.checks.some((c) => c.includes("見送りをすすめます")));
+
+  // 上位の判定が出なかったことが一覧に出る
+  const nj = mk("Excelでデータを集計してください。", { judged: { verdict: "確認してから応募", detail: "理由: x\nルールで判定しきれず、Claudeの判定も得られませんでした（生成に失敗しました）。募集文を読んで人が判断してください" } });
+  assert.ok(nj.checks[0].includes("Claudeの判定も得られませんでした") && nj.checks[0].includes("ルールだけの判定"));
+
+  // 機械が見送りにした件は、理由つきで「見送りにした案件」に載る(一覧の件数には数えない)
+  let q = addToQueue(emptyQueue(), [plain, { ...sub, id: "51" }]);
+  q = { ...q, items: q.items.map((i) => (i.id === "51" ? { ...i, status: "skipped", skipReason: "士業の独占業務(補助金の事業計画書)" } : i)) };
+  const md = queueMarkdown(q, new Date("2026-10-19T00:00:00Z"));
+  assert.ok(md.includes("一覧 1件／承認済み 0件"));
+  assert.ok(md.includes("# 見送りにした案件") && md.includes("士業の独占業務(補助金の事業計画書)"));
+});
+
+test("パンくず（…の仕事・求人）は判定の本文に入れない。仕事の種類は題名に当たったものを先にする", () => {
+  const crumbs = "マイページ\n仕事を探す\nシステム開発の仕事・求人\n保守・運用・更新の仕事・求人\n";
+  const body = "⭐【VBA】ECシステムの構築・開発業務案件⭐\n仕事の概要\n固定報酬制 500,000円 〜 1,000,000円\n毎月の稼働時間：160時間程度の常駐型です。\n" + "詳細な作業内容は面談でご説明します。".repeat(8) + "\nクライアント情報\n募集実績 4,103 件\n○○の詳細を見る";
+  const out = jobBodyForJudging(crumbs + body);
+  assert.ok(!out.includes("システム開発の仕事・求人") && !out.includes("マイページ"));
+  assert.ok(out.includes("【VBA】ECシステム"));
+  // パンくずが無いページは、そのまま
+  assert.equal(jobBodyForJudging(body).startsWith("⭐【VBA】"), true);
+
+  // 題名が「サムネイル作成」なら、本文の端に翻訳の語があっても、仕事の種類は図解・ロゴ・チャート側
+  const thumb = budgetRecord(
+    { key: "job:64", url: "u" },
+    "【主婦の方大歓迎！】Youtubeサムネイル作成のお仕事",
+    "【主婦の方大歓迎！】Youtubeサムネイル作成のお仕事\n固定報酬制 5,000円\nYouTube動画のサムネイル制作をお願いいたします。自然な日本語に翻訳できる方歓迎。\n" + "ご要望は都度チャットでお伝えします。".repeat(10) + "\nクライアント情報\n募集実績 338 件\n○○の詳細を見る"
+  );
+  assert.equal(thumb.genre, "図解・ロゴ・チャート");
+});
+
+// --- 受信箱 ---
+
+const NOW = new Date("2026-10-19T18:00:00+09:00");
+
+test("受信箱の行から、状態と日時を読む(今年の月日・年つき・読めない)", () => {
+  const a = inboxRowInfo("テスト企画\n【初心者歓迎】データ入力\nお疲れ様です。…\n契約\n10/19 12:37", NOW);
+  assert.equal(a.status, "契約");
+  assert.equal(a.at.toISOString(), "2026-10-19T03:37:00.000Z");
+  const b = inboxRowInfo("某社 ポイ活アプリ 突然のメッセージ失礼いたします 相談 2023/07/26", NOW);
+  assert.equal(b.status, "相談");
+  assert.equal(b.at.getUTCFullYear(), 2023);
+  // 年末に見る1月の行は、来年ではなく今年(または去年)の日付にする
+  const c = inboxRowInfo("応募・スカウト\n12/30 09:00", new Date("2027-01-02T10:00:00+09:00"));
+  assert.equal(c.at.getUTCFullYear(), 2026);
+  assert.deepEqual(inboxRowInfo("読めない行", NOW), { status: "", at: null });
+});
+
+test("受信箱から読むやり取りを選ぶ: 辞退と古いものは外し、新しい順、同じ相手は1回", () => {
+  const rows = [
+    { href: "https://crowdworks.jp/messages/100", text: "A社\n応募・スカウト\n10/15 18:12" },
+    { href: "https://crowdworks.jp/messages/101", text: "B社\n辞退\n10/18 10:00" },
+    { href: "https://crowdworks.jp/messages/102", text: "C社\n契約\n10/19 12:37" },
+    { href: "https://crowdworks.jp/messages/102", text: "C社 (同じ行のもう1つのリンク)" },
+    { href: "https://crowdworks.jp/messages/103", text: "D社\n相談\n2023/07/26" },
+    { href: "https://crowdworks.jp/messages/104", text: "E社\n契約\n2023/07/26" },
+    { href: "https://crowdworks.jp/help", text: "ヘルプ" },
+  ];
+  const out = selectInboxRows(rows, NOW, 10);
+  assert.deepEqual(out.map((e) => e.key), ["messages:102", "messages:100", "messages:104"]);
+  assert.equal(out[0].status, "契約");
+  assert.deepEqual(selectInboxRows(rows, NOW, 1).map((e) => e.key), ["messages:102"]);
+});
+
+const DANGER_CONTRACT = `契約詳細：【初心者歓迎】選んで入力するだけのデータ入力
+サービス外連絡申請が否認されました。
+taro_test
+2026年10月04日 21:32
+お世話になります。応募します。
+
+テスト企画
+2026年10月19日 12:37
+仮払いが完了いたしました。詳しいお仕事内容はチャットワークにてご連絡します。
+（チャットワークのコンタクトURL: chatwork.com/tester24）
+`;
+
+test("返事や確認が要るメッセージだけを取り出し、危険なものを先に並べる。一覧とメールにも内容の冒頭を出す", () => {
+  const mk = (text, url, changed = true) => ({ review: reviewCwThread(parseCwThreads(text, "taro_test")[0], NOW), url, changed, inboxStatus: "契約" });
+  const danger = mk(DANGER_CONTRACT, "https://crowdworks.jp/contracts/1");
+  const plain = mk(THREAD, "https://crowdworks.jp/proposals/2");
+  const ok = mk(DANGER_CONTRACT.replace(/テスト企画\n[\s\S]*$/, "taro_test\n2026年10月19日 12:37\nよろしくお願いします。\n"), "https://crowdworks.jp/contracts/3");
+  const notes = messageNotes([plain, ok, danger]);
+  assert.ok(notes.length >= 1);
+  const n1 = notes.find((n) => n.url === "https://crowdworks.jp/contracts/1");
+  assert.equal(n1.kind, "danger");
+  assert.ok(n1.gist.includes("チャットワーク"));
+  assert.ok(n1.advice.includes("連絡先は追加しない"));
+  // 危険なものが先、返事を考えるものは後
+  const order = notes.map((n) => n.kind);
+  assert.deepEqual(order, [...order].sort((a, b) => ({ danger: 0, reply: 1, caution: 2 })[a] - ({ danger: 0, reply: 1, caution: 2 })[b]));
+  assert.ok(!notes.some((n) => n.url === "https://crowdworks.jp/contracts/3"), "自分の発言で終わっているものは出さない");
+
+  const md = queueMarkdown({ nextNo: 1, items: [], messages: notes }, NOW);
+  assert.ok(md.includes("受信箱で返事や確認が要るメッセージ"));
+  assert.ok(md.includes("危険（返信せず離れる）"));
+  assert.ok(md.includes("https://crowdworks.jp/contracts/1"));
+  assert.ok(!md.includes("待ち"));
+  // 一覧に足すだけの操作(addToQueue)でも、受信箱の欄は消えない
+  assert.equal(addToQueue({ nextNo: 1, items: [], messages: notes }, []).messages.length, notes.length);
+
+  const report = buildReport({ threads: [danger], jobs: [], errors: [], loginExpired: false });
+  assert.ok(report.body.includes("内容: 仮払いが完了"), "危険な相手も、内容の冒頭と対応をメールに出す");
+  assert.ok(report.body.includes("連絡先は追加しない"));
+  assert.ok(report.worthSending);
+});
+
+test("受信箱のやり取り: 募集の内容が受けられない型なら、返事を考える対象から外し、返信しなくてよいと出す", () => {
+  // 関門(交渉では外せない)・こちらでは納品できない型(現地作業)は skip。普通の仕事は skip にしない
+  assert.equal(screenJob("体験レポ", "固定報酬制 49,000円\nクレジットカードの新規申し込みをして、空港ラウンジの現地の写真付きで感想を提出してください。").skip, true);
+  assert.equal(screenJob("事務", "固定報酬制 10,000円\nExcelでデータを集計してください。社外秘の資料を扱います。NDAを締結していただきます。").skip, true);
+  assert.equal(screenJob("集計", "固定報酬制 10,000円\nExcelでデータを集計し、グラフを作ってください。").skip, false);
+  // 手取りが時給の基準に届かない安い固定報酬は、返事を考える対象から外す（目安の金額は対象外）
+  assert.equal(screenJob("DM送信", "固定報酬制 110円\nテンプレートでDMを送ってください。").skip, true);
+  assert.equal(screenJob("読書", "固定報酬制 100円\nnoteの記事を読んで感想を書いてください。").skip, true);
+  assert.equal(screenJob("記事", "固定報酬制 2,000円\nWebライティングをお願いします。2000字です。").skip, false);
+  // 本文が短くて何を納品するか読めないだけの募集は skip にしない
+  assert.equal(screenJob("ご相談", "固定報酬制 5,000円\nご相談ください。").skip, false);
+
+  const base = parseCwThreads(THREAD.replace(/詳細はこちらへ\s*https?:\/\/\S+/, "募集の内容を補足します。"), "taro_test")[0];
+  const review = reviewCwThread(base, new Date("2026-10-17T03:00:00+09:00"));
+  assert.notEqual(review.scam?.verdict, "danger");
+  const skipped = { ...review, skipReasons: ["こちらでは納品できない型（現地作業・電話 が含まれます）"] };
+  const input = { threads: [{ review: skipped, url: "https://crowdworks.jp/proposals/9", changed: false }], jobs: [], errors: [], loginExpired: false };
+  const rpt = buildReport(input);
+  assert.match(rpt.body, /募集の内容が受けられない型のやり取り 1件（返信しなくて大丈夫です）/);
+  assert.ok(!rpt.body.includes("■ 返事を考える"));
+  assert.equal(messageNotes(input.threads)[0].kind, "skip");
+});
+
+test("提案文の稼働の曜日・時間帯が経歴に無ければ注意、「得意」の言い切りも注意、判定の「送る前に詰めること」は一覧に載せる", () => {
+  const bg = "本業で約20年、精密部品の検査。土日祝で週6時間ほど稼働できます。";
+  // 経歴にある「土日祝」は注意しない。「平日夜間」は経歴に無いので注意(長いほうだけ出す)
+  assert.deepEqual(unbackedAvailability("稼働は平日夜間・土日祝を中心に週数時間程度です。", bg), ["平日夜間"]);
+  assert.deepEqual(unbackedAvailability("稼働は土日祝を中心に週6時間ほどです。", bg), []);
+  assert.deepEqual(unbackedAvailability("稼働は平日夜間です。", undefined), [], "経歴が読めないときは調べない");
+  assert.deepEqual(unbackedAvailability("夜間の対応もできます。", bg), ["夜間"]);
+
+  assert.equal(strengthClaims("文章の推敲といったQA工程は得意分野と考えています。").length, 1);
+  assert.ok(strengthClaims("文章の推敲といったQA工程は得意分野と考えています。")[0].includes("得意"));
+  assert.deepEqual(strengthClaims("翻訳は得意ではありませんが、丁寧に進めます。"), []);
+  assert.deepEqual(strengthClaims("検査の経験が約20年あります。"), []);
+
+  const checks = proposalChecks("稼働は平日夜間です。文章の推敲は得意分野です。", bg);
+  assert.ok(checks.some((c) => c.startsWith("提案文に、稼働の曜日") && c.includes("平日夜間")));
+  assert.ok(checks.some((c) => c.startsWith("提案文に、「得意」")));
+  // 提案文を差し替えると、これらの注意は付け直される
+  const base = { no: 1, id: "1", title: "t", url: "u", applyUrl: "a", verdict: "確認してから応募", reason: "", payType: "固定報酬", payText: "固定報酬", price: null, applicants: 1, openings: 1, deadline: null, client: { tier: "優良", summary: "s", orders: 1, rating: null, completionRate: null, thanks: null, identity: "済", raw: "" }, proposal: "", checks: ["金額が読めませんでした。"], status: "pending", at: "2026-10-19T00:00:00Z" };
+  const fixed = setProposal({ ...base, checks: ["金額が読めませんでした。", ...checks] }, "稼働は土日祝を中心にします。", bg);
+  assert.deepEqual(fixed.checks, ["金額が読めませんでした。"]);
+
+  const detail = "結論: 確認してから応募\n理由: 条件を詰める必要がある箇所が 2件\n送る前に詰めること:\n・報酬が1記事いくらか書かれていません\n・継続の頻度が不明です\n仕事ライン: まだこの型の手順書はありません\n\n--- 提案文 ---\n本文";
+  assert.deepEqual(judgeRisks(detail), ["報酬が1記事いくらか書かれていません", "継続の頻度が不明です"]);
+  assert.deepEqual(judgeRisks("結論: 応募してよい\n理由: x"), []);
+  const page = "固定報酬制 文字単価\n応募した人 3 人 契約した人 0 人 募集人数 1 人\n" + "仕事の説明です。".repeat(40) + "\nクライアント情報\n○○の詳細を見る";
+  const it = buildQueueItem({ link: { key: "job:9", url: "u" }, applyUrl: "a", title: "記事のお仕事", pageText: page, judged: { verdict: "確認してから応募", detail }, background: bg });
+  assert.ok(it.checks.includes("報酬が1記事いくらか書かれていません") && it.checks.includes("継続の頻度が不明です"));
+});
+
+test("文字単価の募集: 契約金額(目安)が「〜 5,000円」（上限だけ）や「1,000円 〜 5,000円」（幅）でも金額として読む", () => {
+  const upper = budgetRecord({ key: "job:70", url: "u" }, "t", "固定報酬制\n1.0円\n契約金額（目安）: 〜 5,000円\n1記事あたりの文字数 3000 文字\n記事を書いてください");
+  assert.deepEqual([upper.budgetJpy, upper.budgetMaxJpy, upper.budgetEstimated], [5000, 5000, true]);
+  const range = budgetRecord({ key: "job:71", url: "u" }, "t", "固定報酬制 1.0円 契約金額(目安): 1,000円 〜 5,000円 記事を書いてください");
+  assert.deepEqual([range.budgetJpy, range.budgetMaxJpy], [1000, 5000]);
+  const none = budgetRecord({ key: "job:72", url: "u" }, "t", "固定報酬制 1.0円 契約金額(目安): ワーカーと相談 記事を書いてください");
+  assert.equal(none.budgetJpy, null);
+});
+
+test("危険信号が出たやり取りと同じ題名の新しい募集は見送りをすすめる（同じ依頼者の別の募集）", () => {
+  const danger = "【未経験歓迎】安定副収入から独立まで！未経験から始める在宅ワークパートナー募集";
+  // 後ろが切れた題名・括弧や記号の違いがあっても同じとみなす
+  assert.equal(matchDangerTitle("【未経験歓迎】安定副収入から独立まで！未経験から始める在宅ワークパートナー募集のお仕事(その他)", [danger]), danger);
+  assert.equal(matchDangerTitle("未経験歓迎 安定副収入から独立まで 未経験から始める在宅ワークパートナー募集", [danger]), danger);
+  assert.equal(matchDangerTitle("【フルリモート】Excel・スプレッドシートの関数でレポート構築", [danger]), null);
+  // 短い題名は、よくある題名に当たってしまうので比べない
+  assert.equal(matchDangerTitle("データ入力のお仕事", ["データ入力のお仕事"]), null);
+  assert.equal(matchDangerTitle("何でも", undefined), null);
+
+  const mkThread = (title, verdict) => ({ review: { thread: { title }, scam: { verdict } } });
+  const titles = addDangerTitles(["古い題名のお仕事ですよ長い題名にします"], [mkThread(danger, "danger"), mkThread("普通の募集の長い題名ですよこれは", "safe"), mkThread(danger, "danger")]);
+  assert.deepEqual(titles, ["古い題名のお仕事ですよ長い題名にします", danger]);
+
+  const page = "固定報酬制 150,000円 〜 200,000円\n応募した人 3 人 契約した人 0 人 募集人数 3 人\n" + "仕事の説明です。".repeat(40) + "\nクライアント情報\n募集実績 12 件\n○○の詳細を見る";
+  const item = (dangerTitles) => buildQueueItem({ link: { key: "job:13540879", url: "u" }, applyUrl: "a", title: danger + "の…", pageText: page, judged: { verdict: "確認してから応募", detail: "理由: x\n\n--- 提案文 ---\n本文です。\n\n使ったAI: x" }, dangerTitles });
+  assert.equal(item([danger]).verdict, "見送り");
+  assert.ok(item([danger]).checks[0].startsWith("見送りをすすめます: 危険信号が出たやり取り"));
+  assert.equal(item(undefined).verdict, "確認してから応募");
+});
+
+test("提案文が年齢などの採用条件に「沿いません」と自分で書いている募集は見送りをすすめる", () => {
+  const page = "固定報酬制 契約金額(目安): 〜 2,200円\n応募した人 12 人 契約した人 0 人 募集人数 5 人\n" + "仕事の説明です。".repeat(40) + "\nクライアント情報\n募集実績 21 件\n○○の詳細を見る";
+  const mk = (proposal) => buildQueueItem({ link: { key: "job:80", url: "u" }, applyUrl: "a", title: "旅行ライター募集", pageText: page, judged: { verdict: "確認してから応募", detail: `理由: x\n\n--- 提案文 ---\n${proposal}\n\n使ったAI: x` } });
+  const bad = mk("なお、年齢は40代前半で、同世代採用の条件には沿いません。その点は正直にお伝えいたします。");
+  assert.equal(bad.verdict, "見送り");
+  assert.ok(bad.checks[0].includes("必須条件に合わないと自分で書いています"));
+  assert.equal(mk("募集の条件に沿って進めます。").verdict, "確認してから応募");
 });

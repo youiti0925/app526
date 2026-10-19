@@ -42,6 +42,19 @@ export function jobIdFromUrl(input) {
   return null;
 }
 
+/**
+ * 募集ページの <title> から、募集の題名だけを取り出す。
+ * 形: 「題名 | 在宅ワーク・副業するなら【クラウドワークス】 [ID:13544312]」。
+ * 題名の中にも「|」「｜」が入る(例:「【急募 | 初心者OK】…」)ので、先頭から切らず、
+ * 最後の「 | サイト名」と「[ID:…]」だけを取り除く。
+ */
+export function cleanJobTitle(raw) {
+  let t = String(raw ?? "").replace(/\s*\[ID:\d+\]\s*$/, "").trim();
+  const m = t.match(/^(.*\S)\s*[|｜]\s*[^|｜]*(?:クラウドワークス|CrowdWorks)[^|｜]*$/i);
+  if (m) t = m[1].trim();
+  return t;
+}
+
 export const applyUrl = (jobId) => `https://crowdworks.jp/proposals/new?job_offer_id=${jobId}`;
 export const jobUrl = (jobId) => `https://crowdworks.jp/public/jobs/${jobId}`;
 

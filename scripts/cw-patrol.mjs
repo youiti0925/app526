@@ -5,12 +5,22 @@
  *   node scripts/cw-patrol.mjs setup       # 初回だけ: ログイン・見る画面の登録・Gメールの設定
  *   node scripts/cw-patrol.mjs run         # 巡回して、知らせることがあればGメールに送る（タスクスケジューラから呼ぶ）
  *   node scripts/cw-patrol.mjs run --always    # 新しいことが無くてもまとめを送る
- *   node scripts/cw-patrol.mjs queue                       # 応募の下書き一覧（承認待ち・承認済み）を表示する
+ *   node scripts/cw-patrol.mjs queue                       # 応募の下書き一覧（一覧・承認済み）を表示する
  *   node scripts/cw-patrol.mjs queue-add <募集URL> --proposal 提案文.txt   # 人が確かめた提案文つきで一覧に足す
+ *   node scripts/cw-patrol.mjs queue-redraft [番号…] [--force]       # 提案文が空の件の提案文を作り直す（--force: 入っている件も）
+ *   node scripts/cw-patrol.mjs queue-set <番号> [--proposal 提案文.txt] [--price 金額] [--pay-text 表示]  # その件の提案文・応募画面の金額・報酬の表示を差し替える
+ *   node scripts/cw-patrol.mjs rejudge <募集URLか番号>…              # 判定のルールを直したあとに、前に落とした募集を読み直して判定し、一覧に足す（最大5件。応募画面は開かない）
+ *   node scripts/cw-patrol.mjs page <募集IDまたはURL>…               # 募集の本文（判定に渡す部分）を表示する
+ *   node scripts/cw-patrol.mjs read <https://crowdworks.jp/…のURL>…   # 画面の文字とリンクを表示する（メッセージの受信箱・スカウトの形を調べる用。読むだけ）
+ *   node scripts/cw-patrol.mjs messages [--last 3] [--max 800]       # 受信箱のやり取りを読んで、状態・危険信号・最後の数通の本文を表示する（読むだけ）
+ *   node scripts/cw-patrol.mjs reply <契約のURL> --check [--dump]   # 返信の入力欄と送信ボタンを探すだけ（入力も送信もしない。--dump で画面の作りも出す）
+ *   node scripts/cw-patrol.mjs reply <契約のURL> --text 文.txt        # 返信を入力して止める（送信は自分で押す）。--from-thread なら、巡回が作る「理由を聞く質問」を使う
+ *   node scripts/cw-patrol.mjs autosend status|on|off               # 許可した種類（理由を聞く質問）だけの自動送信。初期はオフ
  *   node scripts/cw-patrol.mjs queue-mark approved|sent|skipped 3 5   # 一覧の番号に印を付ける（承認 = approved）
  *   node scripts/cw-patrol.mjs fill --approved             # 承認した件だけ、入力済みの応募画面を開く（最大5件。「応募する」は自分で押す）
  *   node scripts/cw-patrol.mjs survey [--max 30] [--fresh]   # 登録した検索画面の募集の報酬だけを集める（判定・応募はしない）
  *   node scripts/cw-patrol.mjs add-keyword --defaults       # 探す言葉を足す（Claudeが納品できる仕事は全部。--list で一覧、言葉を並べて個別にも足せる）
+ *   node scripts/cw-patrol.mjs explain <募集URLか番号>…       # 募集を1件ずつ読んで、なぜそう判定されるか（当たった語つき）を出す。最大8件
  *   node scripts/cw-patrol.mjs schedule    # 自動実行の登録をやり直す（電池でも動く・寝ていた分も回す設定つき）
  *   node scripts/cw-patrol.mjs test-mail   # Gメールに試しの1通を送る
  *   node scripts/cw-patrol.mjs fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数]
@@ -20,6 +30,8 @@
  * 守ること（変えない）:
  *   - 見るだけ。応募・返信・メッセージ送信・ボタン操作はしない（ページを開いて文字を読むだけ）
  *     fill だけは応募画面の欄に入力するが、送信系のボタンは押さない（scripts/lib/cw-fill.mjs）
+ *     例外: ゆうが許可した「理由を聞く質問」だけは、autosend をオンにしたときに限り reply --send で送れる
+ *     （ゆっくり1件ずつ・1日の上限つき・記録つき。応募・納品・金額や条件の交渉は含まない。scripts/lib/cw-reply.mjs）
  *   - 1回に開くページ数を絞り、ページごとに6〜12秒あける
  *   - パスワードはブラウザにあなたが入力する。このスクリプトもClaudeも受け取らない
  *   - 設定・ログイン状態・既読の記録は %USERPROFILE%\.cw-patrol に置き、リポジトリには入れない
@@ -31,7 +43,8 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import Module from "node:module";
 import { sendMail } from "./lib/smtp.mjs";
-import { MAX_TABS, applyState, applyUrl, fillProposalForm, jobIdFromUrl, jobUrl, parseList, validateEntry } from "./lib/cw-fill.mjs";
+import { MAX_TABS, applyState, applyUrl, cleanJobTitle, fillProposalForm, jobIdFromUrl, jobUrl, parseList, validateEntry } from "./lib/cw-fill.mjs";
+import { SEND_KINDS, isThreadUrl, parseSentLog, pickReplyForm, scanReplyForms, sendGate, sentTextAppears, validateReplyText } from "./lib/cw-reply.mjs";
 import { WIDE_KEYWORDS, WIDE_WORD_LIST, keywordOf, rotate, searchUrlFrom } from "./lib/cw-searches.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -40,12 +53,14 @@ const HOME = process.env.CW_PATROL_HOME || path.join(os.homedir(), ".cw-patrol")
 const CONFIG = path.join(HOME, "config.json");
 const SEEN = path.join(HOME, "seen.json");
 const BUDGET_LOG = path.join(HOME, "budget-log.jsonl");
+const JOB_SCREEN = path.join(HOME, "job-screen.json");
 const QUEUE_JSON = path.join(HOME, "queue.json");
 const QUEUE_MD = path.join(HOME, "queue.md");
 const LOCK = path.join(HOME, "running.lock");
 const PROFILE = path.join(HOME, "browser-profile");
 
-const MAX_THREADS = 15;
+const MAX_THREADS = 20;
+const MAX_INBOX = 15;
 const MAX_JOBS = 20;
 const LOGIN_URL = "https://crowdworks.jp/login";
 
@@ -315,6 +330,16 @@ async function testMail(config = readJson(CONFIG, null)) {
 
 // --- run -----------------------------------------------------------------------------
 
+/** 経歴（提案文に使う library/profile.json）の文章。読めなければ undefined（提案文の経歴チェックは飛ばす） */
+function readBackground() {
+  try {
+    const bg = JSON.parse(fs.readFileSync(path.join(ROOT, "library", "profile.json"), "utf8")).background;
+    return typeof bg === "string" ? bg : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function judgeJob(text, title, url) {
   const tmp = path.join(HOME, "tmp-job.txt");
   fs.writeFileSync(tmp, text);
@@ -347,7 +372,8 @@ function runScan(errors) {
     errors.push(`公開募集の収集に失敗しました: ${(r.stderr || out).slice(-300)}`);
     return null;
   }
-  const candidates = Number(m[1]) + Number(m[2]);
+  // 「確認してから」の件数だけあっても、一覧に提案文つきの募集が出ていない(「今回は応募候補がありませんでした」)ときは、候補に数えない
+  const candidates = /今回は応募候補がありませんでした/.test(out) ? 0 : Number(m[1]) + Number(m[2]);
   if (candidates === 0) return { candidates: 0, body: "" };
   let body = out;
   const dirRel = out.match(/提案文の保存先: (.+)/)?.[1]?.trim();
@@ -360,6 +386,135 @@ function runScan(errors) {
     } catch {}
   }
   return { candidates, body };
+}
+
+/** 受信箱(メッセージ一覧)の行を読む。メッセージへのリンクごとに、その行の文字を付ける */
+async function readInboxRows(page) {
+  return page.evaluate(() => {
+    const out = [];
+    const seen = new Set();
+    const isMsg = (el) => el.matches?.('a[href*="/messages/"]') || el.querySelector?.('a[href*="/messages/"]');
+    for (const a of document.querySelectorAll('a[href*="/messages/"]')) {
+      const m = a.href.match(/\/messages\/(\d+)\/?(\?|#|$)/);
+      if (!m || seen.has(m[1])) continue;
+      seen.add(m[1]);
+      // 行 = このリンクを含み、同じ形のリンクを含む兄弟が3つ以上ある、いちばん内側の要素
+      let el = a;
+      while (el.parentElement && el.parentElement !== document.body) {
+        if ([...el.parentElement.children].filter(isMsg).length >= 3) break;
+        el = el.parentElement;
+      }
+      out.push({ href: a.href, text: (el.innerText || a.innerText || "").trim() });
+    }
+    return out;
+  });
+}
+
+/**
+ * やり取りを読む: 受信箱（メッセージ一覧。新しい順に最大 MAX_INBOX 件。辞退と古いものは除く）と、マイページのリンク。
+ * 同じやり取りに行き着くリンク(メッセージ→契約など)は1回だけ読む。見るだけ（ボタンは押さない）。
+ */
+async function readThreadsFlow(page, config, seen, errors) {
+  const { cw, core } = loadLib();
+  const links = [];
+  const inboxStatus = new Map();
+  let inboxRead = false;
+
+  const inboxUrl = config.inboxUrl ?? "https://crowdworks.jp/messages";
+  try {
+    log(`受信箱を見ています: ${inboxUrl}`);
+    const p = await readPage(page, inboxUrl);
+    if (isLoginPage(p.finalUrl)) return { threads: [], loginExpired: true, inboxRead };
+    const rows = await readInboxRows(page);
+    if (rows.length === 0) errors.push(`受信箱の行が読めませんでした（画面の形が変わったかもしれません）: ${p.finalUrl}`);
+    else inboxRead = true;
+    for (const e of core.selectInboxRows(rows, new Date(), MAX_INBOX)) {
+      links.push(e);
+      inboxStatus.set(e.key, e.status);
+    }
+  } catch (e) {
+    errors.push(`受信箱: ${e.message}`);
+  }
+  await politeWait();
+
+  for (const url of config.listUrls) {
+    try {
+      log(`一覧を見ています: ${url}`);
+      const p = await readPage(page, url);
+      if (isLoginPage(p.finalUrl)) return { threads: [], loginExpired: true, inboxRead };
+      links.push(...core.collectLinks(p.hrefs).threads);
+    } catch (e) {
+      errors.push(`${url}: ${e.message}`);
+    }
+    await politeWait();
+  }
+
+  const threads = [];
+  const readKeys = new Set();
+  const uniq = [...new Map(links.map((l) => [l.key, l])).values()].slice(0, MAX_THREADS);
+  for (const link of uniq) {
+    if (readKeys.has(link.key)) continue;
+    try {
+      log(`やり取りを読んでいます: ${link.url}`);
+      const p = await readPage(page, link.url);
+      if (isLoginPage(p.finalUrl)) return { threads, loginExpired: true, inboxRead };
+      // メッセージのリンクは、契約・応募の画面に移る。移った先で同じものを読んでいれば重ねない
+      const final = core.classifyLink(p.finalUrl);
+      const key = final?.key ?? link.key;
+      const duplicate = key !== link.key && readKeys.has(key);
+      readKeys.add(link.key);
+      readKeys.add(key);
+      if (duplicate) {
+        await politeWait();
+        continue;
+      }
+      const parsed = cw.parseCwThreads(p.text, config.me)[0];
+      if (!/^相談から契約まで/.test(p.text.trim().split("\n").find((l) => l.trim()) ?? "")) {
+        parsed.title = cleanJobTitle(p.title) || parsed.title;
+      }
+      const review = cw.reviewCwThread(parsed, new Date());
+      const fp = core.threadFingerprint(review);
+      const changed = seen.threads[key] !== fp;
+      seen.threads[key] = fp;
+      if (parsed.messages.length === 0) errors.push(`メッセージが読めませんでした: ${link.url}`);
+      const jobHref = p.hrefs.map((h) => h.match(/^https:\/\/crowdworks\.jp\/public\/jobs\/(\d+)/)?.[1]).find(Boolean);
+      threads.push({ review, url: final?.url ?? link.url, changed, inboxStatus: inboxStatus.get(link.key) ?? "", jobId: jobHref ?? null });
+    } catch (e) {
+      errors.push(`${link.url}: ${e.message}`);
+    }
+    await politeWait();
+  }
+  // 返事を考える相手(危険信号なし)は、募集の内容も読んで、受けない型なら返事を考える対象から外す
+  // (外部の予約サイトへの誘導・カードの新規申込み・本人の感想が商品の仕事など、やり取りの文だけでは分からないもの)
+  const cache = readJson(JOB_SCREEN, {});
+  let screened = 0;
+  for (const t of threads) {
+    const r = t.review;
+    if (!t.jobId || r.waiting !== "me" || r.scam?.verdict === "danger") continue;
+    let res = cache[t.jobId];
+    if (!res || Date.now() - new Date(res.at).getTime() > 14 * 86_400_000) {
+      if (screened >= 6) continue;
+      try {
+        await politeWait();
+        const jp = await readPage(page, jobUrl(t.jobId));
+        if (isLoginPage(jp.finalUrl)) break;
+        res = { at: new Date().toISOString(), ...core.screenJob(cleanJobTitle(jp.title), jp.text) };
+        cache[t.jobId] = res;
+        screened++;
+      } catch (e) {
+        errors.push(`募集の確認 ${t.jobId}: ${e.message}`);
+        continue;
+      }
+    }
+    if (res.skip) {
+      r.skipReasons = res.reasons;
+      r.flags.push(`募集の内容から、受けられない型です: ${res.reasons.join("／")}`);
+      r.actions = r.actions.filter((a) => !a.includes("まだ返していません"));
+      r.actions.push("返信しない(募集の内容が受けられない型。辞退の一言も不要)");
+    }
+  }
+  writeJson(JOB_SCREEN, cache);
+  return { threads, loginExpired: false, inboxRead };
 }
 
 async function run() {
@@ -386,47 +541,17 @@ async function run() {
     const toJudge = [];
     const queueItems = [];
     let loginExpired = false;
+    let inboxRead = false;
 
     const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
     try {
-      // 1) やり取りの一覧 → 各やり取り
-      const threadLinks = [];
-      for (const url of config.listUrls) {
-        log(`一覧を見ています: ${url}`);
-        const p = await readPage(page, url);
-        if (isLoginPage(p.finalUrl)) {
-          loginExpired = true;
-          break;
-        }
-        threadLinks.push(...core.collectLinks(p.hrefs).threads);
-        await politeWait();
-      }
-      if (!loginExpired) {
-        const uniq = [...new Map(threadLinks.map((l) => [l.key, l])).values()].slice(0, MAX_THREADS);
-        for (const link of uniq) {
-          try {
-            log(`やり取りを読んでいます: ${link.url}`);
-            const p = await readPage(page, link.url);
-            if (isLoginPage(p.finalUrl)) {
-              loginExpired = true;
-              break;
-            }
-            const parsed = cw.parseCwThreads(p.text, config.me)[0];
-            if (!/^相談から契約まで/.test(p.text.trim().split("\n").find((l) => l.trim()) ?? "")) {
-              parsed.title = p.title.replace(/\s*[|｜].*$/, "").trim() || parsed.title;
-            }
-            const review = cw.reviewCwThread(parsed, new Date());
-            const fp = core.threadFingerprint(review);
-            const changed = seen.threads[link.key] !== fp;
-            seen.threads[link.key] = fp;
-            if (parsed.messages.length === 0) errors.push(`メッセージが読めませんでした: ${link.url}`);
-            threads.push({ review, url: link.url, changed });
-          } catch (e) {
-            errors.push(`${link.url}: ${e.message}`);
-          }
-          await politeWait();
-        }
-      }
+      // 1) 受信箱（メッセージの一覧）とマイページ → 各やり取り
+      const flow = await readThreadsFlow(page, config, seen, errors);
+      loginExpired = flow.loginExpired;
+      threads.push(...flow.threads);
+      inboxRead = flow.inboxRead;
+      // 危険信号が出たやり取りの募集の題名を覚えておく(同じ題名の別の募集が新着に出たら見送るため)
+      seen.dangerTitles = core.addDangerTitles(seen.dangerTitles, flow.threads);
 
       // 2) 検索結果 → 新しい募集だけ判定
       if (!loginExpired) {
@@ -449,7 +574,7 @@ async function run() {
           try {
             log(`募集を読んでいます: ${link.url}`);
             const p = await readPage(page, link.url);
-            const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+            const title = cleanJobTitle(p.title) || "（題名不明）";
             seen.jobs[link.key] = new Date().toISOString();
             // 判定がおかしいときに見直せるよう、読んだ本文をPCの中にだけ残す（前回の分は上書き）
             fs.mkdirSync(path.join(HOME, "last-jobs"), { recursive: true });
@@ -458,7 +583,7 @@ async function run() {
             try {
               fs.appendFileSync(BUDGET_LOG, `${JSON.stringify(core.budgetRecord(link, title, p.text))}\n`);
             } catch {}
-            toJudge.push({ title, url: link.url, link, text: core.jobBodyForJudging(p.text), pageText: p.text });
+            toJudge.push({ title, url: link.url, link, text: core.jobBodyForJudging(p.text, title), pageText: p.text });
           } catch (e) {
             errors.push(`${link.url}: ${e.message}`);
           }
@@ -473,6 +598,13 @@ async function run() {
     // 時間が足りなくなっても困らないよう、発注の多い依頼者（優良）の募集から先に判定する
     toJudge.sort((a, b) => core.clientRank(a.pageText) - core.clientRank(b.pageText));
     for (const t of toJudge) {
+      const sameAsDanger = core.matchDangerTitle(t.title, seen.dangerTitles);
+      if (sameAsDanger) {
+        // 危険信号が出たやり取りの募集と同じ題名。判定(AI)にかけず、見送り
+        log(`見送り(危険信号が出たやり取りと同じ題名): ${t.title}`);
+        judged.push({ title: t.title, url: t.url, verdict: "見送り", detail: `危険信号が出たやり取りの募集（「${sameAsDanger.slice(0, 40)}」）と同じ題名です。同じ依頼者の可能性が高いので、判定せずに見送りました` });
+        continue;
+      }
       log(`判定しています: ${t.title}`);
       let j = judgeJob(t.text, t.title, t.url);
       if (/VirtualAlloc|ENOMEM|out of memory/i.test(j.detail)) {
@@ -483,21 +615,26 @@ async function run() {
       judged.push({ title: t.title, url: t.url, verdict: j.verdict, detail: j.detail });
       // 応募してよい／確認してから応募 は、依頼者の信頼度つきで「応募の下書き一覧」に足す（画面を開いて待たない）
       if (/^(応募してよい|確認してから応募)/.test(j.verdict)) {
-        queueItems.push(
-          core.buildQueueItem({
-            link: t.link,
-            applyUrl: applyUrl(jobIdFromUrl(t.url)),
-            title: t.title,
-            pageText: t.pageText,
-            judged: { verdict: j.verdict, detail: j.detail },
-          })
-        );
+        const item = core.buildQueueItem({
+          link: t.link,
+          applyUrl: applyUrl(jobIdFromUrl(t.url)),
+          title: t.title,
+          pageText: t.pageText,
+          judged: { verdict: j.verdict, detail: j.detail },
+          background: readBackground(),
+          dangerTitles: seen.dangerTitles,
+        });
+        // 関門・危険信号で見送りをすすめる募集(AIの判定と食い違ったとき)は、一覧に足さない
+        if (!/^見送り/.test(item.verdict)) queueItems.push(item);
+        else log(`一覧に足しませんでした（見送りをすすめます）: ${t.title}`);
       }
     }
     let queue = null;
     try {
       const before = readJson(QUEUE_JSON, core.emptyQueue());
-      const after = core.addToQueue(before, queueItems);
+      const added0 = core.addToQueue(before, queueItems);
+      // 受信箱を読めたときだけ、返事や確認が要るメッセージを作り直す(読めなかった回は前回のまま)
+      const after = inboxRead || threads.length ? { ...added0, messages: core.messageNotes(threads) } : added0;
       const knownNos = new Set(before.items.map((i) => i.no));
       const added = after.items.filter((i) => !knownNos.has(i.no));
       writeJson(QUEUE_JSON, after);
@@ -552,7 +689,7 @@ async function fill() {
     fs.mkdirSync(path.join(HOME, "queue-proposals"), { recursive: true });
     entries = approved.map((i) => {
       const file = path.join(HOME, "queue-proposals", `${i.no}.txt`);
-      fs.writeFileSync(file, i.proposal);
+      fs.writeFileSync(file, core.cleanProposal(i.proposal));
       return { url: i.url, proposal: file, price: i.price ?? undefined, days: undefined, no: i.no };
     });
   } else if (listFile) {
@@ -638,6 +775,44 @@ function addSearch() {
   config.searchUrls = [...new Set([...(config.searchUrls ?? []), url])];
   writeJson(CONFIG, config);
   console.log(`検索画面を登録しました（全${config.searchUrls.length}件）`);
+}
+
+/**
+ * 募集を1件ずつ読んで、判定の理由（納品の判定・関門・詐欺・AIの使用・報酬・依頼者）を、当たった語つきで出す。
+ * 誤判定の見直し用。判定にAIは使わない。見るだけ・ゆっくり（巡回と同じ）。
+ *   node scripts/cw-patrol.mjs explain 13537642 13539833 …
+ */
+async function explain() {
+  const ids = argv.slice(1).filter((a) => !a.startsWith("--")).map((a) => jobIdFromUrl(a)).filter(Boolean);
+  if (!ids.length) die("使い方: node scripts/cw-patrol.mjs explain <募集URLか番号>…（最大8件）");
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  const touch = setInterval(() => fs.utimesSync(LOCK, new Date(), new Date()), 60_000);
+  try {
+    ensureBuilt();
+    const { core } = loadLib();
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    try {
+      for (const id of [...new Set(ids)].slice(0, 8)) {
+        const url = jobUrl(id);
+        try {
+          const p = await readPage(page, url);
+          if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
+          const title = cleanJobTitle(p.title) || "（題名不明）";
+          console.log(`\n${url}\n${core.explainJob(title, p.text)}`);
+        } catch (e) {
+          console.log(`\n${url}\n読めませんでした: ${e.message}`);
+        }
+        await politeWait();
+      }
+    } finally {
+      await ctx.close();
+    }
+  } finally {
+    clearInterval(touch);
+    fs.rmSync(LOCK, { force: true });
+  }
 }
 
 /**
@@ -738,11 +913,11 @@ async function survey() {
       for (const link of picked) {
         try {
           const p = await readPage(page, link.url);
-          const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+          const title = cleanJobTitle(p.title) || "（題名不明）";
           const rec = core.budgetRecord(link, title, p.text);
           fs.appendFileSync(BUDGET_LOG, `${JSON.stringify(rec)}\n`);
           records.push(rec);
-          const body = core.jobBodyForJudging(p.text).normalize("NFKC");
+          const body = core.jobBodyForJudging(p.text, title).normalize("NFKC");
           const at = body.search(/(固定報酬制|時間単価制|コンペ形式|タスク形式)/);
           const pay = at >= 0 ? body.slice(at, at + 90).replace(/\s+/g, " ") : "（報酬の欄が見つかりません）";
           const client = core.readClientInfo(p.text);
@@ -810,7 +985,7 @@ async function queueAdd() {
       await ctx.close();
     }
     if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
-    const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+    const title = cleanJobTitle(p.title) || "（題名不明）";
     const verdict = optValue("verdict") ?? "応募してよい";
     const item = core.buildQueueItem({
       link: { key: `job:${id}`, url: jobUrl(id) },
@@ -818,6 +993,7 @@ async function queueAdd() {
       title,
       pageText: p.text,
       judged: { verdict, detail: `理由: ${optValue("reason") ?? "人が確かめた提案文つき"}` },
+      background: readBackground(),
       proposal,
     });
     let state = readJson(QUEUE_JSON, core.emptyQueue());
@@ -829,6 +1005,450 @@ async function queueAdd() {
     const added = state.items.find((i) => i.id === item.id);
     console.log(`一覧に足しました: 【${added.no}】${title}（依頼者: ${item.client.tier}・${item.client.summary}）`);
   } finally {
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
+/**
+ * 募集を指定して、読み直して判定し直し、応募してよい／確認してから応募 なら一覧に足す(最大5件)。
+ *   rejudge <募集URLか番号>…
+ * 巡回は「判定済みの募集」を二度と読まないので、判定のルールを直したあとに、前に落とした募集を拾い直す用。
+ * 応募画面は開かない・送信しない。
+ */
+async function rejudge() {
+  const ids = [...new Set(argv.slice(1).filter((a) => !a.startsWith("--")).map((a) => jobIdFromUrl(a)).filter(Boolean))].slice(0, 5);
+  if (!ids.length) die("使い方: node scripts/cw-patrol.mjs rejudge <募集URLか番号>…（最大5件。判定のルールを直したあとに、前に落とした募集を読み直す）");
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  try {
+    ensureBuilt();
+    const { core } = loadLib();
+    const pages = [];
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    try {
+      for (const [i, id] of ids.entries()) {
+        if (i > 0) await politeWait();
+        try {
+          const p = await readPage(page, jobUrl(id));
+          if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
+          const title = cleanJobTitle(p.title) || "（題名不明）";
+          pages.push({ id, title, p });
+        } catch (e) {
+          console.log(`読めませんでした: ${jobUrl(id)} ${e.message}`);
+        }
+      }
+    } finally {
+      await ctx.close();
+    }
+    const items = [];
+    for (const { id, title, p } of pages) {
+      const link = { key: `job:${id}`, url: jobUrl(id) };
+      const j = judgeJob(core.jobBodyForJudging(p.text, title), title, link.url);
+      console.log(`判定: ${j.verdict}  ${title}  ${link.url}`);
+      if (/^(応募してよい|確認してから応募)/.test(j.verdict)) {
+        const item = core.buildQueueItem({ link, applyUrl: applyUrl(id), title, pageText: p.text, judged: { verdict: j.verdict, detail: j.detail }, background: readBackground(), dangerTitles: readJson(SEEN, core.emptySeen()).dangerTitles });
+        if (/^見送り/.test(item.verdict)) console.log(`  → 関門・危険信号で見送りをすすめるので、一覧には足しません`);
+        else items.push(item);
+      }
+    }
+    if (items.length) {
+      const before = readJson(QUEUE_JSON, core.emptyQueue());
+      const after = core.addToQueue(before, items);
+      writeJson(QUEUE_JSON, after);
+      fs.writeFileSync(QUEUE_MD, core.queueMarkdown(after));
+      const known = new Set(before.items.map((i) => i.id));
+      for (const i of after.items.filter((x) => !known.has(x.id))) console.log(`一覧に足しました: 【${i.no}】${i.title}`);
+      for (const i of items.filter((x) => known.has(x.id))) console.log(`すでに一覧にあります: ${i.title}`);
+    } else console.log("一覧に足す募集はありませんでした");
+  } finally {
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
+/**
+ * 一覧にあるのに提案文が空の件（または番号で指した件）に、提案文を作り直して入れる。番号と状態はそのまま。
+ *   queue-redraft [番号…]      番号なしなら、提案文が空の「一覧」の件すべて
+ * 募集のページを読み直して判定をやり直す（応募画面は開かない・送信しない）。
+ */
+async function queueRedraft() {
+  ensureBuilt();
+  const { core } = loadLib();
+  const state0 = readJson(QUEUE_JSON, core.emptyQueue());
+  const nos = argv.slice(1).filter((a) => /^[0-9]+$/.test(a)).map(Number);
+  const picked = state0.items.filter((i) => i.status === "pending" && (nos.length ? nos.includes(i.no) : !core.cleanProposal(i.proposal)));
+  // 提案文が入っている件は、人や前の判定が整えたものを上書きしてしまわないよう、--force のときだけ作り直す
+  const targets = argv.includes("--force") ? picked : picked.filter((i) => !core.cleanProposal(i.proposal));
+  for (const i of picked) if (!targets.includes(i)) console.log(`- 【${i.no}】提案文が入っているので作り直しません（作り直すなら --force）`);
+  if (!targets.length) {
+    console.log("提案文を作り直す件はありません");
+    return;
+  }
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  try {
+    const pages = [];
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    try {
+      for (const t of targets) {
+        const p = await readPage(page, t.url);
+        if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
+        pages.push({ t, p, title: cleanJobTitle(p.title) || t.title });
+        await politeWait();
+      }
+    } finally {
+      await ctx.close();
+    }
+    // 判定はブラウザを閉じてから（メモリのため）
+    let state = readJson(QUEUE_JSON, core.emptyQueue());
+    for (const { t, p, title } of pages) {
+      log(`提案文を作り直しています: ${title}`);
+      const j = judgeJob(core.jobBodyForJudging(p.text, title), title, t.url);
+      const item = core.buildQueueItem({
+        link: { key: `job:${t.id}`, url: t.url },
+        applyUrl: t.applyUrl,
+        title,
+        pageText: p.text,
+        judged: { verdict: j.verdict, detail: j.detail },
+        background: readBackground(),
+        dangerTitles: readJson(SEEN, core.emptySeen()).dangerTitles,
+      });
+      const reasonLine = j.detail.match(/^理由: (.+)$/m)?.[1] ?? "";
+      if (/^見送り/.test(j.verdict) || /^見送り/.test(item.verdict)) {
+        // 今のルールと再判定で見送りになった。一覧から外し、理由(ルールが見つけたこと＋Claudeの理由)を「見送りにした案件」に載せる
+        const ruleNote = item.checks.filter((c) => !c.startsWith("提案文")).slice(0, 4).join(" / ");
+        const why = [ruleNote, reasonLine ? `Claudeの判定: ${reasonLine}` : ""].filter(Boolean).join(" ｜ ");
+        state = { ...state, items: state.items.map((i) => (i.id === t.id ? { ...i, status: "skipped", skipReason: why.slice(0, 400) || "再判定で見送り" } : i)) };
+        console.log(`- 【${t.no}】${title.slice(0, 40)}: 見送りにしました\n    理由: ${why}`);
+        continue;
+      }
+      state = { ...state, items: state.items.map((i) => (i.id === t.id ? { ...item, no: i.no, status: i.status } : i)) };
+      console.log(`- 【${t.no}】${title.slice(0, 40)}: ${core.cleanProposal(item.proposal) ? "提案文を入れました" : "提案文は出ませんでした（判定: " + j.verdict + (reasonLine ? "。理由: " + reasonLine : "") + "）"}`);
+    }
+    writeJson(QUEUE_JSON, state);
+    fs.writeFileSync(QUEUE_MD, core.queueMarkdown(state));
+  } finally {
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
+/**
+ * 一覧の件の提案文を、ファイルの文に差し替える（番号と状態は変わらない。募集ページは読まない）。
+ *   queue-set <番号> [--proposal 提案文.txt] [--price 金額] [--pay-text "報酬の表示"]
+ */
+function queueSet() {
+  const no = Number(argv[1]);
+  const file = optValue("proposal");
+  const priceArg = optValue("price");
+  const payText = optValue("pay-text");
+  if (!Number.isInteger(no) || (!file && !priceArg && !payText)) die("使い方: node scripts/cw-patrol.mjs queue-set <番号> [--proposal 提案文.txt] [--price 金額] [--pay-text \"報酬の表示\"]");
+  const price = priceArg === undefined ? undefined : Number(priceArg.replace(/,/g, ""));
+  if (price !== undefined && !(Number.isFinite(price) && price > 0)) die("--price は円の数字で指定してください");
+  ensureBuilt();
+  const { core } = loadLib();
+  const state = readJson(QUEUE_JSON, core.emptyQueue());
+  const target = state.items.find((i) => i.no === no);
+  if (!target) die(`一覧に【${no}】がありません`);
+  let item = target;
+  if (file) item = core.setProposal(item, fs.readFileSync(path.resolve(file), "utf8").trim(), readBackground());
+  if (price !== undefined) {
+    // 応募画面に入れる金額を人が決めたとき。「金額が読めませんでした」の注意は外す
+    item = { ...item, price, checks: item.checks.filter((c) => !c.startsWith("金額が読めませんでした")) };
+  }
+  if (payText) item = { ...item, payText };
+  const next = { ...state, items: state.items.map((i) => (i.no === no ? item : i)) };
+  writeJson(QUEUE_JSON, next);
+  fs.writeFileSync(QUEUE_MD, core.queueMarkdown(next));
+  const done = next.items.find((i) => i.no === no);
+  console.log(`【${no}】を更新しました（提案文 ${done.proposal.length}字・応募画面の金額 ${done.price ?? "未設定"}・報酬の表示 ${done.payText}）。提案文に関する注意: ${done.checks.filter((c) => c.startsWith("提案文")).join(" / ") || "なし"}`);
+}
+
+/**
+ * 募集ページを読んで、判定に渡す本文（メニュー・依頼者欄を除いたもの）をそのまま表示する。読むだけ・ゆっくり。
+ *   page <募集IDまたはURL>… [--max 4000]
+ * 提案文を人（または別の会話）が書くときに、募集の中身を確かめる用。
+ */
+async function pageShow() {
+  const ids = argv.slice(1).filter((a) => !a.startsWith("--") && !/^[0-9]{1,5}$/.test(a)).map((a) => jobIdFromUrl(a)).filter(Boolean);
+  if (!ids.length) die("使い方: node scripts/cw-patrol.mjs page <募集IDまたはURL>… [--max 4000]");
+  const max = Number(optValue("max")) || 4000;
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  ensureBuilt();
+  const { core } = loadLib();
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  try {
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    try {
+      for (const id of ids) {
+        const p = await readPage(page, jobUrl(id));
+        if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
+        const title = cleanJobTitle(p.title) || "（題名不明）";
+        console.log(`\n===== ${id} ${title}\n${jobUrl(id)}\n${core.jobBodyForJudging(p.text, title).slice(0, max)}`);
+        await politeWait();
+      }
+    } finally {
+      await ctx.close();
+    }
+  } finally {
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
+/**
+ * クラウドワークスの画面を1枚ずつ読んで、文字と、リンク（リンクの文字つき）を出す。読むだけ（ボタンは押さない）。
+ *   read <https://crowdworks.jp/…のURL>… [--max 6000] [--all-links] [--grep "言葉|言葉" [--around 120]]
+ * メッセージの受信箱・スカウトなど、巡回がまだ読めていない画面の形を調べる用。
+ * リンクは、メッセージ・スカウト・やり取り・通知に関わりそうなものだけを出す（--all-links で全部）。
+ */
+async function readShow() {
+  const urls = argv.slice(1).filter((a) => /^https:\/\/crowdworks\.jp\//.test(a));
+  if (!urls.length) die("使い方: node scripts/cw-patrol.mjs read <https://crowdworks.jp/…のURL>… [--max 6000] [--all-links]");
+  const max = Number(optValue("max")) || 6000;
+  const allLinks = argv.includes("--all-links");
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  try {
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    try {
+      for (const url of [...new Set(urls)].slice(0, 6)) {
+        try {
+          const p = await readPage(page, url);
+          if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
+          const anchors = await page.$$eval("a[href]", (as) =>
+            as.map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().slice(0, 80) }))
+          );
+          const seen = new Set();
+          const links = anchors.filter((a) => {
+            if (!/^https:\/\/crowdworks\.jp\//.test(a.href) || seen.has(a.href)) return false;
+            seen.add(a.href);
+            return allLinks || /message|scout|conversation|consult|proposal|contract|notification|inbox|dashboard|mypage/i.test(a.href) || /メッセージ|スカウト|未読|新着|通知|お知らせ|相談|契約|提案/.test(a.text);
+          });
+          const grep = optValue("grep");
+          if (grep) {
+            // 長い規約などから、言葉の前後だけを取り出す(--grep "自動|ツール" [--around 120])
+            const around = Number(optValue("around")) || 120;
+            const re = new RegExp(grep, "g");
+            const hits = [];
+            for (const m of p.text.matchAll(re)) {
+              const from = Math.max(0, m.index - around);
+              const to = Math.min(p.text.length, m.index + m[0].length + around);
+              if (hits.length && from <= hits[hits.length - 1].to) hits[hits.length - 1].to = to;
+              else hits.push({ from, to });
+            }
+            console.log(`\n===== ${url}\n最終のURL: ${p.finalUrl}\n題名: ${p.title}\n全体の文字数: ${p.text.length}／「${grep}」に当たった所: ${hits.length}か所`);
+            for (const h of hits.slice(0, 60)) console.log(`--- ${h.from}〜${h.to}\n${p.text.slice(h.from, h.to)}`);
+            continue;
+          }
+          console.log(`\n===== ${url}\n最終のURL: ${p.finalUrl}\n題名: ${p.title}\n--- 文字 ---\n${p.text.slice(0, max)}\n--- リンク（${links.length}件） ---`);
+          for (const l of links.slice(0, 120)) console.log(`${l.text || "（文字なし）"}\t${l.href}`);
+          // 返信の入力欄の形を調べる用(入力はしない)
+          const fields = await page.$$eval("textarea, input[type=text], input[type=file], button[type=submit], input[type=submit]", (els) =>
+            els.map((e) => `${e.tagName.toLowerCase()}${e.type ? `[${e.type}]` : ""} name=${e.getAttribute("name") ?? ""} id=${e.id} placeholder=${(e.getAttribute("placeholder") ?? "").slice(0, 40)} 文字=${(e.innerText || e.value || "").replace(/\s+/g, " ").slice(0, 20)}`)
+          );
+          console.log(`--- 入力欄・ボタン（${fields.length}件。押さない・入力しない） ---`);
+          for (const f of fields.slice(0, 20)) console.log(f);
+        } catch (e) {
+          console.log(`\n===== ${url}\n読めませんでした: ${e.message}`);
+        }
+        await politeWait();
+      }
+    } finally {
+      await ctx.close();
+    }
+  } finally {
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
+/**
+ * 受信箱のやり取りを読んで、1件ずつ「状態・最後の発言・危険信号・すすめる対応」と、最後の数通の本文を出す。読むだけ。
+ * 既読の記録は更新しない(巡回の「新着」判定に影響しない)。
+ *   messages [--last 3] [--max 800]
+ * --last: 1件につき何通ぶん本文を出すか／--max: 1通の本文の最大文字数
+ */
+async function messagesShow() {
+  const config = readJson(CONFIG, null);
+  if (!config?.listUrls?.length) die("まだ設定されていません。先に setup を実行してください");
+  const last = Number(optValue("last")) || 3;
+  const max = Number(optValue("max")) || 800;
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  ensureBuilt();
+  const { cw, core } = loadLib();
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  const touch = setInterval(() => fs.utimesSync(LOCK, new Date(), new Date()), 60_000);
+  try {
+    const seenCopy = JSON.parse(JSON.stringify(readJson(SEEN, core.emptySeen())));
+    const errors = [];
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    try {
+      const flow = await readThreadsFlow(page, config, seenCopy, errors);
+      if (flow.loginExpired) die("ログインが切れています。setup でログインし直してください");
+      console.log(`受信箱から ${flow.threads.length}件のやり取りを読みました`);
+      for (const t of flow.threads) {
+        console.log(`\n===== ${t.url}（状態: ${t.inboxStatus || "不明"}）\n${cw.formatCwReview(t.review)}`);
+        for (const m of t.review.thread.messages.slice(-last)) {
+          console.log(`--- ${m.mine ? "あなた" : m.from}（${m.at ? m.at.slice(0, 16).replace("T", " ") : "日時不明"}）\n${m.text.slice(0, max)}`);
+        }
+      }
+      for (const e of errors) console.log(`読めなかったもの: ${e}`);
+    } finally {
+      await ctx.close();
+    }
+  } finally {
+    clearInterval(touch);
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
+// --- reply / autosend（やり取りに返信を入れる。送ってよいのは許可した種類だけ）---------
+
+const SENT_LOG = path.join(HOME, "sent-log.jsonl");
+const readSentLog = () => parseSentLog(fs.existsSync(SENT_LOG) ? fs.readFileSync(SENT_LOG, "utf8") : "");
+
+/**
+ * 自動送信の設定。初期はオフ。オンにするには、規約の原文を確かめた記録が要る。
+ *   autosend status
+ *   autosend on --terms-checked "確かめた日と所見" [--min-gap 10] [--max-per-day 3]
+ *   autosend off
+ */
+function autosend() {
+  const sub = argv[1];
+  const config = readJson(CONFIG, null);
+  if (!config) die("まだ設定されていません。先に setup を実行してください");
+  const a = config.autoSend;
+  if (sub === "on") {
+    const checked = optValue("terms-checked");
+    if (!checked) die("規約の原文を確かめた日と所見を --terms-checked \"…\" で書いてください（自動送信の禁止が無いことを確かめてからオンにします）");
+    config.autoSend = {
+      enabled: true,
+      kinds: Object.keys(SEND_KINDS),
+      minGapMinutes: Number(optValue("min-gap")) || 10,
+      maxPerDay: Number(optValue("max-per-day")) || 3,
+      termsChecked: checked,
+      since: new Date().toISOString(),
+    };
+    writeJson(CONFIG, config);
+    console.log(`自動送信をオンにしました（${Object.keys(SEND_KINDS).join("・")} だけ。${config.autoSend.minGapMinutes}分以上あけて1日${config.autoSend.maxPerDay}件まで）`);
+  } else if (sub === "off") {
+    config.autoSend = { ...(a ?? {}), enabled: false };
+    writeJson(CONFIG, config);
+    console.log("自動送信をオフにしました");
+  } else if (sub !== "status") {
+    die("使い方: node scripts/cw-patrol.mjs autosend status | on --terms-checked \"確かめた日と所見\" | off");
+  }
+  const now = readJson(CONFIG, {}).autoSend;
+  console.log(`自動送信: ${now?.enabled ? "オン" : "オフ"}${now?.termsChecked ? `／規約の確認: ${now.termsChecked}` : ""}`);
+  const log = readSentLog();
+  console.log(`これまでの送信: ${log.length}件${log.length ? `（最後: ${log[log.length - 1].at} ${log[log.length - 1].url}）` : ""}`);
+}
+
+class ReplyStop extends Error {}
+const fail = (msg) => {
+  throw new ReplyStop(msg);
+};
+
+/**
+ * やり取りの画面に返信を入れる。
+ *   reply <やり取りのURL> --text 文.txt [--kind reason-question] --check      # 入力欄とボタンを探すだけ（入力も送信もしない）
+ *   reply <やり取りのURL> --text 文.txt [--kind reason-question]              # 入力して止める（送信はあなたが押す）
+ *   reply <やり取りのURL> --text 文.txt --kind reason-question --send --announced "スレッドで伝えた一言"
+ *       # 許可した種類だけ、設定がオンのときだけ送る（autosend on が先）。1回に1件
+ */
+async function reply() {
+  const url = argv[1];
+  const textFile = optValue("text");
+  const kind = optValue("kind") || "reason-question";
+  const send = argv.includes("--send");
+  const checkOnly = argv.includes("--check");
+  const fromThread = argv.includes("--from-thread");
+  if (!isThreadUrl(url) || (!textFile && !fromThread && !checkOnly)) die("使い方: node scripts/cw-patrol.mjs reply <https://crowdworks.jp/contracts/番号> (--text 文.txt | --from-thread) [--kind reason-question] [--check | --send --announced \"スレッドで伝えた一言\"]");
+  if (fromThread && kind !== "reason-question") die("--from-thread で作れるのは reason-question（外のチャットへ誘う相手に理由を聞く質問）だけです");
+  let text = textFile ? fs.readFileSync(path.resolve(textFile), "utf8").replace(/\r\n/g, "\n").trim() : "";
+  const problems = textFile ? validateReplyText(text) : [];
+  if (problems.length) die(problems.join("\n"));
+  const config = readJson(CONFIG, null);
+  if (!config) die("まだ設定されていません。先に setup を実行してください");
+  if (send) {
+    const announced = optValue("announced");
+    if (!announced) die("--announced \"スレッドで伝えた一言\" が要ります（送る前に一言伝える約束のため）");
+    const gate = sendGate({ config, sentLog: readSentLog(), url, kind });
+    if (!gate.ok) die(`送りません: ${gate.reason}`);
+  }
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  if (fromThread) ensureBuilt();
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  const touch = setInterval(() => fs.utimesSync(LOCK, new Date(), new Date()), 60_000);
+  let keepOpen = false;
+  try {
+    const { ctx, page } = await openBrowser({ headless: argv.includes("--headless") });
+    try {
+      const p = await readPage(page, url);
+      if (isLoginPage(p.finalUrl)) fail("ログインが切れています。setup でログインし直してください");
+      if (kind === "reason-question" && p.text.includes("外部でのやり取りが必要な理由")) fail("このやり取りには、同じ質問をもう送っています（画面に質問の文があります）。送りません");
+      if (fromThread) {
+        // 画面のやり取りを読んで、巡回が作る「理由を聞く質問」と同じ文を使う(外のチャットへの誘いが無い・質問済みなら作られない)
+        const { cw } = loadLib();
+        const review = cw.reviewCwThread(cw.parseCwThreads(p.text, config.me)[0], new Date());
+        if (!review.draftReply) fail("この画面には、理由を聞く質問を送る条件がありません（外のチャットへの誘いが読めない、または質問済み、または最後の発言が自分）。送りません");
+        text = review.draftReply.trim();
+        const bad = validateReplyText(text);
+        if (bad.length) fail(bad.join(" / "));
+        log(`送る文（${text.length}字）:\n${text}`);
+      }
+      const forms = await page.evaluate(scanReplyForms);
+      const pick = pickReplyForm(forms);
+      for (const s of pick.seen) log(`  画面の欄: ${s}`);
+      if (argv.includes("--dump")) {
+        // 画面の作りを調べる用(タグと属性だけ。本文や入力した値は出さない)
+        for (const f of forms) {
+          console.log(`\n--- textarea ${f.index}（${f.shown ? "見える" : "見えない"}${f.inDialog ? "・ダイアログ内" : ""}）\n  ${f.html}\n  form: ${f.formHtml || "（formの外）"}\n  上の階層: ${f.ancestors.join(" < ")}`);
+          for (const b of f.buttons) console.log(`  ボタン ${b.key}（${b.shown ? "見える" : "見えない"}${b.disabled ? "・押せない" : ""}）文字=「${b.label}」 ${b.html}`);
+        }
+      }
+      if (!pick.ok) fail(`${pick.reason}。入力も送信もしていません`);
+      log(`返信の欄と「${pick.buttonLabel}」ボタンを見つけました`);
+      if (checkOnly) return;
+      await page.locator(pick.textarea).first().fill(text);
+      const got = String(await page.locator(pick.textarea).first().inputValue()).replace(/\r\n/g, "\n").trim();
+      if (got !== text) fail("入力した文が画面の欄と一致しません。送りません");
+      log(`入力しました（${text.length}字）`);
+      if (!send) {
+        keepOpen = true;
+        log("送信はしていません。中身を確かめ、よければ自分で送信を押してください。ブラウザを閉じると、このコマンドも終わります。");
+        await new Promise((resolve) => ctx.on("close", resolve));
+        return;
+      }
+      // ゆっくり: 入力してから少しおいて押す。画面が作り直されていないか、欄とボタンをもう一度探して確かめてから押す
+      await politeWait();
+      await politeWait();
+      const again = pickReplyForm(await page.evaluate(scanReplyForms));
+      if (!again.ok || again.buttonLabel !== pick.buttonLabel) fail(`入力のあとで、送信ボタンを見つけ直せませんでした（${again.ok ? "ボタンが変わりました" : again.reason}）。送っていません`);
+      const stillThere = String(await page.locator(again.textarea).first().inputValue()).replace(/\r\n/g, "\n").trim();
+      if (stillThere !== text) fail("入力した文が画面から消えています。送っていません");
+      await page.locator(again.button).first().click();
+      await page.waitForTimeout(4000);
+      // 画面に出たか(読み直す前に今の画面を見て、出ていなければ読み直して見る)
+      let confirmed = sentTextAppears(await page.evaluate(() => document.body?.innerText ?? ""), text);
+      if (!confirmed) {
+        const after = await readPage(page, url);
+        confirmed = sentTextAppears(after.text, text);
+      }
+      fs.appendFileSync(SENT_LOG, `${JSON.stringify({ at: new Date().toISOString(), url, kind, text, announced: optValue("announced"), buttonLabel: pick.buttonLabel, confirmed })}\n`);
+      log(confirmed ? `送りました: ${url}` : `送信ボタンを押しましたが、画面に送った文が見えません。画面を確かめてください: ${url}`);
+    } finally {
+      if (!keepOpen) await ctx.close();
+    }
+  } catch (e) {
+    if (!(e instanceof ReplyStop)) throw e;
+    console.error(`エラー: ${e.message}`);
+    process.exitCode = 1;
+  } finally {
+    clearInterval(touch);
     fs.rmSync(LOCK, { force: true });
   }
 }
@@ -847,9 +1467,9 @@ function budgets() {
   console.log(loadLib().core.summarizeBudgets(records));
 }
 
-const commands = { setup, run, fill, "add-search": addSearch, "add-keyword": addKeyword, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, schedule: () => registerSchedule(), "test-mail": () => testMail() };
+const commands = { setup, run, fill, reply, autosend, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, rejudge, page: pageShow, read: readShow, messages: messagesShow, schedule: () => registerSchedule(), "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> [--proposal 提案文.txt] [--price 金額] [--pay-text 表示] | rejudge <募集URLか番号>… | page <募集ID>… | read <crowdworks.jpのURL>… | messages [--last 3] | queue-mark approved|sent|skipped 番号… | fill --approved | reply <契約のURL> --check | autosend status | schedule | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();

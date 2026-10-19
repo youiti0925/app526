@@ -22,6 +22,7 @@
 
 import { blockedTools, obligationsFor } from "./licenses";
 import { stripNegatedClauses } from "./negation";
+import { stripAiBanSentences } from "./ai-restriction";
 
 /** どうやって作るか。 */
 export type Route =
@@ -257,6 +258,13 @@ export const CAPABILITIES: CapabilityDef[] = [
       /(音声|画面)(を)?(収録|録画)[^。\n]{0,10}(していただ|お願い|できる方|環境)/,
       // 本人の実績・体験が商品
       /(実体験|体験談|経験者|実績のある方)[^。\n]{0,8}(限定|のみ|募集|お願い)/,
+      // 本人の回答・感想が商品（アンケートに答える・買ってよかったものを教える・レビューを投稿する）。
+      // 「アンケートの作成・集計・入力」は回答する仕事ではないので除く
+      // 「応募方法: 以下のアンケートに回答の上」は、応募のときの質問であって、アンケートに答える仕事ではない
+      /(?<!応募[^。\n]{0,20})アンケート(?!の?(?:作成|設計|集計|分析|入力|データ))[^。\n]{0,40}(選択\d+問|記述\d+問|\d+問|約\d+分|に(?:ご)?回答|にご協力|回答(?:を|して))/,
+      /完了コード/,
+      /(買って|使って|試して|行って|食べて|泊まって)(よかった|良かった|みた)[^。\n]{0,15}(教えて|紹介|書いて|ください|募集|お願い)/,
+      /(レビュー|口コミ|体験談|感想)[^。\n]{0,4}(募集|投稿)/,
       /(お話|知見|ノウハウ)[^。\n]{0,10}(聞かせて|伺|教えて)[^。\n]{0,8}(ください|いただ|欲しい)/,
       /(インタビュー|ヒアリング)(を)?(受け|お受け)/,
       /(壁打ち|相談に乗|アドバイスをいただ)/,
@@ -299,7 +307,8 @@ export const CAPABILITIES: CapabilityDef[] = [
       // 「代表電話」「固定電話」「携帯電話」も、リストに入れる項目の名前（実データで、店舗リストの入力が「電話」で落ちた）。
       /(?<!番号調査|候補|代表|固定|携帯|会社|店舗)(電話(?!番号|帳|欄)|架電(?!前|先|リスト)|コールセンター|テレアポ|受電|SMS.{0,6}対応)/,
       // 「訪問看護」「訪問介護」は事業所の種別名。現地作業の指定ではない。
-      /(訪問(?!看護|介護|診療|リハ|美容|理美容)|来社|出社|現地|実地|立会|常駐)/,
+      // 「出社して働いている方のうち、〜の自覚がある方」は、アンケートに答える人の条件であって、作業の場所ではない
+      /(訪問(?!看護|介護|診療|リハ|美容|理美容)|来社|出社(?!して(?:働いて|勤務して|仕事をして|いる|おられる))|現地|実地|立会|常駐)/,
       // 「画像の用意（選定/撮影）」のように選択肢として並んでいるものは、
       // 撮影しなくても成立する。区切り記号の直後は指定とみなさない。
       // 「予算アロケーション」の「ロケ」に当たらないよう、前後がカタカナのものは除く
@@ -308,7 +317,8 @@ export const CAPABILITIES: CapabilityDef[] = [
       // カテゴリ一覧）であって仕事内容ではない。実データで、ホテル情報の
       // リスト作成（電話番号を集めるだけの在宅作業）が職種タグの
       // 「営業・接客」に当たって「現地作業」で落ちていた。
-      /((?<![・、,])接客|配送|梱包|発送作業)/,
+      // 「顧客対応のご経験(接客・営業・CSなど)」のように、括弧の中に応募の条件として並ぶ語は仕事の指定ではない
+      /((?<![・、,(（])接客|配送|梱包|発送作業)/,
     ],
   },
 ];
@@ -386,11 +396,31 @@ function isNegated(text: string, pattern: RegExp): boolean {
   return sawAny;
 }
 
+/**
+ * 判定がどの語に当たったかを返す（誤判定の見直し用。判定そのものは judgeDeliverability）。
+ * 各能力について、最初に当たった語を前後15文字つきで返す。
+ */
+export function explainDeliverability(text: string): { id: Capability; label: string; route: Route; matched: string }[] {
+  const asked = stripAiBanSentences(stripNegatedClauses(text.slice(0, 8000)));
+  const out: { id: Capability; label: string; route: Route; matched: string }[] = [];
+  for (const c of CAPABILITIES) {
+    for (const p of c.patterns) {
+      const m = asked.match(p);
+      if (!m || m.index === undefined || isNegated(asked, p)) continue;
+      const from = Math.max(0, m.index - 15);
+      const to = Math.min(asked.length, m.index + m[0].length + 15);
+      out.push({ id: c.id, label: c.label, route: c.route, matched: asked.slice(from, to).replace(/\s+/g, " ") });
+      break;
+    }
+  }
+  return out;
+}
+
 /** 案件本文から、納品物と出せるかどうかを判定する。 */
 export function judgeDeliverability(text: string): DeliverabilityResult {
   const t = text.slice(0, 8000);
   // 「電話連絡は一切ありません」「出社なし」のように無いと言い切っている部分は、条件として数えない
-  const asked = stripNegatedClauses(t);
+  const asked = stripAiBanSentences(stripNegatedClauses(t));
   const matched = CAPABILITIES.filter((c) =>
     c.patterns.some((p) => p.test(asked) && !isNegated(asked, p))
   );

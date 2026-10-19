@@ -51,3 +51,7 @@ next-env.d.ts
 
 # 仕事ラインの納品物（依頼者のデータ。絶対にコミットしない）
 /outbox/
+
+# 仕事ラインの記録・経歴（リポジトリが公開のあいだは入れない。非公開にしたら、この2行を外すと library/ が保存される）
+/library/usage.jsonl
+/library/profile.json

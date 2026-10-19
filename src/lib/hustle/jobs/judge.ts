@@ -81,7 +81,7 @@ export interface EscalationOutcome {
  */
 export async function resolveEscalations(leadIds?: string[], limit = 5): Promise<EscalationOutcome> {
   const want = leadIds ? new Set(leadIds) : null;
-  const pending = collectEscalations(100).filter((e) => !want || want.has(e.leadId)).slice(0, limit);
+  const pending = collectEscalations(100, leadIds).filter((e) => !want || want.has(e.leadId)).slice(0, limit);
   if (pending.length === 0) return { requested: 0, applied: 0, note: "" };
   const res = await callClaudeCli({ purpose: "judge", tier: "standard", prompt: buildBrief(pending), schema: ESCALATION_SCHEMA });
   recordUsage({ ...res.usage, jobId: null, recipeId: null });
@@ -132,6 +132,8 @@ export async function judgeLead(input: JudgeInput): Promise<JudgeResult> {
   const resolved = await resolveEscalations([lead.id]);
   const escalated = resolved.requested > 0;
   const note = resolved.note;
+  // 見送りと判定されたのを検算で応募できる側に直した案件は、提案文がまだ無い。下書きの工程をもう一度回して作る
+  if (resolved.applied > 0) await runAgent({ trigger: "manual", force: true, only: ["draft"] });
 
   const current = readLeadsByIds([lead.id]).get(lead.id) ?? lead;
   // 今回の判定で出たものだけ（同じ募集文を前に判定したときの分は含めない）

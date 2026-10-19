@@ -603,3 +603,177 @@ test("AIの禁止は見送りでなく確認に回し、禁止の範囲を本文
   assert.equal(readAiRestriction("AIの使用は禁止しません。歓迎です。").restricted, false);
   assert.equal(readAiRestriction("記事を10本書いてください。").restricted, false);
 });
+
+// --- 本物の募集(2026-10-19 に PC で読んだもの)で見つかった見落とし -----------------------------
+
+test("本物の募集: シナリオライター募集(AIは調査のみ可・平日昼の会議が必須)は、AI禁止と平日昼の拘束を拾う", async () => {
+  const { readAiRestriction } = await import("../../dist-test/agent/ai-restriction.js");
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const { judgeDeliverability, explainDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  const text = [
+    "YouTubeで大人気の「スカッとする話」をご執筆いただける、シナリオライターさんを募集しています☆",
+    "【報酬】初回トライアル：5,000円 / 1本 本採用後：10,000円 / 1本",
+    "■ シナリオ打ち合わせ（週3時間程度）",
+    "以下の日程のうち、いずれか1つに参加必須です。",
+    "木曜 13:00〜16:00",
+    "金曜 13:00〜16:00",
+    "※設定すり合わせのため、不参加の場合はシナリオをお渡しできません。",
+    "【注意事項】",
+    "他サイトからのコピー＆ペーストは固く禁止いたします。",
+    "AIはリサーチでの使用を推奨しておりますが、それ以外は禁止です。",
+  ].join("\n");
+  const ai = readAiRestriction(text);
+  assert.equal(ai.restricted, true, "「AIはリサーチでの使用を推奨…それ以外は禁止」を禁止と読む");
+  assert.ok(ai.scope.some((s) => s.includes("それ以外は禁止")));
+  const g = checkGates(text);
+  const ids = g.hits.map((h) => h.id);
+  assert.ok(ids.includes("ai_prohibited") && ids.includes("fixed_hours"), ids.join(","));
+  // 禁止の文の「リサーチ」を、調査・要約の仕事の根拠にしない
+  assert.ok(!explainDeliverability(text).some((m) => m.label.includes("調査") && m.matched.includes("リサーチ")));
+  assert.ok(judgeDeliverability(text).canDeliver);
+  // 平日の日中でない・必須でない書き方は拾わない
+  assert.ok(!checkGates("打ち合わせは土曜 10:00〜11:00 に参加できる方歓迎です。").hits.some((h) => h.id === "fixed_hours"));
+  assert.ok(!checkGates("稼働時間は平日 9:00〜18:00 の間で自由に決められます。").hits.some((h) => h.id === "fixed_hours"));
+});
+
+test("本物の募集: 補助金の事業計画書の作成は士業の独占業務の関門に当たる。「今日まで」は急かしではない", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const text = [
+    "弊社は「補助金コンサル業務、WEB制作事業」を行っている会社です。【補助金コンサル業務の事業計画作成業務】を依頼させていただきたいです。",
+    "※社会保険労務士の資格をお持ちの方は優遇させていただきます。",
+    "今日まで「完全内製」と「外注コンサルタントへ依頼」を並行してクライアントを支援しており、100社以上の実績があります。",
+    "【報酬（1案件あたり）】省力化投資補助金：20万円〜",
+  ].join("\n");
+  const g = checkGates(text);
+  assert.ok(g.hits.some((h) => h.id === "restricted_work"));
+  assert.equal(g.negotiable, false, "交渉では外せない(見送り)");
+  assert.ok(!scoreScam(text).signals.some((s) => s.id === "urgency_pressure"));
+  // 本当の急かしは拾う
+  assert.ok(scoreScam("本日限定の募集です。").signals.some((s) => s.id === "urgency_pressure"));
+  assert.ok(scoreScam("今日までにご応募ください。").signals.some((s) => s.id === "urgency_pressure"));
+});
+
+test("本物の募集: 契約金額は仮の額を入力させる・DMを大量に送る募集は危険信号に、成果報酬のみ(最低保証なし)は関門に当たる", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const dm = [
+    "・ターゲットになる企業を探していただき、こちらが用意したテンプレートのメッセージを送信していただく作業です。",
+    "・送信件数目安：週100件程度のDMを送っていただく形です。",
+    "・新規の送信先リストアップ＋DM送信１件ごとに10円（返信対応は含まない）",
+    "※固定報酬金額は仮で3000円とご入力ください。",
+    "※契約金額を入力する欄の下にある「クライアントに源泉徴収をしてもらう」のチェックを外してご応募ください！",
+  ].join("\n");
+  const r = scoreScam(dm);
+  const ids = r.signals.map((s) => s.id);
+  assert.ok(ids.includes("placeholder_contract_amount") && ids.includes("mass_dm"), ids.join(","));
+  assert.equal(r.verdict, "danger");
+  // 普通の「契約金額」「DM」の言い方は拾わない
+  assert.equal(scoreScam("契約金額は応募時に5,000円と入力してください。DMで連絡します。").signals.some((s) => s.id === "placeholder_contract_amount"), false);
+
+  const sns = [
+    "報酬は、活動によって得られた成果に応じてお支払いする成果報酬制です。",
+    "成果によって報酬額は異なり、固定給や最低報酬の保証はありません。",
+    "具体的な報酬単価や支払条件については、契約前にご案内します。",
+  ].join("\n");
+  const g = checkGates(sns);
+  assert.ok(g.hits.some((h) => h.id === "commission_only") && g.negotiable === false);
+  // 「保証はありません」を、収入の断定と読まない
+  assert.equal(scoreScam(sns).signals.some((s) => s.id === "guaranteed_income"), false);
+  assert.ok(scoreScam("月収50万円を保証します。").signals.some((s) => s.id === "guaranteed_income"));
+  // 成果報酬が上乗せで、固定の報酬もある募集は関門に当たらない
+  assert.equal(checkGates("固定報酬は1記事3,000円です。成果に応じて別途ボーナスがあります。").hits.some((h) => h.id === "commission_only"), false);
+});
+
+// --- 2026-10-19 実データ(クラウドワークスの新着)で出た誤判定 --------------------------------
+
+test("「来社は一切なく、完全在宅」は現地作業に数えない。ただし「ではなく」の対比や、本当の来社は残す", async () => {
+  const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  const { stripNegatedClauses } = await import("../../dist-test/agent/negation.js");
+  assert.ok(!judgeDeliverability("作業はマネーフォワード上で行います。・来社は一切なく、完全在宅でのお仕事です。").matched.includes("onsite"));
+  assert.ok(!judgeDeliverability("出社はなく、在宅で完結します。").matched.includes("onsite"));
+  assert.ok(judgeDeliverability("オンラインではなく、来社での打ち合わせが必須です。").matched.includes("onsite"));
+  assert.ok(judgeDeliverability("週1回の来社が必要です。").matched.includes("onsite"));
+  assert.match(stripNegatedClauses("電話ではなく、メールで連絡します。"), /電話/);
+});
+
+test("記事ライターの募集の「・営業リスト作成、CRM」は、記事のテーマ例であって個人情報を集める依頼ではない。リスト作成の募集は従来どおり止める", async () => {
+  const { checkGates, dropTopicBullets } = await import("../../dist-test/agent/gates.js");
+  const writer =
+    "【AI好き歓迎】Claude Code・AIエージェントのX記事ライター募集 仕事の概要 固定報酬制 " +
+    "記事のテーマ例 【マーケティングAX】 ・営業リスト作成、CRM、商談分析 ・営業資料の自動作成 【コンテンツ制作】 ・画像生成、動画生成";
+  assert.ok(!JSON.stringify(checkGates(writer)).includes("個人の連絡先"));
+  assert.ok(!dropTopicBullets(writer).includes("営業リスト"));
+  // ライターの募集でも、箇条書きの外で個人の連絡先の収集を頼んでいれば止める
+  assert.ok(JSON.stringify(checkGates("記事ライター募集。あわせて、経営者のメールアドレスを収集してリストにしてください。")).includes("個人の連絡先"));
+  // ライター以外の募集は、箇条書きでも従来どおり止める
+  assert.ok(JSON.stringify(checkGates("データ入力のお仕事です。\n・営業リスト作成\n・住所の確認")).includes("個人の連絡先"));
+  assert.ok(JSON.stringify(checkGates("営業リスト作成のお仕事です。")).includes("個人の連絡先"));
+});
+
+test("詐欺判定: 「コピペするだけのAI完結作業ではありません」のような、そうではないと言う文は訴求に数えない", async () => {
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const text = "ただ出力されたものをコピペするだけのAI完結作業ではありません。記事の構成と事実確認をお願いします。";
+  assert.ok(!scoreScam(text).signals.some((s) => s.id === "effortless_claim"));
+  assert.ok(scoreScam("スマホだけで簡単に稼げます。コピペするだけ。").signals.some((s) => s.id === "effortless_claim"));
+  assert.ok(scoreScam("1日10分で月10万円。").signals.some((s) => s.id === "effortless_claim"));
+});
+
+test("納期: 「即日スタート」「即日お支払い」は即日納品ではない。納品や提出の話のときだけ即日と読む", async () => {
+  const { readDeadline } = await import("../../dist-test/agent/deadline.js");
+  const now = new Date("2026-10-19T03:00:00+09:00");
+  assert.notEqual(readDeadline("即日スタート可能な方を募集します。納品希望日は11月2日です。", now).days, 0);
+  assert.equal(readDeadline("報酬は即日お支払いします。", now).rushed, false);
+  assert.equal(readDeadline("即日勤務できる方歓迎。", now).days === 0, false);
+  assert.equal(readDeadline("即日納品でお願いします。", now).days, 0);
+  assert.equal(readDeadline("本日中にご対応いただける方。", now).days, 0);
+  assert.equal(readDeadline("至急対応お願いします。", now).rushed, true);
+});
+
+test("納期: 募集ページの「掲載日」「応募期限」は納期ではない。当日に掲載された募集を「即日納品」と読まない", async () => {
+  const { readDeadline, stripPostingDates } = await import("../../dist-test/agent/deadline.js");
+  const now = new Date("2026-10-19T12:00:00+09:00");
+  // 実データ: 納品希望日が「-」の募集が、掲載日=今日を納期と読まれて「即日納品で1.3時間は成立しません」で見送りになっていた
+  const today = "仕事の概要 固定報酬制 納品希望日 - 掲載日 2026年10月19日 応募期限 2026年10月31日 応募状況 応募した人 15 人";
+  const d = readDeadline(today, now);
+  assert.equal(d.days, null);
+  assert.equal(d.rushed, false);
+  // 納品希望日が書いてあれば、それを読む
+  assert.equal(readDeadline("納品希望日 2026年11月02日 掲載日 2026年10月19日 応募期限 2026年10月31日", now).days, 14);
+  // 本文の「納期は10月25日」も読む
+  assert.equal(readDeadline("掲載日 2026年10月19日\n納期は10月25日までにお願いします。", now).days, 6);
+  // 取り除くのは、ラベルつきの日付だけ
+  assert.equal(stripPostingDates("掲載日 2026年10月19日 応募期限 10月31日 納期 11月5日").includes("11月5日"), true);
+  assert.equal(stripPostingDates("掲載日 2026年10月19日 応募期限 10月31日").includes("10月"), false);
+});
+
+// --- 2026-10-19 PCの巡回で見つかった判定の誤り(4件) --------------------------------------------
+
+test("誤判定の修正: 営業リスト作成でも、Googleマップ等の事業者情報は個人情報集めにしない", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const has = (t) => checkGates(t).hits.some((h) => h.id === "personal_data");
+  assert.ok(!has("Googleマップの飲食店情報を元に、営業リストの作成をお願いします。店舗名・住所・電話番号を入力します。"), "店舗・企業の情報は個人情報集めではない");
+  assert.ok(!has("法人情報をまとめた営業リストを作成してください。"));
+  assert.ok(has("名簿を収集してください。"), "事業者の文脈が無い名簿集めは今まで通り拾う");
+  assert.ok(has("個人の氏名と電話番号を集めてリストにしてください。"), "個人の氏名・連絡先は今まで通り拾う");
+});
+
+test("誤判定の修正: 「出社して働いている」は応募者の条件ではない／応募方法のアンケートは回答する仕事ではない", async () => {
+  const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  const onsite = (t) => judgeDeliverability(t).matched.includes("onsite");
+  assert.ok(!onsite("私たちは出社して働いているメンバーが中心です。ご自宅からの作業で大丈夫です。"), "依頼者側の様子は条件に数えない");
+  assert.ok(onsite("週3日は出社が必要です。"), "応募者への出社の条件は今まで通り拾う");
+  assert.ok(!onsite("ライター・編集・接客などの経験は問いません。"), "並べた例の中の接客は現地作業にしない");
+  assert.ok(onsite("店舗での接客をお願いします。"));
+  const survey = (t) => judgeDeliverability(t).matched.includes("personal_identity");
+  assert.ok(!survey("応募方法: 以下のアンケートに回答の上、ご応募ください。\n記事を書いてください。"), "応募方法のアンケートは仕事ではない");
+});
+
+test("誤判定の修正: 「AIを使ったらブロック」も、AIの禁止として読む", async () => {
+  const { readAiRestriction } = await import("../../dist-test/agent/ai-restriction.js");
+  const r = readAiRestriction("生成AIを使用したと思われる方は、ブロックします。");
+  assert.equal(r.restricted, true);
+  assert.equal(readAiRestriction("AIを使用した場合は契約解除となります。").restricted, true);
+  assert.equal(readAiRestriction("生成AIを使用したデータの納品は非承認とします。").restricted, true);
+  assert.equal(readAiRestriction("AIを活用して効率よく進めてください。").restricted, false);
+});

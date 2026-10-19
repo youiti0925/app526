@@ -85,8 +85,10 @@ export function needsEscalation(triage: Record<string, unknown>): EscalationReas
 }
 
 /** 上位モデルに回す案件を集める。 */
-export function collectEscalations(limit = 10): EscalationItem[] {
-  return readLeads("triaged", 100)
+export function collectEscalations(limit = 10, ids?: string[]): EscalationItem[] {
+  // id が指定されたときは、その案件を直接引く。上位100件(点数順)に入っていない案件が、判定に回らず取り残されないように
+  const leads = ids ? [...readLeadsByIds(ids).values()].filter((l) => l.status === "triaged") : readLeads("triaged", 100);
+  return leads
     .filter((lead) => {
       const t = lead.triage as Record<string, unknown>;
       return Array.isArray(t.escalationReasons) && (t.escalationReasons as unknown[]).length > 0;
@@ -255,6 +257,29 @@ export function applyVerdicts(verdicts: EscalationVerdict[], runId = "escalation
     const low = Number(v.estimatedHours?.low);
     const high = Number(v.estimatedHours?.high);
     if (!Number.isFinite(low) || !Number.isFinite(high) || high <= 0) {
+      // 見送りは作業時間が無くても決められる（資格の壁・詐欺・経験の要る仕事など）。
+      // 時間が数値でないことを理由に捨てると、見送りの結論だけが落ちて、判定が宙に浮く
+      if (v.verdict === "reject") {
+        const rejectReason = (v.reason ?? "").trim() || "上位の判定で見送り";
+        updateLead(lead.id, {
+          status: "rejected",
+          verdict: "reject",
+          triage: {
+            ...(lead.triage as Record<string, unknown>),
+            escalationReasons: [],
+            escalatedAt: new Date().toISOString(),
+            estimatedBy: "escalated",
+            risks: v.risks ?? [],
+            reason: rejectReason,
+          },
+        });
+        result.applied++;
+        logEvent(runId, "triage", "decision", `[上位判定] 「${lead.title.slice(0, 40)}」→ reject: ${rejectReason.slice(0, 100)}`, {
+          leadId: lead.id,
+          confidence: v.confidence,
+        });
+        continue;
+      }
       result.skipped.push({ leadId: v.leadId, why: "作業時間が数値になっていません" });
       continue;
     }
@@ -320,7 +345,9 @@ export function applyVerdicts(verdicts: EscalationVerdict[], runId = "escalation
     }
 
     updateLead(lead.id, {
-      status: verdict === "reject" ? "rejected" : "drafted",
+      // 上位の判定が見送りで提案文を付けず、検算で応募できる側に直した案件は、提案文がまだ無い。
+      // 「triaged」に戻して、下書きの工程が提案文を作れるようにする
+      status: verdict === "reject" ? "rejected" : v.proposal?.trim() ? "drafted" : "triaged",
       score,
       verdict,
       budgetJpy: offered,
