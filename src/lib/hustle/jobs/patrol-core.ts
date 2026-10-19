@@ -930,6 +930,9 @@ export function unbackedSkillClaims(proposal: string, background: string | undef
   const found: string[] = [];
   for (const sentence of proposal.normalize("NFKC").split(/(?<=[。！？\n])/)) {
     // 「ライティング経験の有無」のような、募集が尋ねた項目名の繰り返しも、経験があると言っている文ではない
+    // 「③ Webライティングの経験」のような、募集が尋ねた項目の見出し（番号つき・「経験」で終わる行）は、経験があると言っている文ではない
+    // （NFKC で「③」は「3」になっている）
+    if (/^\s*(?:[①-⑳]|[0-9]+(?:[.．)）]|\s))/.test(sentence) && /(?:経験|実績|スキル)\s*[:：]?\s*$/.test(sentence)) continue;
     // 「Canva使用）の募集を拝見し」のように、募集の条件を書き写した文も、経験があると言っている文ではない
     if (/ありません|ございません|なし|ない|未経験|初めて|新しい取り組み|不慣れ|有無|募集(?:を|文を|内容を)?(?:拝見|拝読|読み)/.test(sentence)) continue;
     for (const term of SKILL_TERMS) {
