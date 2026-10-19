@@ -5,6 +5,9 @@ import {
   clientIdFromUrl,
   clientScore,
   formatList,
+  worthMailing,
+  mailSubject,
+  buildMail,
   jobIdFromUrl,
   normalizeDetail,
   normalizeListItem,
@@ -158,4 +161,15 @@ test("募集の数と予算を検索語ごとに集計し、同じ募集は1回�
   assert.deepEqual(rows[0], { keyword: "翻訳", count: 3, perMonth: 13, medianFixed: 20000, fixedCount: 2, unit: 1, hourly: 0 });
   assert.equal(rows[1].count, 1);
   assert.match(formatMarket(rows, 7), /\| 翻訳 \| 3 \| 13 \| 20,000円（2件）/);
+});
+
+test("通知メール: 見送りだけなら送らない／件名で数が分かる／本文は base64 の UTF-8", () => {
+  assert.equal(worthMailing([{ verdict: "見送り" }]), false);
+  const items = [{ verdict: "確認してから応募" }, { verdict: "応募してよい" }, { verdict: "見送り" }];
+  assert.equal(worthMailing(items), true);
+  assert.match(mailSubject(items, new Date("2026-10-19T11:33:00Z")), /^【ランサーズ応募候補】応募してよい1件・確認してから応募1件（10\/19 20:33）$/);
+  const m = buildMail({ from: "a@example.com", to: "a@example.com", subject: "件名", body: "本文\n2行目" });
+  assert.match(m, /Subject: =\?UTF-8\?B\?/);
+  const body = m.split("\r\n\r\n")[1].replace(/\r\n/g, "");
+  assert.equal(Buffer.from(body, "base64").toString("utf8"), "本文\r\n2行目");
 });

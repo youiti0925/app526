@@ -319,3 +319,33 @@ export function formatMarket(rows, days) {
   lines.push("", "※ 1回の巡回で見るのは各検索語の新着1ページ（約30件）なので、実際の募集数はこれより多い。");
   return lines.join("\n") + "\n";
 }
+
+/** メールで知らせる価値があるか（見送り以外が1件でもあるか）。 */
+export function worthMailing(items) {
+  return items.some((j) => j.verdict && j.verdict !== "見送り");
+}
+
+/** 通知メールの件名。Gメールで「【ランサーズ応募候補】」と検索すれば拾える。 */
+export function mailSubject(items, when = new Date()) {
+  const count = (v) => items.filter((j) => j.verdict === v).length;
+  const stamp = when.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return `【ランサーズ応募候補】応募してよい${count("応募してよい")}件・確認してから応募${count("確認してから応募")}件（${stamp}）`;
+}
+
+const encodeHeader = (text) => (/^[\x20-\x7e]*$/.test(text) ? text : `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`);
+
+/** プレーンテキストのメール（改行は CRLF、本文は base64）。cw-patrol と同じ形。 */
+export function buildMail({ from, to, subject, body, date = new Date() }) {
+  const lines = Buffer.from(body.replace(/\r?\n/g, "\r\n"), "utf8").toString("base64").match(/.{1,76}/g) ?? [""];
+  return [
+    `From: ${from}`,
+    `To: ${to}`,
+    `Subject: ${encodeHeader(subject)}`,
+    `Date: ${date.toUTCString()}`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    ...lines,
+  ].join("\r\n");
+}

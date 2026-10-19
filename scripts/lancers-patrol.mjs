@@ -5,6 +5,7 @@
  *   node scripts/lancers-patrol.mjs run                 # 巡回して一覧を書く（判定と提案文は job.mjs judge）
  *   node scripts/lancers-patrol.mjs run --show          # 画面を見ながら
  *   node scripts/lancers-patrol.mjs run --no-judge      # 判定せずに集めるだけ
+ *   node scripts/lancers-patrol.mjs run --no-mail       # Gメールに送らない（既定は、見送り以外があれば一覧の全文を自分宛てに送る）
  *   node scripts/lancers-patrol.mjs market [--days 7] [--out フォルダ]  # 仕事の種類ごとの募集数と予算の集計
  *   node scripts/lancers-patrol.mjs run --keywords "エクセル,VBA" --out C:\Users\…\副業\ランサーズ応募候補
  *
@@ -38,7 +39,11 @@ import {
   normalizeListItem,
   onePerClient,
   searchUrl,
+  worthMailing,
+  mailSubject,
+  buildMail,
 } from "./lib/lancers.mjs";
+import { sendMail } from "./lib/smtp.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HOME = process.env.LANCERS_PATROL_HOME || path.join(os.homedir(), ".lancers-patrol");
@@ -46,6 +51,8 @@ const SEEN = path.join(HOME, "seen.json");
 const STATE = path.join(HOME, "state.json");
 const MARKET_LOG = path.join(HOME, "market-log.jsonl");
 const PROFILE = path.join(HOME, "browser-profile");
+// Gメールの設定は、クラウドワークス巡回の setup で入れたものを使う（アプリ パスワードはPCの中だけ）
+const CW_CONFIG = path.join(process.env.CW_PATROL_HOME || path.join(os.homedir(), ".cw-patrol"), "config.json");
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -190,6 +197,21 @@ async function run() {
     fs.writeFileSync(path.join(outDir, "ランサーズ応募候補-最新.md"), md);
     console.log(`開いたページ ${pages} / 新しい募集 ${found.size}件 / 詳細を読んだ ${picked.length}件 / 一覧に載せた ${results.length}件`);
     console.log(`一覧: ${path.join(outDir, "ランサーズ応募候補-最新.md")}`);
+
+    // 見送り以外があれば、一覧の全文（提案文つき）をGメールに送る。送り先は自分だけ
+    const mail = readJson(CW_CONFIG, {})?.mail;
+    if (flag("--no-mail") || !worthMailing(results)) return;
+    if (!mail?.user || !mail?.pass) {
+      log("Gメールが設定されていないので、メールは送りません（node scripts/cw-patrol.mjs setup で設定）");
+      return;
+    }
+    const message = buildMail({ from: mail.user, to: mail.to || mail.user, subject: mailSubject(results), body: md });
+    try {
+      await sendMail({ user: mail.user, pass: mail.pass, to: mail.to || mail.user, message });
+      log(`Gメールに送りました（${mail.to || mail.user}）`);
+    } catch (e) {
+      log(`Gメールに送れませんでした（一覧のファイルはできています）: ${e.message}`);
+    }
   } catch (e) {
     await ctx.close().catch(() => {});
     throw e;
@@ -218,6 +240,6 @@ if (cmd === "market") {
     process.exit(1);
   });
 } else {
-  console.log("使い方: node scripts/lancers-patrol.mjs run [--show] [--no-judge] [--keywords エクセル,VBA] [--out フォルダ] | market [--days 7] [--out フォルダ]");
+  console.log("使い方: node scripts/lancers-patrol.mjs run [--show] [--no-judge] [--no-mail] [--keywords エクセル,VBA] [--out フォルダ] | market [--days 7] [--out フォルダ]");
   process.exit(cmd ? 2 : 0);
 }
