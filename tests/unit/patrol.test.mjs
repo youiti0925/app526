@@ -533,6 +533,11 @@ test("提案文が経歴に無い道具の経験を言い切っていたら注�
     background: bg,
   });
   assert.ok(it.checks.some((c) => c.includes("経歴に書かれていない") && c.includes("Googleスプレッドシート")));
+
+  // 「AIを使って習得し」は注意。経歴にある「AIを使った、〜アプリの作成」は事実なので注意しない
+  const mk = (proposal) => buildQueueItem({ link: { key: "job:2", url: "u" }, applyUrl: "a", title: "t", pageText: page, judged: { verdict: "応募してよい", detail: `理由: x\n\n--- 提案文 ---\n${proposal}\n\n使ったAI: x` } });
+  assert.ok(mk("公式のヘルプとAIを使って習得し、お見せします。").checks.some((c) => c.includes("AIを使って作業・習得")));
+  assert.ok(!mk("・AIを使った、業務を支えるアプリ（RPAアプリ）の作成").checks.some((c) => c.includes("AIを使って作業・習得")));
 });
 
 test("パンくず（…の仕事・求人）は判定の本文に入れない。仕事の種類は題名に当たったものを先にする", () => {

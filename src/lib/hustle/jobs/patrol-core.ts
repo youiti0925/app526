@@ -779,6 +779,10 @@ export function buildQueueItem(args: {
   }
 
   if (!proposal) checks.push("提案文が出ていません。書いてから送ってください");
+  // ゆうさんの方針: 提案文に「AIを使って作業・習得する」とは書かない（経歴にある「AIを使った〜の作成」は事実なのでよい）
+  if (/AI(を|も|で)(使って|活用して|利用して|使い)/.test(proposal.normalize("NFKC"))) {
+    checks.push("提案文に、AIを使って作業・習得すると読める文があります。AIの使用は書かない方針なので、消してから送る");
+  }
   const unbacked = unbackedSkillClaims(proposal, args.background);
   if (unbacked.length) checks.push(`提案文に、経歴に書かれていない経験があるように読める箇所があります（${unbacked.join("・")}）。使ったことがなければ消してから送る`);
   const left = proposal.match(/【要確認[^】]*】/g);
