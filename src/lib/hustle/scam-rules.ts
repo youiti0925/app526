@@ -27,8 +27,28 @@ export interface ScamRule {
    * patterns が空のルールでは、これ単体が発火条件になる。
    */
   requireAll?: RegExp[];
+  /**
+   * これに当たる文は、このルールを見るときだけ本文から外す（URL を含む文は外さない）。
+   * 実データで、依頼者が作ってほしいホームページの仕様
+   * 「LINEは、既存の友だち追加ページへリンクしてください」が、
+   * ワーカーを LINE に誘う文と読まれて詐欺スコア70になった。
+   */
+  ignoreSentences?: RegExp;
   /** 発火時に追加で出す具体的な行動指示 */
   action?: string;
+}
+
+/** 作るもの（サイト・画面）の仕様を述べている文 */
+const SITE_SPEC_SENTENCE =
+  /[へに]リンク(して|を(貼|張|設置|付け|つけ))|リンク(を)?(設置|掲載|配置)|ボタン(を)?(設置|配置|追加|付け|つけ|作成)|バナー(を)?(設置|配置|作成)|(設置|掲載|配置|埋め込み?)(して|する|を?お願い)|導線/;
+const HAS_URL = /https?:\/\/|lin\.ee|line\.me|t\.me\/|discord|chatwork/i;
+
+/** 指定の条件に当たる文（行）を本文から外す。URL を含む文は外さない。 */
+function dropSentences(text: string, re: RegExp): string {
+  return text
+    .split(/(?<=[。！？!?\n])/)
+    .filter((s) => HAS_URL.test(s) || !re.test(s))
+    .join("");
 }
 
 export const SCAM_RULES: ScamRule[] = [
@@ -386,6 +406,7 @@ export const SCAM_RULES: ScamRule[] = [
       /t\.me\//i,
       /(お繋がり|おつながり|お友だち追加|友だち追加|友達追加)[^。\n]{0,10}(ください|お願い|下さい)/,
     ],
+    ignoreSentences: SITE_SPEC_SENTENCE,
   },
   {
     id: "line_only_contact",
@@ -398,6 +419,7 @@ export const SCAM_RULES: ScamRule[] = [
       /(オープンチャット|オプチャ)/,
       /(DM|ディーエム)[^。\n]{0,10}(ください|お願い|下さい)/i,
     ],
+    ignoreSentences: SITE_SPEC_SENTENCE,
   },
   {
     id: "no_legal_disclosure",
@@ -542,6 +564,7 @@ export function scoreScam(text: string): ScamScoreResult {
 
   for (const rule of SCAM_RULES) {
     let match: RegExpMatchArray | null = null;
+    const hay = rule.ignoreSentences ? dropSentences(normalized, rule.ignoreSentences) : normalized;
 
     // requireAll は「patterns に加えて全部当たること」を求める追加条件。
     // ここを OR にしていたせいで、patterns が1つも当たっていない普通のIT案件が
@@ -550,17 +573,17 @@ export function scoreScam(text: string): ScamScoreResult {
       !rule.requireAll ||
       rule.requireAll.length === 0 ||
       rule.requireAll.every((pattern) => {
-        const m = normalized.match(pattern);
+        const m = hay.match(pattern);
         return m !== null && m.index !== undefined;
       });
 
     if (gateOk) {
       if (rule.patterns.length === 0) {
         // patterns を持たないルールは、requireAll 自体が発火条件
-        match = rule.requireAll ? normalized.match(rule.requireAll[0]) : null;
+        match = rule.requireAll ? hay.match(rule.requireAll[0]) : null;
       } else {
         for (const pattern of rule.patterns) {
-          const found = normalized.match(pattern);
+          const found = hay.match(pattern);
           if (found && found.index !== undefined) {
             match = found; // 同一ルールは1回だけ数える
             break;
@@ -575,7 +598,7 @@ export function scoreScam(text: string): ScamScoreResult {
         label: rule.label,
         weight: rule.weight,
         why: rule.action ? `${rule.why}\n→ ${rule.action}` : rule.why,
-        excerpt: excerptAround(normalized, match.index, match[0].length),
+        excerpt: excerptAround(hay, match.index, match[0].length),
       });
     }
   }

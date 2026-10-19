@@ -21,6 +21,8 @@
  *   賠償上限は直近12か月の支払額（無料枠なら0円）。
  */
 
+import { stripNegatedClauses } from "./negation";
+
 export type GateId =
   | "confidentiality"
   | "warranty"
@@ -47,6 +49,12 @@ interface GateRule {
   id: GateId;
   label: string;
   patterns: RegExp[];
+  /**
+   * 「〜は不要」「〜は一切ありません」と無いと言い切っている部分を除いてから見る。
+   * 機密の語は「社外秘の情報や社名のご開示は不要」のように安心させる文にも出る。
+   * 「クレジット表記なし」のように、無いこと自体が条件になるルールには付けない。
+   */
+  skipNegated?: boolean;
   why: string;
   negotiable: boolean;
   ask: string;
@@ -60,6 +68,7 @@ const GATE_RULES: GateRule[] = [
   {
     id: "confidentiality",
     label: "機密・NDA",
+    skipNegated: true,
     patterns: [
       /(NDA|秘密保持契約|機密保持契約)/i,
       /(社外秘|機密情報|非公開|未公開).{0,12}(資料|情報|データ|設定|企画)/,
@@ -185,9 +194,12 @@ export function checkGates(text: string): GateResult {
   const t = text.normalize("NFKC").slice(0, 8000);
   const hits: GateHit[] = [];
 
+  const asked = stripNegatedClauses(t);
+
   for (const rule of GATE_RULES) {
+    const body = rule.skipNegated ? asked : t;
     for (const p of rule.patterns) {
-      const m = t.match(p);
+      const m = body.match(p);
       if (!m) continue;
       hits.push({
         id: rule.id,

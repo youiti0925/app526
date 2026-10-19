@@ -511,3 +511,51 @@ test("機密・本人性の判定: 定型の表示や「記入しないでくだ
   assert.ok(!JSON.stringify(checkGates("アンケートです。個人情報は記入しないでください。")).includes("機密・NDA"));
   assert.ok(JSON.stringify(checkGates("顧客の個人情報を含む名簿を入力します")).includes("機密・NDA"));
 });
+
+test("無いと言い切っている文は条件に数えない（電話は一切ありません／出社なし／社外秘の開示は不要）", async () => {
+  const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const { stripNegatedClauses } = await import("../../dist-test/agent/negation.js");
+
+  // 実データ: 在宅のデータ整理の募集が、安心させる一文で「現地作業・電話」に落ちていた
+  const home = "完全在宅（出社なし）です。営業活動・電話連絡・ライティング作成・手作業でのデータ打ち込みは一切ありません。AIを使った整理をお願いします。";
+  assert.ok(!judgeDeliverability(home).matched.includes("onsite"), "否定文の電話・出社で現地作業にしない");
+  // 本当に求めている電話は、そのまま拾う
+  assert.ok(judgeDeliverability("お客様への電話対応をお願いします。").matched.includes("onsite"));
+  assert.ok(judgeDeliverability("週1回の出社が必須です。").matched.includes("onsite"));
+  // 否定の言い切りが別の節にあっても、前の節は残す
+  assert.ok(judgeDeliverability("撮影が必要ですが、編集は不要です。").matched.includes("onsite"));
+
+  // 実データ: 「社名のご開示は不要」の注意書きが機密・NDAに当たっていた
+  assert.ok(!JSON.stringify(checkGates("30分のヒアリングです。※社外秘の情報や社名のご開示は不要です。")).includes("機密・NDA"));
+  assert.ok(!JSON.stringify(checkGates("NDAの締結は必要ありません。")).includes("機密・NDA"));
+  assert.ok(JSON.stringify(checkGates("社外秘の資料を扱います。NDAを締結していただきます。")).includes("機密・NDA"));
+  // 無いこと自体が条件になるもの（クレジット表記なし）は消さない
+  assert.ok(JSON.stringify(checkGates("納品物はクレジット表記なしでお願いします。")).includes("クレジット"));
+
+  // 並んだ語は両方消えるが、助詞のある別の節は残る
+  assert.equal(stripNegatedClauses("出社、電話連絡は一切ありません。"), "。");
+  assert.match(stripNegatedClauses("NDAを締結してください、電話は不要です。"), /NDAを締結してください/);
+  assert.doesNotMatch(stripNegatedClauses("NDAを締結してください、電話は不要です。"), /電話/);
+  // 「問題ありませんか？」のような質問や、不要な〜（修飾）は消さない
+  assert.match(stripNegatedClauses("電話でも問題ありませんか？"), /電話/);
+  assert.match(stripNegatedClauses("不要な電話は断ってください。"), /電話/);
+});
+
+test("語の一部には当たらない（予算アロケーションの「ロケ」、ユーザー名「SAI12」の「SAI」）", async () => {
+  const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  assert.ok(!judgeDeliverability("広告の予算アロケーションの提案資料を作ります。").matched.includes("onsite"));
+  assert.ok(!judgeDeliverability("応募者一覧\nSAI12 さん 2026/10/19").matched.includes("art"));
+  assert.ok(judgeDeliverability("ロケ撮影の補助をお願いします。").matched.includes("onsite"));
+  assert.ok(judgeDeliverability("SAIで線画を描ける方").matched.includes("art"));
+});
+
+test("詐欺判定: 作るホームページの仕様（LINEの友だち追加ページへリンク）は、ワーカーをLINEに誘う文と読まない", async () => {
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const spec = "HPの全体リニューアルをお願いします。\n・LINEは、既存の友だち追加ページへリンクしてください。\n・Instagramは、保存済みのフィードを表示してください。";
+  const ids = scoreScam(spec).signals.map((s) => s.id);
+  assert.ok(!ids.includes("offplatform_link") && !ids.includes("line_only_contact"));
+  // ワーカーへの誘導や、リンクそのものは従来どおり拾う
+  assert.ok(scoreScam("詳細はLINEでお話しします。友だち追加をお願いします。").signals.some((s) => s.id === "offplatform_link"));
+  assert.ok(scoreScam("LINEの友だち追加ページへリンクして連絡ください https://lin.ee/abc").signals.some((s) => s.id === "offplatform_link"));
+});
