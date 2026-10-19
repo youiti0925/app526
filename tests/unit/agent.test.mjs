@@ -782,6 +782,19 @@ test("誤判定の修正: 「あれば」の任意のポートフォリオの依
   assert.ok(identity("応募時にポートフォリオをご提示ください。"), "応募の条件として出させるものは今まで通り拾う");
 });
 
+test("誤判定の修正: 題名の「漫画動画シナリオ」と分類タグの「記事作成」は、漫画の制作にしない／「NG：AIに…考えさせて」はAIの禁止として読む", async () => {
+  const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  const { readAiRestriction } = await import("../../dist-test/agent/ai-restriction.js");
+  const art = (t) => judgeDeliverability(t).matched.includes("art");
+  assert.ok(!art("【1本8,000円】YouTube漫画動画シナリオ [ 記事作成・ブログ記事・体験談 の仕事 / ゲーム ]\nシナリオ執筆をお願いします。"));
+  assert.ok(art("漫画の作画をお願いします。"), "漫画の絵の仕事は今まで通り拾う");
+  assert.ok(art("イラスト制作をお願いします。"));
+  assert.equal(readAiRestriction("■ AIの使い方\n・OK：リサーチの補助\n・NG：AIに設定・プロット・本文を考えさせて整えて納品").restricted, true);
+  assert.equal(readAiRestriction("「AIに書かせて整えたい」という方には務まりません。").restricted, true);
+  assert.equal(readAiRestriction("専用ツールでコピペ・AI判定を行っております。").restricted, true);
+  assert.equal(readAiRestriction("AI判定システムの開発をお願いします。").restricted, false, "AIを作る仕事は禁止ではない");
+});
+
 test("誤判定の修正: ランサーズの「提案数 88 件」は記事の本数にしない（手作業352時間と見積もっていた）", async () => {
   const { estimateByWorkType, stripNonQuantities } = await import("../../dist-test/agent/worktypes.js");
   assert.doesNotMatch(stripNonQuantities("提案数 88 件 当選人数 0 件 (募集人数2人)"), /88|募集人数/);
