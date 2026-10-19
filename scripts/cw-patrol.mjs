@@ -9,6 +9,7 @@
  *   node scripts/cw-patrol.mjs queue-add <募集URL> --proposal 提案文.txt   # 人が確かめた提案文つきで一覧に足す
  *   node scripts/cw-patrol.mjs queue-redraft [番号…] [--force]       # 提案文が空の件の提案文を作り直す（--force: 入っている件も）
  *   node scripts/cw-patrol.mjs queue-set <番号> --proposal 提案文.txt  # その件の提案文をファイルの文に差し替える
+ *   node scripts/cw-patrol.mjs page <募集IDまたはURL>…               # 募集の本文（判定に渡す部分）を表示する
  *   node scripts/cw-patrol.mjs queue-mark approved|sent|skipped 3 5   # 一覧の番号に印を付ける（承認 = approved）
  *   node scripts/cw-patrol.mjs fill --approved             # 承認した件だけ、入力済みの応募画面を開く（最大5件。「応募する」は自分で押す）
  *   node scripts/cw-patrol.mjs survey [--max 30] [--fresh]   # 登録した検索画面の募集の報酬だけを集める（判定・応募はしない）
@@ -972,6 +973,38 @@ function queueSet() {
   console.log(`【${no}】の提案文を差し替えました（${done.proposal.length}字）。提案文に関する注意: ${done.checks.filter((c) => c.startsWith("提案文")).join(" / ") || "なし"}`);
 }
 
+/**
+ * 募集ページを読んで、判定に渡す本文（メニュー・依頼者欄を除いたもの）をそのまま表示する。読むだけ・ゆっくり。
+ *   page <募集IDまたはURL>… [--max 4000]
+ * 提案文を人（または別の会話）が書くときに、募集の中身を確かめる用。
+ */
+async function pageShow() {
+  const ids = argv.slice(1).filter((a) => !a.startsWith("--") && !/^[0-9]{1,5}$/.test(a)).map((a) => jobIdFromUrl(a)).filter(Boolean);
+  if (!ids.length) die("使い方: node scripts/cw-patrol.mjs page <募集IDまたはURL>… [--max 4000]");
+  const max = Number(optValue("max")) || 4000;
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  ensureBuilt();
+  const { core } = loadLib();
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  try {
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    try {
+      for (const id of ids) {
+        const p = await readPage(page, jobUrl(id));
+        if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
+        const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+        console.log(`\n===== ${id} ${title}\n${jobUrl(id)}\n${core.jobBodyForJudging(p.text, title).slice(0, max)}`);
+        await politeWait();
+      }
+    } finally {
+      await ctx.close();
+    }
+  } finally {
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
 /** 記録した募集の予算をまとめて表示する */
 function budgets() {
   ensureBuilt();
@@ -986,9 +1019,9 @@ function budgets() {
   console.log(loadLib().core.summarizeBudgets(records));
 }
 
-const commands = { setup, run, fill, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, schedule: () => registerSchedule(), "test-mail": () => testMail() };
+const commands = { setup, run, fill, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, page: pageShow, schedule: () => registerSchedule(), "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | page <募集ID>… | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();
