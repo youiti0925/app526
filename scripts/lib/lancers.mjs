@@ -54,13 +54,15 @@ export function normalizeListItem(raw) {
   const { orders, rating } = parseSubnote(raw.subnote);
   return {
     id,
-    title: `${raw.title ?? ""}`.trim(),
+    title: `${raw.title ?? ""}`.replace(/\s+/g, " ").trim(),
     price: `${raw.price ?? ""}`.replace(/\s+/g, " ").trim(),
     remaining: `${raw.remaining ?? ""}`.replace(/\s+/g, " ").trim(),
-    proposals: num(raw.proposals),
+    // プロジェクトの欄は「当選者数/募集人数」なので、提案数と書いてあるときだけ読む
+    proposals: /提案数/.test(raw.proposals ?? "") ? num(raw.proposals) : null,
     orders,
     rating,
     verified: !!raw.verified,
+    closed: !!raw.closed || isClosedText(raw.remaining),
   };
 }
 
@@ -89,7 +91,7 @@ export function normalizeDetail(raw) {
   const checks = Object.fromEntries((raw.checks ?? []).map((c) => [c.label.trim(), !!c.done]));
   const awarded = num(raw.awarded);
   const posted = num(raw.posted);
-  const budget = `${raw.budget ?? ""}`.replace(/\s+/g, " ").trim();
+  const budget = `${raw.budget ?? ""}`.replace(/\s+/g, " ").replace(/ 円/g, "円").trim();
   return {
     budget: /^[\d,]+$/.test(budget) ? `${budget}円` : budget,
     remaining: `${raw.remaining ?? ""}`.replace(/\s+/g, " ").trim(),
@@ -112,11 +114,19 @@ export function normalizeDetail(raw) {
 export function extractListInPage() {
   return [...document.querySelectorAll("div.p-search-job-media")].map((el) => {
     const a = el.querySelector("a.p-search-job-media__title");
+    // 題名の中の札（NEW・当選保証・提案非公開など）は除く
+    const t = a?.cloneNode(true);
+    t?.querySelectorAll("ul, .p-search-job-media__tags").forEach((n) => n.remove());
     return {
       href: a?.href ?? "",
-      title: a?.textContent ?? "",
+      title: t?.textContent ?? "",
       price: el.querySelector(".p-search-job-media__price")?.textContent ?? "",
-      remaining: el.querySelector(".p-search-job-media__time-remaining")?.textContent ?? "",
+      remaining:
+        el.querySelector(".p-search-job-media__time-remaining")?.textContent ||
+        el.querySelector(".p-search-job-media__time-text")?.textContent ||
+        "",
+      // 新着順でも終わった募集が混じる（「募集終了」は .p-search-job-media__time--end）
+      closed: !!el.querySelector(".p-search-job-media__time--end"),
       proposals: el.querySelector(".p-search-job-media__proposals")?.textContent ?? "",
       subnote: [...el.querySelectorAll(".c-avatar__subnote")].map((n) => n.textContent).join(" "),
       verified: !!el.querySelector("i.p-search-job-media__avatar-badge.is-verified"),
@@ -138,12 +148,13 @@ export function extractDetailInPage() {
     }
   }
   return {
-    budget: q(".tableSummary__col--compensation .price-number"),
-    remaining: q(".tableSummary__col--time"),
+    // 「~ 5,000 円」「50,000 円 ~ 100,000 円」を丸ごと（.price-number だけだと最初の数字か「~」しか取れない）
+    budget: q(".tableSummary__col--compensation .c-text") || q(".tableSummary__col--compensation .price-block"),
+    remaining: q(".tableSummary__col--time .c-heading") || q(".tableSummary__col--time"),
     worksNum: q("[class*='tableSummary__col--worksNum']"),
     schedule: [...document.querySelectorAll(".p-work-detail-schedule__item")].map((it) => ({
       title: it.querySelector(".p-work-detail-schedule__item__title")?.textContent ?? "",
-      text: it.querySelector(".p-work-detail-schedule__item__text")?.textContent ?? "",
+      text: it.querySelector(".p-work-detail-schedule__text")?.textContent ?? "",
     })),
     tags: [...document.querySelectorAll("li.c-tag")].map((t) => t.textContent ?? ""),
     good: box?.querySelector(".p-work-detail-client-box-feedback-info__number-good")?.textContent ?? "",

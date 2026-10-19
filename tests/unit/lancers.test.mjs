@@ -59,3 +59,23 @@ test("一覧は「応募してよい」が先、同じ判定なら依頼者の�
   assert.match(md, /応募はしていません/);
   assert.match(md, /work\/detail\/3\?purpose=lancer/);
 });
+
+test("一覧: 題名の空白をまとめ、終わった募集と「当選者数」を提案数と取り違えない", () => {
+  const it = normalizeListItem({
+    href: "https://www.lancers.jp/work/detail/5",
+    title: "\n   【急募】 エクセル\n  で見積書  ",
+    remaining: "募集終了",
+    proposals: "当選者数 0 人 / 募集人数 1 人",
+    closed: true,
+  });
+  assert.equal(it.title, "【急募】 エクセル で見積書");
+  assert.equal(it.closed, true);
+  assert.equal(it.proposals, null);
+  assert.equal(normalizeListItem({ href: "/work/detail/6", proposals: "提案数 45 件" }).proposals, 45);
+  assert.equal(normalizeListItem({ href: "/work/detail/7", remaining: "あと3日" }).closed, false);
+});
+
+test("詳細: 予算は幅のまま「円」をつめて読む", () => {
+  assert.equal(normalizeDetail({ budget: " 50,000 円 ~ 100,000 円 " }).budget, "50,000円 ~ 100,000円");
+  assert.equal(normalizeDetail({ budget: "~ 5,000 円" }).budget, "~ 5,000円");
+});

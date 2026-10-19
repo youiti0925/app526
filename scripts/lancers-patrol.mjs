@@ -124,7 +124,7 @@ async function run() {
       }
       log(`「${w}」 ${items.length}件`);
       for (const it of items) {
-        if (seen.has(it.id) || found.has(it.id) || /募集終了/.test(it.remaining)) continue;
+        if (seen.has(it.id) || found.has(it.id) || it.closed) continue;
         found.set(it.id, { ...it, keyword: w, score: clientScore(it) });
       }
     }
