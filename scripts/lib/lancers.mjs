@@ -1,0 +1,195 @@
+/**
+ * ランサーズ巡回（scripts/lancers-patrol.mjs）の、通信しない部分。
+ *
+ * 画面の形は 2026-10-19 にPCでログインなしで見て確かめたもの:
+ *   一覧  https://www.lancers.jp/work/search?keyword=…&sort=started（新着順。2ページ目以降は &page=N）
+ *         1件 = div.p-search-job-media。題名 a.p-search-job-media__title、報酬 .p-search-job-media__price、
+ *         残り .p-search-job-media__time-remaining、提案数 .p-search-job-media__proposals、
+ *         依頼者 .c-avatar__subnote（「発注 N」「評価 4.9」）、本人確認 i.p-search-job-media__avatar-badge.is-verified
+ *         .p-search-job__latest-* は検索語と無関係の新着枠、tech-agent.lancers.jp は広告なので除く
+ *   詳細  /work/detail/<id>?purpose=lancer（ログインなしで依頼者の欄まで見える）
+ *         依頼者 div.p-work-detail-client-box: 確認済みの項目、評価の良い/悪い数、発注率（発注数/募集数）
+ */
+
+export const BASE = "https://www.lancers.jp";
+export const DEFAULT_KEYWORDS = ["エクセル", "Excel", "VBA", "マクロ", "スプレッドシート", "品質管理", "測定", "検査"];
+export const MAX_PAGES = 20;
+export const MAX_DETAILS = 8;
+
+export const searchUrl = (keyword, page = 1) =>
+  `${BASE}/work/search?keyword=${encodeURIComponent(keyword)}&sort=started${page > 1 ? `&page=${page}` : ""}`;
+
+export function jobIdFromUrl(url) {
+  try {
+    const u = new URL(url, BASE);
+    if (u.hostname !== "www.lancers.jp") return null;
+    return u.pathname.match(/^\/work\/detail\/(\d+)\/?$/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export const detailUrl = (id) => `${BASE}/work/detail/${id}?purpose=lancer`;
+export const publicUrl = (id) => `${BASE}/work/detail/${id}`;
+
+const num = (s) => {
+  const m = `${s ?? ""}`.replace(/,/g, "").match(/\d+(?:\.\d+)?/);
+  return m ? Number(m[0]) : null;
+};
+
+/** 一覧の依頼者欄（「発注 12」「評価 4.9」など）から、発注数と評価を読む。 */
+export function parseSubnote(text) {
+  const t = `${text ?? ""}`.replace(/\s+/g, " ");
+  return {
+    orders: num(t.match(/発注\s*([\d,]+)/)?.[1]),
+    rating: num(t.match(/評価\s*([\d.]+)/)?.[1]),
+  };
+}
+
+/** 一覧から集めた1件を整える。広告・ほかのサイト・検索語と無関係の新着枠は null。 */
+export function normalizeListItem(raw) {
+  if (raw.inLatest) return null;
+  const id = jobIdFromUrl(raw.href ?? "");
+  if (!id) return null;
+  const { orders, rating } = parseSubnote(raw.subnote);
+  return {
+    id,
+    title: `${raw.title ?? ""}`.trim(),
+    price: `${raw.price ?? ""}`.replace(/\s+/g, " ").trim(),
+    remaining: `${raw.remaining ?? ""}`.replace(/\s+/g, " ").trim(),
+    proposals: num(raw.proposals),
+    orders,
+    rating,
+    verified: !!raw.verified,
+  };
+}
+
+export const isClosedText = (s) => /募集終了|終了しました|キャンセル/.test(`${s ?? ""}`);
+
+/**
+ * 依頼者の点数。何度も発注している（リピートの多い）依頼者を上にする。
+ * 発注数を一番重く、次に評価の良さ・発注率・本人確認。提案が多すぎる募集は少し下げる。
+ */
+export function clientScore(j) {
+  const orders = j.awarded ?? j.orders ?? 0;
+  let s = Math.log2(1 + orders) * 10;
+  if (j.good != null || j.bad != null) {
+    const g = j.good ?? 0;
+    const b = j.bad ?? 0;
+    if (g + b > 0) s += (g / (g + b)) * 10 - Math.min(b, 5) * 2;
+  } else if (j.rating != null) s += (j.rating / 5) * 10;
+  if (j.awardRate != null) s += j.awardRate / 10;
+  if (j.verified) s += 5;
+  if (j.proposals != null && j.proposals > 30) s -= 5;
+  return Math.round(s * 10) / 10;
+}
+
+/** 詳細ページから集めた生の値を整える。 */
+export function normalizeDetail(raw) {
+  const checks = Object.fromEntries((raw.checks ?? []).map((c) => [c.label.trim(), !!c.done]));
+  const awarded = num(raw.awarded);
+  const posted = num(raw.posted);
+  const budget = `${raw.budget ?? ""}`.replace(/\s+/g, " ").trim();
+  return {
+    budget: /^[\d,]+$/.test(budget) ? `${budget}円` : budget,
+    remaining: `${raw.remaining ?? ""}`.replace(/\s+/g, " ").trim(),
+    proposals: num(raw.worksNum),
+    schedule: (raw.schedule ?? []).map((s) => `${s.title}${s.text}`.replace(/\s+/g, " ").trim()).filter(Boolean),
+    tags: (raw.tags ?? []).map((t) => t.trim()).filter(Boolean),
+    good: num(raw.good),
+    bad: num(raw.bad),
+    awardRate: num(raw.percent),
+    awarded,
+    posted,
+    verified: checks["本人確認"] ?? null,
+    checks,
+    closed: isClosedText(raw.remaining) || (raw.tags ?? []).some((t) => /^(終了|キャンセル)$/.test(t.trim())) || !!raw.completedNote,
+    text: `${raw.text ?? ""}`,
+  };
+}
+
+/** ブラウザの中で動かす: 一覧ページの募集を集める（引数なし・外の変数を使わない）。 */
+export function extractListInPage() {
+  return [...document.querySelectorAll("div.p-search-job-media")].map((el) => {
+    const a = el.querySelector("a.p-search-job-media__title");
+    return {
+      href: a?.href ?? "",
+      title: a?.textContent ?? "",
+      price: el.querySelector(".p-search-job-media__price")?.textContent ?? "",
+      remaining: el.querySelector(".p-search-job-media__time-remaining")?.textContent ?? "",
+      proposals: el.querySelector(".p-search-job-media__proposals")?.textContent ?? "",
+      subnote: [...el.querySelectorAll(".c-avatar__subnote")].map((n) => n.textContent).join(" "),
+      verified: !!el.querySelector("i.p-search-job-media__avatar-badge.is-verified"),
+      inLatest: !!el.closest("[class*='p-search-job__latest']"),
+    };
+  });
+}
+
+/** ブラウザの中で動かす: 詳細ページ（?purpose=lancer）の値を集める。 */
+export function extractDetailInPage() {
+  const q = (s) => document.querySelector(s)?.textContent ?? "";
+  const box = document.querySelector("div.p-work-detail-client-box");
+  const checks = [];
+  if (box) {
+    for (const dl of box.querySelectorAll("dl.p-work-detail-client-box-work-status__content-list")) {
+      const dts = dl.querySelectorAll("dt");
+      const dds = dl.querySelectorAll("dd");
+      dts.forEach((dt, i) => checks.push({ label: dds[i]?.textContent ?? "", done: !!dt.querySelector("i.c-icon--circle-check") }));
+    }
+  }
+  return {
+    budget: q(".tableSummary__col--compensation .price-number"),
+    remaining: q(".tableSummary__col--time"),
+    worksNum: q("[class*='tableSummary__col--worksNum']"),
+    schedule: [...document.querySelectorAll(".p-work-detail-schedule__item")].map((it) => ({
+      title: it.querySelector(".p-work-detail-schedule__item__title")?.textContent ?? "",
+      text: it.querySelector(".p-work-detail-schedule__item__text")?.textContent ?? "",
+    })),
+    tags: [...document.querySelectorAll("li.c-tag")].map((t) => t.textContent ?? ""),
+    good: box?.querySelector(".p-work-detail-client-box-feedback-info__number-good")?.textContent ?? "",
+    bad: box?.querySelector(".p-work-detail-client-box-feedback-info__number-bad")?.textContent ?? "",
+    percent: box?.querySelector(".p-work-detail-client-box-feedback-info__percent")?.textContent ?? "",
+    awarded: box?.querySelector("span.result_summary_awarded")?.textContent ?? "",
+    posted: box?.querySelector("span.result_summary_posted")?.textContent ?? "",
+    checks,
+    completedNote: !!document.querySelector(".p-work-detail-client__is-completed"),
+    text: document.body?.innerText ?? "",
+  };
+}
+
+const VERDICT_ORDER = { 応募してよい: 0, 確認してから応募: 1, 判定なし: 2, 判定できず: 2, 見送り: 3 };
+
+/** 応募候補の一覧（Markdown）。応募してよいもの → 依頼者の点数の高い順。 */
+export function formatList(items, { when = new Date() } = {}) {
+  const sorted = [...items].sort(
+    (a, b) => (VERDICT_ORDER[a.verdict] ?? 2) - (VERDICT_ORDER[b.verdict] ?? 2) || b.score - a.score
+  );
+  const stamp = when.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
+  const lines = [
+    `# ランサーズ 応募候補（${stamp}）`,
+    "",
+    "見るだけで集めました。応募はしていません。送るときは「応募画面」を開き、提案文を貼って送ってください。",
+    "依頼者の点数は、発注数（リピートの多さ）・評価・発注率・本人確認から出しています。",
+    "",
+    "| # | 判定 | 依頼者の点数 | 題名 | 報酬 | 残り | 提案数 | 依頼者 |",
+    "|---|---|---|---|---|---|---|---|",
+  ];
+  sorted.forEach((j, i) => {
+    const who = [
+      j.awarded != null ? `発注${j.awarded}${j.posted != null ? `/${j.posted}` : ""}` : j.orders != null ? `発注${j.orders}` : "",
+      j.good != null ? `良${j.good}・悪${j.bad ?? 0}` : j.rating != null ? `評価${j.rating}` : "",
+      j.verified ? "本人確認済" : "本人確認なし",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    lines.push(
+      `| ${i + 1} | ${j.verdict} | ${j.score} | [${j.title.replace(/\|/g, "／")}](${publicUrl(j.id)}) | ${j.budget || j.price || "—"} | ${j.remaining || "—"} | ${j.proposals ?? "—"} | ${who} |`
+    );
+  });
+  sorted.forEach((j, i) => {
+    lines.push("", `## ${i + 1}. ${j.title}`, "", `- 判定: ${j.verdict}`, `- 応募画面: ${detailUrl(j.id)}`);
+    if (j.schedule?.length) lines.push(`- 日程: ${j.schedule.join(" ／ ")}`);
+    if (j.detail) lines.push("", "```", j.detail.trim(), "```");
+  });
+  return lines.join("\n") + "\n";
+}

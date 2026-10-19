@@ -42,6 +42,7 @@
 | `node scripts/job.mjs thread --text 画面.txt` | クラウドワークスの「相談から契約まで」の画面を読み、返事待ち・危険信号・提示額のミスを出す | 使わない |
 | `node scripts/job.mjs scan [--max 100]` | 公開されている募集（ココナラ・ままワークス）を取りに行って判定 | 使う |
 | `node scripts/cw-patrol.mjs setup / run / test-mail` | クラウドワークス巡回（PC専用。5章） | judge 経由で使う |
+| `node scripts/lancers-patrol.mjs run [--show] [--out フォルダ]` | ランサーズ巡回（PC専用・ログインなし・見るだけ）。Excel/VBA/品質の新着から、依頼者の発注数・評価・発注率で並べた応募候補と提案文の一覧を書く | judge 経由で使う |
 | そのほか | `approve / reject / redo / resume last`、`lead last applied|won|lost|archived`、`profile --file 経歴.txt`、`status`、`usage` | |
 
 `job.mjs` は起動のたびに `git pull --ff-only` で最新を取り込み（`JOB_AUTO_PULL=0` で止まる）、必要ならコンパイルする。

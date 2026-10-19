@@ -1,0 +1,61 @@
+// ランサーズ巡回（lancers-patrol.mjs）の、通信しない部分。
+import test from "node:test";
+import assert from "node:assert/strict";
+import { clientScore, formatList, jobIdFromUrl, normalizeDetail, normalizeListItem, parseSubnote, searchUrl } from "../../scripts/lib/lancers.mjs";
+
+test("検索URLは新着順、2ページ目から page を付ける", () => {
+  assert.equal(searchUrl("VBA"), "https://www.lancers.jp/work/search?keyword=VBA&sort=started");
+  assert.match(searchUrl("エクセル", 2), /keyword=%E3%82%A8.*&sort=started&page=2$/);
+});
+
+test("募集のURLだけを拾い、広告・ほかのサイトは捨てる", () => {
+  assert.equal(jobIdFromUrl("https://www.lancers.jp/work/detail/5617444"), "5617444");
+  assert.equal(jobIdFromUrl("/work/detail/12?purpose=lancer"), "12");
+  assert.equal(jobIdFromUrl("https://tech-agent.lancers.jp/projects/1"), null);
+  assert.equal(normalizeListItem({ href: "https://tech-agent.lancers.jp/x", title: "広告" }), null);
+  assert.equal(normalizeListItem({ href: "https://www.lancers.jp/work/detail/9", inLatest: true }), null);
+});
+
+test("依頼者の欄から発注数と評価を読む", () => {
+  assert.deepEqual(parseSubnote("発注 1,234  評価 4.9"), { orders: 1234, rating: 4.9 });
+  assert.deepEqual(parseSubnote(""), { orders: null, rating: null });
+});
+
+test("リピートの多い依頼者ほど点数が高い", () => {
+  const many = clientScore({ awarded: 370, good: 200, bad: 1, awardRate: 80, verified: true });
+  const none = clientScore({ awarded: 0, awardRate: 0, verified: false });
+  const fewBad = clientScore({ awarded: 20, good: 5, bad: 5, verified: true });
+  assert.ok(many > fewBad && fewBad > none);
+});
+
+test("詳細: 終了した募集を見分け、確認済みの項目と発注率を読む", () => {
+  const d = normalizeDetail({
+    budget: "20,000",
+    remaining: "5日と17時間",
+    tags: ["募集中"],
+    checks: [{ label: "本人確認", done: true }, { label: "電話確認", done: false }],
+    percent: "80%",
+    awarded: "370",
+    posted: "461",
+  });
+  assert.equal(d.closed, false);
+  assert.equal(d.verified, true);
+  assert.equal(d.checks["電話確認"], false);
+  assert.equal(d.budget, "20,000円");
+  assert.deepEqual([d.awardRate, d.awarded, d.posted], [80, 370, 461]);
+  assert.equal(normalizeDetail({ remaining: "募集終了" }).closed, true);
+  assert.equal(normalizeDetail({ tags: ["終了"] }).closed, true);
+  assert.equal(normalizeDetail({ completedNote: true }).closed, true);
+});
+
+test("一覧は「応募してよい」が先、同じ判定なら依頼者の点数順", () => {
+  const md = formatList([
+    { id: "1", title: "A", verdict: "確認してから応募", score: 90 },
+    { id: "2", title: "B", verdict: "応募してよい", score: 10 },
+    { id: "3", title: "C|x", verdict: "応募してよい", score: 50 },
+  ]);
+  const rows = md.split("\n").filter((l) => /^\| \d/.test(l));
+  assert.deepEqual(rows.map((r) => r.split("|")[4].trim().match(/\[(.+?)\]/)[1]), ["C／x", "B", "A"]);
+  assert.match(md, /応募はしていません/);
+  assert.match(md, /work\/detail\/3\?purpose=lancer/);
+});
