@@ -5,7 +5,6 @@ import { readAgentConfig, readLeads, readLeadsByIds, updateLead, pushInbox, logE
 import type { Lead } from "./types";
 import { reconcileVerdict } from "./reconcile";
 import { trackRecordException } from "./track-record";
-import { readAiBan } from "./gates";
 
 /**
  * ルールでも無料枠のAIでも判定しきれなかった案件を、能力の高いモデルに回す層。
@@ -216,9 +215,7 @@ ${
 - 下位エンジンが読み取った報酬額: ${item.partial.budgetJpy ? `${item.partial.budgetJpy.toLocaleString()}円` : "読み取れず"}
 - 下位エンジンの詐欺スコア: ${item.partial.scamScore}/100（${item.partial.scamVerdict}）${
         item.partial.scamSignals.length ? `\n- 検出済みの危険シグナル: ${item.partial.scamSignals.join(" / ")}` : ""
-      }${item.partial.scopeRisks.length ? `\n- 検出済みの地雷: ${item.partial.scopeRisks.join(" / ")}` : ""}${
-        readAiBan(item.rawText).length ? `\n- AI禁止の文: 「${readAiBan(item.rawText).join("」「")}」` : ""
-      }
+      }${item.partial.scopeRisks.length ? `\n- 検出済みの地雷: ${item.partial.scopeRisks.join(" / ")}` : ""}
 
 ### 募集文
 

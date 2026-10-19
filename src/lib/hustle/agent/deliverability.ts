@@ -21,6 +21,7 @@
  */
 
 import { blockedTools, obligationsFor } from "./licenses";
+import { stripNegatedClauses } from "./negation";
 
 /** どうやって作るか。 */
 export type Route =
@@ -208,7 +209,8 @@ export const CAPABILITIES: CapabilityDef[] = [
       // 単語だけでは判定しない。質問欄のユーザー名で誤判定した実例がある。
       /(イラスト|作画|キャラクターデザイン|似顔絵|漫画|挿絵|線画)[^。\n]{0,20}(制作|作成|描|募集|依頼|お願い|担当)/,
       /(制作|作成|描いて|募集|依頼)[^。\n]{0,20}(イラスト|作画|キャラクターデザイン|似顔絵|挿絵|線画)/,
-      /(CLIP STUDIO|クリスタ|SAI|Procreate)/,
+      // SAI は英数字の続くもの（応募者のユーザー名「SAI12」など）を除く
+      /(CLIP STUDIO|クリスタ|\bSAI\b|Procreate)/,
       /(画風|絵柄|塗り方|レイヤー構成)/,
     ],
   },
@@ -300,7 +302,8 @@ export const CAPABILITIES: CapabilityDef[] = [
       /(訪問(?!看護|介護|診療|リハ|美容|理美容)|来社|出社|現地|実地|立会|常駐)/,
       // 「画像の用意（選定/撮影）」のように選択肢として並んでいるものは、
       // 撮影しなくても成立する。区切り記号の直後は指定とみなさない。
-      /(?<![/／・|｜])(撮影|カメラマン|ロケ)/,
+      // 「予算アロケーション」の「ロケ」に当たらないよう、前後がカタカナのものは除く
+      /(?<![/／・|｜])(撮影|カメラマン|(?<![ァ-ヶー])ロケ(?![ァ-ヶー]))/,
       // 「・」「、」の直後は、ページの職種タグ欄（「営業・接客」のような
       // カテゴリ一覧）であって仕事内容ではない。実データで、ホテル情報の
       // リスト作成（電話番号を集めるだけの在宅作業）が職種タグの
@@ -386,8 +389,10 @@ function isNegated(text: string, pattern: RegExp): boolean {
 /** 案件本文から、納品物と出せるかどうかを判定する。 */
 export function judgeDeliverability(text: string): DeliverabilityResult {
   const t = text.slice(0, 8000);
+  // 「電話連絡は一切ありません」「出社なし」のように無いと言い切っている部分は、条件として数えない
+  const asked = stripNegatedClauses(t);
   const matched = CAPABILITIES.filter((c) =>
-    c.patterns.some((p) => p.test(t) && !isNegated(t, p))
+    c.patterns.some((p) => p.test(asked) && !isNegated(asked, p))
   );
 
   const blockers = matched.filter((c) => c.route === "taste" || c.route === "physical");

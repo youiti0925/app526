@@ -7,6 +7,9 @@
  * 巡回そのもの（ブラウザ操作・メール送信）は scripts/cw-patrol.mjs。
  */
 import type { CwReview } from "./cw-thread";
+import { checkGates } from "../agent/gates";
+import { getCapability, judgeDeliverability } from "../agent/deliverability";
+import { PLATFORM_FEES } from "../payout";
 
 export type LinkKind = "job" | "thread";
 
@@ -92,6 +95,8 @@ export interface ReportInput {
   loginExpired: boolean;
   /** 公開募集（ココナラ・ままワークス）の自動収集の結果。応募候補の件数と、メールに載せる本文（提案文つき） */
   scan?: { candidates: number; body: string } | null;
+  /** 応募の下書き一覧。今回増えた分と、承認待ちの合計 */
+  queue?: { added: QueueItem[]; pendingTotal: number } | null;
 }
 
 const WANT = ["応募してよい", "確認してから応募"];
@@ -137,7 +142,15 @@ export function buildReport(input: ReportInput): PatrolReport {
 
   if (picks.length) {
     section(`応募を考える ${picks.length}件（送るかどうかはあなたが決める。送信はしません）`);
-    for (const j of picks) out.push("", `―――― ${j.title}`, j.url, j.detail.trim());
+    if (input.queue?.added.length) {
+      out.push(
+        `応募の下書き一覧に ${input.queue.added.length}件 足しました（承認待ちは全部で ${input.queue.pendingTotal}件）。依頼者の信頼度が高い順です。`,
+        "承認のしかた: 送りたい件の番号を、スレッドに「承認 3 5」のように返します。承認した件だけ入力済みの画面を開き、「応募する」はあなたが押します。"
+      );
+      for (const i of sortQueue(input.queue.added)) out.push("", queueItemText(i));
+    } else {
+      for (const j of picks) out.push("", `―――― ${j.title}`, j.url, j.detail.trim());
+    }
   }
   if (input.scan && scanCandidates > 0) {
     section(`公開募集（ココナラ・ままワークス）の応募候補 ${scanCandidates}件（送るかどうかはあなたが決める。送信はしません）`);
@@ -244,6 +257,10 @@ export interface BudgetRecord {
   /** 品質・検査・測定・工程の言葉が出てくるか */
   quality: boolean;
   payType: "固定報酬" | "時間単価" | "コンペ" | "タスク" | "不明";
+  /** Claude が作業して納品できる募集か（関門と納品物の判定を通ったか）。古い記録には無い */
+  delivers?: boolean;
+  /** 納品できるときの仕事の種類（文章・文書／コード・スクリプト など）。納品できなければ null */
+  genre?: string | null;
 }
 
 // 「マクロ経済」は Excel のマクロではない
@@ -280,13 +297,34 @@ function readPayAmount(body: string, labelAt: number): { min: number; max: numbe
   return max >= min ? { min, max } : null;
 }
 
+/**
+ * 支払い方式の表示を探す。ページの題名にも「…(時間単価制)の仕事・求人」と出てくるので、
+ * 括弧の中のものは飛ばし、すぐ後ろに金額（か「相談」）があるものを選ぶ。なければ最初のもの。
+ */
+function findPayLabel(body: string): RegExpExecArray | null {
+  let first: RegExpExecArray | null = null;
+  for (const m of body.matchAll(/(固定報酬制|時間単価制|コンペ形式|タスク形式)/g)) {
+    const mm = m as RegExpExecArray;
+    if (/[(（]/.test(body[mm.index - 1] ?? "")) continue;
+    first ??= mm;
+    const section = body.slice(mm.index, mm.index + 90);
+    if (new RegExp(AMOUNT).test(section) || /相談/.test(section)) return mm;
+  }
+  return first;
+}
+
+/** 「必要なスキル」の欄（次の見出しまでの短い範囲）。Excel の仕事かどうかは、題名とここを一番信用する */
+function skillsOf(body: string): string {
+  return body.match(/必要なスキル([\s\S]{0,100})/)?.[1] ?? "";
+}
+
 /** 読んだ募集から、予算と種類を1件分の記録にする。分類は、依頼者欄・おすすめより前の本文だけで行う。 */
 export function budgetRecord(link: { key: string; url: string }, title: string, text: string, at: Date = new Date()): BudgetRecord {
   const body = jobBodyForJudging(text).normalize("NFKC").slice(0, 6000);
   const head = body.slice(0, 600);
   // 募集ページの先頭に出る「固定報酬制」「時間単価制」「コンペ形式」「タスク形式」の最初のものがその募集の支払い方式
   const PAY_TYPES: Record<string, BudgetRecord["payType"]> = { 固定報酬制: "固定報酬", 時間単価制: "時間単価", コンペ形式: "コンペ", タスク形式: "タスク" };
-  const found = /(固定報酬制|時間単価制|コンペ形式|タスク形式)/.exec(body);
+  const found = findPayLabel(body);
   const payType: BudgetRecord["payType"] = found
     ? PAY_TYPES[found[1]]
     : /コンペ/.test(head) ? "コンペ" : /タスク形式/.test(head) ? "タスク" : /時間単価|時給/.test(head) ? "時間単価" : /固定報酬/.test(head) ? "固定報酬" : "不明";
@@ -315,10 +353,20 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
     budgetMaxJpy,
     hourlyJpy,
     hourlyMaxJpy,
-    excelVba: mentions(EXCEL_VBA, title, body, 3),
-    quality: mentions(QUALITY, title, body, 2),
+    // 題名か「必要なスキル」に出ていれば当たり。本文だけなら、飾りの語に引っ張られないよう多めに出たものだけ
+    excelVba: mentions(EXCEL_VBA, `${title}\n${skillsOf(body)}`, body, 6),
+    quality: mentions(QUALITY, `${title}\n${skillsOf(body)}`, body, 3),
     payType,
+    ...deliveryOf(body),
   };
+}
+
+/** 募集の本文から、Claude が作業して納品できるか・どんな種類の仕事かを（AIを使わず、ルールだけで）読む */
+function deliveryOf(body: string): { delivers: boolean; genre: string | null } {
+  const d = judgeDeliverability(body);
+  const delivers = d.canDeliver && checkGates(body).passed;
+  const first = d.canDeliver ? d.matched.map((id) => getCapability(id)).find((c) => c && !c.needsPaid) : undefined;
+  return { delivers, genre: delivers ? (first?.label ?? null) : null };
 }
 
 const median = (xs: number[]): number => {
@@ -326,6 +374,41 @@ const median = (xs: number[]): number => {
   const m = Math.floor(a.length / 2);
   return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
 };
+
+/**
+ * 「月の目標を、納品できる募集だけで稼ぐには何件要るか」。思い込みでなく、集めた募集の金額から出す。
+ * 手数料は固定報酬の実効率で引く。応募の通過率はまだ測っていないので、数字は仮置きだと分かるように書く。
+ */
+export function reachLines(delivering: BudgetRecord[], targetJpy = 200_000): string[] {
+  const fee = PLATFORM_FEES.find((f) => f.id === "crowdworks")?.feeRate ?? 0.22;
+  const prices = delivering
+    .filter((r) => r.payType === "固定報酬" && r.budgetJpy !== null && r.budgetJpy >= 1000)
+    .map((r) => r.budgetJpy as number);
+  const hourly = delivering.filter((r) => r.payType === "時間単価" && r.hourlyJpy != null).map((r) => r.hourlyJpy as number);
+  const lines: string[] = [];
+  if (prices.length >= 5) {
+    const mid = median(prices);
+    const net = Math.round(mid * (1 - fee));
+    const need = Math.ceil(targetJpy / net);
+    const perWeek = Math.ceil(need / 4.3);
+    const top = [...prices].sort((a, b) => b - a).slice(0, Math.max(1, Math.ceil(prices.length / 4)));
+    const topMid = median(top);
+    const topNet = Math.round(topMid * (1 - fee));
+    lines.push(
+      `月${(targetJpy / 10_000).toLocaleString()}万円の目安（納品できる固定報酬${prices.length}件の中央値 ${mid.toLocaleString()}円 → 手取り約${net.toLocaleString()}円）: 月${need}件（週${perWeek}件）の受注が要る。` +
+        `金額が上位4分の1の募集だけなら中央値 ${topMid.toLocaleString()}円（手取り約${topNet.toLocaleString()}円）で月${Math.ceil(targetJpy / topNet)}件。` +
+        `応募の通過率はまだ測っていない（仮に10%なら、週${Math.ceil(perWeek / 0.1)}件の応募）`
+    );
+  }
+  if (hourly.length >= 3) {
+    const mid = median(hourly);
+    const net = Math.round(mid * (1 - fee));
+    lines.push(
+      `時給の募集（納品できるもの${hourly.length}件）: 下限の中央値 ${mid.toLocaleString()}円 → 手取り約${net.toLocaleString()}円。月${(targetJpy / 10_000).toLocaleString()}万円には月${Math.ceil(targetJpy / net)}時間の稼働が要る（今の枠は週10時間 = 月約43時間）`
+    );
+  }
+  return lines;
+}
 
 /** 記録をまとめる。同じ募集は最新の1件だけ数える。報酬は固定報酬だけを数え、時給は別に出す。 */
 export function summarizeBudgets(records: BudgetRecord[]): string {
@@ -341,8 +424,21 @@ export function summarizeBudgets(records: BudgetRecord[]): string {
     const over20k = priced.filter((r) => (r.budgetMaxJpy ?? r.budgetJpy ?? 0) >= 20_000).length;
     return `${label}: ${rs.length}件（報酬が読めた固定報酬 ${priced.length}件・下限の中央値 ${median(mins).toLocaleString()}円・最小 ${Math.min(...mins).toLocaleString()}円・最大 ${Math.max(...mins).toLocaleString()}円・上限が2万円以上 ${over20k}件）${hourlyText}`;
   };
+  // Claude が作業して納品できる募集（関門と納品物の判定を通ったもの）。Excel に絞らず、種類ごとに見る
+  const known = latest.filter((r) => r.delivers !== undefined);
+  const delivering = known.filter((r) => r.delivers);
+  const genres = [...new Set(delivering.map((r) => r.genre ?? "その他"))];
+  const deliveryLines = known.length
+    ? [
+        `Claudeが納品できる募集: ${delivering.length}件 / 判定した${known.length}件`,
+        group("納品できる募集（すべて）", delivering),
+        ...genres.map((g) => group(`　${g}`, delivering.filter((r) => (r.genre ?? "その他") === g))),
+      ]
+    : [];
   return [
     `募集の予算の記録（${latest.length}件）`,
+    ...deliveryLines,
+    ...reachLines(delivering),
     group("Excel/VBA・マクロ・スプレッドシート", latest.filter((r) => r.excelVba)),
     group("そのうち品質・検査・測定・工程の言葉あり", latest.filter((r) => r.excelVba && r.quality)),
     group("すべて", latest),
@@ -375,4 +471,271 @@ export function pickJobsRoundRobin(perSearch: PatrolLink[][], seen: SeenState, m
     }
   }
   return out;
+}
+
+// --- 依頼者の信頼度・募集の状況（本物の画面で確かめた並び）-----------------------------------
+// 依頼者の欄は「クライアント情報」で始まり「○○の詳細を見る」で終わり、項目は
+//   ありがとう N 件 → 本人確認（済み／未提出） → 発注ルールチェック → 総合評価（数字か「-」）
+//   → 募集実績 N 件 → プロジェクト完了率 N %（か「-」）
+// の順に並ぶ。発注回数として使うのは「募集実績」（「ありがとう」は評価に近い数）。
+
+export interface ClientInfo {
+  /** 募集実績（これまでに募集した件数）。読めなければ null */
+  orders: number | null;
+  rating: number | null;
+  /** プロジェクト完了率（%）。「-」なら null */
+  completionRate: number | null;
+  thanks: number | null;
+  identity: "済" | "未提出" | "不明";
+  /** 優良 = 何度も発注していて評価・完了率も良い。初めて = 実績が少ない。注意 = 評価か完了率が低い */
+  tier: "優良" | "普通" | "初めて" | "注意" | "不明";
+  /** 人が読む1行 */
+  summary: string;
+  /** 欄の文字（読み違いを後から見直せるように、先頭だけ残す） */
+  raw: string;
+}
+
+const TIER_RANK: Record<ClientInfo["tier"], number> = { 優良: 0, 普通: 1, 初めて: 2, 不明: 3, 注意: 4 };
+
+export function readClientInfo(text: string): ClientInfo {
+  const t = text.normalize("NFKC");
+  const at = t.search(/クライアント情報|依頼者情報/);
+  const rest = at >= 0 ? t.slice(at) : "";
+  const end = rest.search(/の詳細を見る|おすすめの仕事|この仕事に似た/);
+  const sec = (end > 0 ? rest.slice(0, end) : rest).slice(0, 900);
+  const num = (re: RegExp): number | null => {
+    const m = sec.match(re);
+    if (!m) return null;
+    const v = parseFloat(m[1].replace(/,/g, ""));
+    return Number.isFinite(v) ? v : null;
+  };
+  const orders = num(/募集実績\s*([0-9][0-9,]*)\s*件/);
+  const rating = num(/総合評価\s*([0-5](?:\.[0-9]+)?)/);
+  const completionRate = num(/プロジェクト完了率\s*([0-9]{1,3}(?:\.[0-9]+)?)\s*%/);
+  const thanks = num(/ありがとう\s*([0-9][0-9,]*)\s*件/);
+  const identity: ClientInfo["identity"] = /本人確認\s*未/.test(sec) ? "未提出" : /本人確認\s*(?:提出)?済/.test(sec) ? "済" : "不明";
+
+  let tier: ClientInfo["tier"] = "不明";
+  if (sec) {
+    if ((rating !== null && rating < 3.5) || (completionRate !== null && completionRate < 50)) tier = "注意";
+    else if (orders !== null && orders >= 10 && (rating === null || rating >= 4.3) && (completionRate === null || completionRate >= 80)) tier = "優良";
+    else if (orders !== null && orders >= 3) tier = "普通";
+    else if (orders !== null) tier = "初めて";
+  }
+  const parts = [
+    orders !== null ? `募集実績${orders.toLocaleString()}件` : "募集実績は読めず",
+    rating !== null ? `総合評価${rating}` : "評価なし",
+    completionRate !== null ? `完了率${completionRate}%` : "完了率なし",
+    identity === "済" ? "本人確認済み" : identity === "未提出" ? "本人確認未提出" : "",
+  ].filter(Boolean);
+  return { orders, rating, completionRate, thanks, identity, tier, summary: sec ? parts.join("・") : "依頼者の欄が読めませんでした", raw: sec.replace(/\s+/g, " ").slice(0, 300) };
+}
+
+export interface JobMeta {
+  applicants: number | null;
+  openings: number | null;
+  /** 応募期限（画面の表示のまま） */
+  deadline: string | null;
+}
+
+export function readJobMeta(text: string): JobMeta {
+  const t = text.normalize("NFKC");
+  const n = (re: RegExp): number | null => {
+    const m = t.match(re);
+    return m ? parseInt(m[1].replace(/,/g, ""), 10) : null;
+  };
+  return {
+    applicants: n(/応募した人\s*([0-9][0-9,]*)\s*人/),
+    openings: n(/募集人数\s*([0-9][0-9,]*)\s*人/),
+    deadline: t.match(/応募期限\s*(20[0-9]{2}年[0-9]{1,2}月[0-9]{1,2}日)/)?.[1] ?? null,
+  };
+}
+
+// --- 応募の下書き一覧（ゆうさんが後からまとめて見て、承認した件だけ進める）--------------------------
+
+export type QueueStatus = "pending" | "approved" | "sent" | "skipped";
+
+export interface QueueItem {
+  /** 一覧の番号。承認は「承認 3」のように、この番号で返す */
+  no: number;
+  /** 募集の番号（URLの数字） */
+  id: string;
+  title: string;
+  url: string;
+  applyUrl: string;
+  verdict: string;
+  reason: string;
+  payType: BudgetRecord["payType"];
+  /** 人が読む報酬の1行 */
+  payText: string;
+  /** 応募画面に入れる金額（時給なら時給の下限、固定報酬なら下限）。読めなければ null */
+  price: number | null;
+  applicants: number | null;
+  openings: number | null;
+  deadline: string | null;
+  client: ClientInfo;
+  proposal: string;
+  /** 送る前に見ること */
+  checks: string[];
+  status: QueueStatus;
+  at: string;
+}
+
+export interface QueueState {
+  nextNo: number;
+  items: QueueItem[];
+}
+
+export const emptyQueue = (): QueueState => ({ nextNo: 1, items: [] });
+
+/** 判定の出力の「--- 提案文 ---」から、提案文だけを取り出す。 */
+export function extractProposal(detail: string): string {
+  const m = detail.match(/--- 提案文 ---\n([\s\S]*?)(?:\n\s*※|\n使ったAI:|\n保存先:|\n次:|$)/);
+  return m ? m[1].trim() : "";
+}
+
+const FEE_RATE = 0.22;
+
+export function buildQueueItem(args: {
+  link: { key: string; url: string };
+  applyUrl: string;
+  title: string;
+  /** 募集ページの全文（依頼者の欄を含む） */
+  pageText: string;
+  judged: { verdict: string; detail: string };
+  /** 判定の出力ではなく、人が書いた提案文があるとき */
+  proposal?: string;
+  at?: Date;
+}): Omit<QueueItem, "no" | "status"> {
+  const rec = budgetRecord(args.link, args.title, args.pageText, args.at);
+  const client = readClientInfo(args.pageText);
+  const meta = readJobMeta(args.pageText);
+  const proposal = (args.proposal ?? extractProposal(args.judged.detail)).trim();
+  const checks: string[] = [];
+  let verdict = args.judged.verdict;
+
+  let payText = `${rec.payType}（金額は画面で確かめてください）`;
+  let price: number | null = null;
+  if (rec.hourlyJpy != null) {
+    const lo = rec.hourlyJpy;
+    const hi = rec.hourlyMaxJpy ?? lo;
+    payText = `時給${lo.toLocaleString()}${hi !== lo ? `〜${hi.toLocaleString()}` : ""}円（手数料22%を引いて手取り約${Math.round(lo * (1 - FEE_RATE)).toLocaleString()}円〜）`;
+    price = lo;
+  } else if (rec.budgetJpy != null) {
+    const lo = rec.budgetJpy;
+    const hi = rec.budgetMaxJpy ?? lo;
+    payText = `${rec.payType} ${lo.toLocaleString()}${hi !== lo ? `〜${hi.toLocaleString()}` : ""}円`;
+    price = lo;
+  } else {
+    checks.push("金額が読めませんでした。画面で確かめてから金額を入れてください");
+  }
+
+  if (!proposal) checks.push("提案文が出ていません。書いてから送ってください");
+  const left = proposal.match(/【要確認[^】]*】/g);
+  if (left) checks.push(`提案文に【要確認】が${left.length}か所残っています（${left.slice(0, 2).join("、")}）。事実を確かめて直してから送る`);
+  if (client.tier === "注意") {
+    checks.push(`依頼者の評価・完了率に注意（${client.summary}）`);
+    if (verdict.startsWith("応募してよい")) verdict = "確認してから応募";
+  }
+  if (client.tier === "不明") checks.push("依頼者の欄が読めていません。画面で評価と募集実績を確かめる");
+  if (meta.applicants !== null && meta.applicants >= 50) checks.push(`応募${meta.applicants}人${meta.openings ? `・募集${meta.openings}人` : ""}（競争が激しい）`);
+  const reason = args.judged.detail.match(/^理由: (.+)$/m)?.[1]?.slice(0, 120) ?? "";
+  return {
+    id: args.link.key.replace(/^job:/, ""),
+    title: args.title,
+    url: args.link.url,
+    applyUrl: args.applyUrl,
+    verdict,
+    reason,
+    payType: rec.payType,
+    payText,
+    price,
+    applicants: meta.applicants,
+    openings: meta.openings,
+    deadline: meta.deadline,
+    client,
+    proposal,
+    checks,
+    at: (args.at ?? new Date()).toISOString(),
+  };
+}
+
+/** 一覧に足す。同じ募集は足さない（承認済み・送信済みの印を消さないため）。 */
+export function addToQueue(state: QueueState, items: Omit<QueueItem, "no" | "status">[], now: Date = new Date()): QueueState {
+  const known = new Set(state.items.map((i) => i.id));
+  let nextNo = state.nextNo;
+  const added: QueueItem[] = [];
+  for (const it of items) {
+    if (known.has(it.id)) continue;
+    known.add(it.id);
+    added.push({ ...it, no: nextNo++, status: "pending" });
+  }
+  // 3週間たった未承認・見送りは一覧から外す（承認済みと送信済みは残す）
+  const cutoff = now.getTime() - 21 * 86_400_000;
+  const kept = state.items.filter((i) => i.status === "approved" || i.status === "sent" || new Date(i.at).getTime() >= cutoff);
+  return { nextNo, items: [...kept, ...added] };
+}
+
+export function markQueue(state: QueueState, nos: number[], status: QueueStatus): { state: QueueState; changed: number[]; missing: number[] } {
+  const want = new Set(nos);
+  const changed: number[] = [];
+  const items = state.items.map((i) => {
+    if (!want.has(i.no)) return i;
+    changed.push(i.no);
+    return { ...i, status };
+  });
+  return { state: { ...state, items }, changed, missing: nos.filter((n) => !changed.includes(n)) };
+}
+
+/** 依頼者の信頼度の順（優良が先）。判定の順番を決めるのに使う */
+export function clientRank(pageText: string): number {
+  return TIER_RANK[readClientInfo(pageText).tier];
+}
+
+/** 並べ替え: 依頼者の信頼度 → 判定 → 報酬の大きさ → 応募の少なさ */
+export function sortQueue(items: QueueItem[]): QueueItem[] {
+  const pay = (i: QueueItem) => i.price ?? 0;
+  return [...items].sort(
+    (a, b) =>
+      TIER_RANK[a.client.tier] - TIER_RANK[b.client.tier] ||
+      Number(b.verdict.startsWith("応募してよい")) - Number(a.verdict.startsWith("応募してよい")) ||
+      pay(b) - pay(a) ||
+      (a.applicants ?? 0) - (b.applicants ?? 0)
+  );
+}
+
+export function queueItemText(i: QueueItem): string {
+  const lines = [
+    `## 【${i.no}】${shortTitle(i.title)}　〔依頼者: ${i.client.tier}〕`,
+    `- 応募画面: ${i.applyUrl}`,
+    `- 募集ページ: ${i.url}`,
+    `- 報酬: ${i.payText}`,
+    `- 応募状況: ${i.applicants !== null ? `${i.applicants}人が応募` : "応募人数は読めず"}${i.openings ? `・募集${i.openings}人` : ""}${i.deadline ? `・応募期限 ${i.deadline}` : ""}`,
+    `- 依頼者: ${i.client.summary}`,
+    `- 判定: ${i.verdict}${i.reason ? ` — ${i.reason}` : ""}`,
+  ];
+  if (i.price !== null) lines.push(`- 応募画面に入れる金額: ${i.price.toLocaleString()}円`);
+  if (i.checks.length) lines.push(`- 送る前に見ること:`, ...i.checks.map((c) => `  - ${c}`));
+  lines.push("", "提案文:", ...(i.proposal ? i.proposal.split("\n").map((l) => `> ${l}`) : ["> （なし）"]));
+  return lines.join("\n");
+}
+
+/** ゆうさんが後から見る一覧（Markdown）。承認待ちを、依頼者の信頼度が高い順に並べる。 */
+export function queueMarkdown(state: QueueState, at: Date = new Date()): string {
+  const pending = sortQueue(state.items.filter((i) => i.status === "pending"));
+  const approved = state.items.filter((i) => i.status === "approved");
+  const jst = new Date(at.getTime() + 9 * 3_600_000).toISOString().replace("T", " ").slice(0, 16);
+  const out = [
+    `# 応募の下書き一覧（${jst} 時点）`,
+    "",
+    "承認のしかた: 送りたい件の番号を、スレッドに「承認 3 5」のように返します。承認した件だけ、PCで入力済みの応募画面を開きます（最大5件）。",
+    "「応募する」を押すのはゆうさんです。承認のない件は、入力も送信もしません。送らない件は「見送り 2」と返すと一覧から外します。",
+    "依頼者の並べ方: 募集実績が多く、評価と完了率が高い依頼者を上に出しています。",
+    "",
+    `承認待ち ${pending.length}件／承認済み（送信待ち） ${approved.length}件`,
+  ];
+  if (approved.length) out.push("", "# 承認済み（送信待ち）", ...approved.map((i) => `- 【${i.no}】${shortTitle(i.title)} ${i.applyUrl}`));
+  if (pending.length) out.push("", "# 承認待ち", "", ...pending.flatMap((i) => [queueItemText(i), ""]));
+  else out.push("", "承認待ちはありません。");
+  return out.join("\n");
 }

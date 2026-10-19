@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, jobBodyForJudging, pickJobsRoundRobin, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
+import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -174,7 +174,9 @@ test("予算の記録: おすすめ欄のExcelは数えず、時給は固定報�
   assert.equal(a.budgetJpy, 30000);
   // 本文に1回だけ出る飾りの語は数えない。題名に出る・本文に2回以上出る募集は数える
   assert.equal(budgetRecord({ key: "job:11", url: "u" }, "資料作成", "固定報酬制 報酬 10,000円 Excelが使える方歓迎").excelVba, false);
-  assert.equal(budgetRecord({ key: "job:12", url: "u" }, "資料作成", "固定報酬制 報酬 10,000円 Excelで表を作り、Excelで集計し、Excelでグラフにします").excelVba, true);
+  assert.equal(budgetRecord({ key: "job:12", url: "u" }, "資料作成", "固定報酬制 報酬 10,000円 Excelで表を作り、Excelで集計し、Excelでグラフにします").excelVba, false, "本文に数回出るだけでは当たりにしない");
+  assert.equal(budgetRecord({ key: "job:12", url: "u" }, "資料作成", "固定報酬制 報酬 10,000円 資料を作ります。必要なスキル Excel VBA 関数").excelVba, true, "必要なスキルに出ていれば当たり");
+  assert.equal(budgetRecord({ key: "job:12", url: "u" }, "資料作成", `固定報酬制 報酬 10,000円 ${"Excelで集計します。".repeat(6)}`).excelVba, true, "本文に何度も出る募集は当たり");
   assert.equal(budgetRecord({ key: "job:16", url: "u" }, "公務員試験の講師", "固定報酬制 ワーカーと相談する 必要なスキル 法律 数学 マクロ経済 ミクロ経済 マクロ経済学").excelVba, false, "マクロ経済はExcelのマクロではない");
   const h = budgetRecord({ key: "job:13", url: "u" }, "スプレッドシートの関数でレポート構築", "時間単価制\n時給\n1,500円 〜 2,000円\n週10時間");
   assert.equal(h.payType, "時間単価");
@@ -198,6 +200,14 @@ test("予算の記録: おすすめ欄のExcelは数えず、時給は固定報�
   assert.ok(text.includes("時給の募集 1件（時給の下限の中央値 1,500円）"));
 });
 
+test("支払い方式は、題名の「(時間単価制)の仕事」ではなく、金額のすぐ前の表示から読む", () => {
+  const page = `スプレッドシートの関数でレポート構築(時間単価制)の仕事・求人【フルリモート】\n仕事の概要\n時間単価制 1,500円 〜 2,000円\n稼働時間/週 10時間/週\n${"本文です。".repeat(60)}\nクライアント情報`;
+  const r = budgetRecord({ key: "job:20", url: "u" }, "スプレッドシートの関数でレポート構築", page);
+  assert.equal(r.payType, "時間単価");
+  assert.equal(r.hourlyJpy, 1500);
+  assert.equal(r.hourlyMaxJpy, 2000);
+});
+
 test("判定に渡す本文: 依頼者欄・おすすめ・ページ下部の定型文を落とす", () => {
   const body = "紙資料をExcelへ入力します。".repeat(30);
   const page = `${body}\nクライアント情報\n本人確認未提出\nおすすめの仕事\nアンケート\n個人情報保護方針`;
@@ -211,4 +221,131 @@ test("募集の選び方: 検索ごとに交互に取り、1つの検索で枠�
   const picked = pickJobsRoundRobin([mk(10, "a"), mk(10, "b"), mk(10, "c")], emptySeen(), 10);
   assert.equal(picked.length, 9);
   assert.deepEqual(picked.slice(0, 3).map((l) => l.key), ["job:a0", "job:b0", "job:c0"]);
+});
+
+// --- 依頼者の信頼度・応募の下書き一覧（本物の画面の並びで）-----------------------------------
+
+const clientPage = (c, meta = "応募した人 56 人 契約した人 0 人 募集人数 1 人 気になる！リスト 12 人\n応募期限\n2026年10月30日") =>
+  `固定報酬制 20,000円 〜 30,000円\n${meta}\n${"仕事の説明です。".repeat(40)}\nクライアント情報\nフォローする\n○○\n${c}\n○○の詳細を見る\nおすすめの仕事\nアンケート`;
+
+test("依頼者の欄を読む: 募集実績が多く評価・完了率が高ければ優良", () => {
+  const c = readClientInfo(clientPage("ありがとう 137 件\n本人確認済み\n発注ルールチェック未回答\n総合評価 4.7\n募集実績 375 件\nプロジェクト完了率 89 %\nマーケティングエージェンシー"));
+  assert.equal(c.orders, 375);
+  assert.equal(c.rating, 4.7);
+  assert.equal(c.completionRate, 89);
+  assert.equal(c.thanks, 137);
+  assert.equal(c.identity, "済");
+  assert.equal(c.tier, "優良");
+  assert.ok(c.summary.includes("募集実績375件") && c.summary.includes("本人確認済み"));
+  assert.ok(!c.raw.includes("おすすめの仕事"), "おすすめ欄は含めない");
+});
+
+test("依頼者の欄を読む: 実績が1件で評価なしは初めて、完了率が低めは優良にしない、評価が低ければ注意", () => {
+  const first = readClientInfo(clientPage("ありがとう 0 件\n本人確認未提出\n発注ルールチェック未回答\n総合評価 -\n募集実績 1 件\nプロジェクト完了率 -"));
+  assert.equal(first.tier, "初めて");
+  assert.equal(first.rating, null);
+  assert.equal(first.completionRate, null);
+  assert.equal(first.identity, "未提出");
+  const mid = readClientInfo(clientPage("ありがとう 12 件\n本人確認未提出\n総合評価 5.0\n募集実績 19 件\nプロジェクト完了率 64 %"));
+  assert.equal(mid.tier, "普通");
+  const bad = readClientInfo(clientPage("ありがとう 3 件\n本人確認済み\n総合評価 2.9\n募集実績 40 件\nプロジェクト完了率 80 %"));
+  assert.equal(bad.tier, "注意");
+  assert.equal(readClientInfo("依頼者の欄がない文章").tier, "不明");
+});
+
+test("募集の状況を読む: 応募人数・募集人数・応募期限", () => {
+  const m = readJobMeta(clientPage("総合評価 4.7"));
+  assert.deepEqual(m, { applicants: 56, openings: 1, deadline: "2026年10月30日" });
+  assert.deepEqual(readJobMeta("何もない"), { applicants: null, openings: null, deadline: null });
+});
+
+test("判定の出力から提案文だけを取り出す", () => {
+  const detail = "結論: 応募してよい\n理由: 実効時給 1,170円\n\n--- 提案文 ---\n募集を拝見しました。\nよろしくお願いします。\n\n※ 経歴が未登録です\n\n使ったAI: sonnet 3回";
+  assert.equal(extractProposal(detail), "募集を拝見しました。\nよろしくお願いします。");
+  assert.equal(extractProposal("提案文なし"), "");
+});
+
+test("応募の下書き一覧: 依頼者の信頼度順・要確認の印と注意を出し、承認した件だけ送信待ちにする", () => {
+  const mk = (id, title, client, extra = {}) =>
+    buildQueueItem({
+      link: { key: `job:${id}`, url: `https://crowdworks.jp/public/jobs/${id}` },
+      applyUrl: `https://crowdworks.jp/proposals/new?job_offer_id=${id}`,
+      title,
+      pageText: clientPage(client, extra.meta),
+      judged: { verdict: extra.verdict ?? "応募してよい", detail: `理由: テスト\n\n--- 提案文 ---\n${extra.proposal ?? "はじめまして"}\n\n使ったAI: x` },
+    });
+  const first = mk("1", "初めての依頼者の仕事", "総合評価 -\n募集実績 1 件\nプロジェクト完了率 -");
+  const good = mk("2", "何度も発注している依頼者の仕事", "本人確認済み\n総合評価 4.8\n募集実績 80 件\nプロジェクト完了率 95 %", { proposal: "経験は【要確認: 年数】です" });
+  const bad = mk("3", "評価の低い依頼者の仕事", "総合評価 2.5\n募集実績 30 件\nプロジェクト完了率 90 %");
+  assert.equal(bad.verdict, "確認してから応募", "注意の依頼者は、応募してよいを確認してから応募に下げる");
+  assert.ok(good.checks.some((c) => c.includes("【要確認】が1か所")));
+  assert.ok(good.checks.some((c) => c.includes("応募56人")));
+  assert.equal(good.price, 20000);
+
+  let q = addToQueue(emptyQueue(), [first, good, bad]);
+  assert.deepEqual(q.items.map((i) => i.no), [1, 2, 3]);
+  q = addToQueue(q, [first]);
+  assert.equal(q.items.length, 3, "同じ募集は足さない");
+  assert.deepEqual(sortQueue(q.items).map((i) => i.id), ["2", "1", "3"], "優良 → 初めて → 注意");
+
+  const m = markQueue(q, [2, 9], "approved");
+  assert.deepEqual(m.changed, [2]);
+  assert.deepEqual(m.missing, [9]);
+  const md = queueMarkdown(m.state, new Date("2026-10-19T00:00:00Z"));
+  assert.ok(md.includes("「承認 3 5」のように"));
+  assert.ok(md.includes("承認待ち 2件／承認済み（送信待ち） 1件"));
+  assert.ok(md.indexOf("初めての依頼者") < md.indexOf("評価の低い依頼者"));
+  assert.ok(md.includes("proposals/new?job_offer_id=2"));
+  // 3週間たった未承認は外れ、承認済みは残る
+  const old = addToQueue(m.state, [], new Date("2026-12-01T00:00:00Z"));
+  assert.deepEqual(old.items.map((i) => i.id), ["2"]);
+});
+
+test("予算の記録: Claude が納品できる募集かと仕事の種類を、Excel に限らず記録する", () => {
+  const article = budgetRecord(
+    { key: "job:21", url: "u" },
+    "【在宅】美容ブログ記事の作成（SEO）",
+    "固定報酬制 報酬 6,000円\nSEOを意識したブログ記事を3本、各2000字で書いてください。キーワードは別途お渡しします。"
+  );
+  assert.equal(article.delivers, true);
+  assert.equal(article.genre, "文章・文書");
+  const py = budgetRecord({ key: "job:22", url: "u" }, "Pythonでスクレイピングツールの開発", "固定報酬制 報酬 30,000円\nPythonで価格を取得するスクリプトを作ってください。");
+  assert.equal(py.delivers, true);
+  assert.equal(py.genre, "コード・スクリプト");
+  // 納品できないもの（電話・撮影）や、AIの利用を禁止しているものは、納品できる側に数えない
+  const phone = budgetRecord({ key: "job:23", url: "u" }, "コールセンター業務", "固定報酬制 報酬 5,000円\nお客様への電話対応をお願いします。");
+  assert.equal(phone.delivers, false);
+  assert.equal(phone.genre, null);
+  const noAi = budgetRecord({ key: "job:24", url: "u" }, "ブログ記事の執筆", "固定報酬制 報酬 6,000円\nブログ記事を書いてください。ChatGPTなどの生成AIの使用は禁止です。");
+  assert.equal(noAi.delivers, false);
+
+  const text = summarizeBudgets([article, py, phone, noAi]);
+  assert.match(text, /Claudeが納品できる募集: 2件 \/ 判定した4件/);
+  assert.match(text, /文章・文書/);
+  assert.match(text, /コード・スクリプト/);
+});
+
+test("判定の順番: 発注の多い依頼者（優良）の募集が先", () => {
+  const good = "仕事の内容\nクライアント情報\nありがとう 20 件\n本人確認 済み\n総合評価 4.8\n募集実績 120 件\nプロジェクト完了率 95 %\n○○の詳細を見る";
+  const first = "仕事の内容\nクライアント情報\nありがとう 0 件\n本人確認 済み\n総合評価 -\n募集実績 0 件\nプロジェクト完了率 -\n○○の詳細を見る";
+  assert.ok(clientRank(good) < clientRank(first));
+});
+
+test("月の目標に何件要るか: 納品できる固定報酬の中央値から、手数料を引いて出す（件数が少ないうちは出さない）", () => {
+  const rec = (n, budgetJpy, payType = "固定報酬", hourlyJpy = null) => ({
+    at: "2026-10-19T00:00:00Z", key: `job:${n}`, title: "t", url: "u", budgetJpy, budgetMaxJpy: budgetJpy, hourlyJpy, hourlyMaxJpy: hourlyJpy,
+    excelVba: false, quality: false, payType, delivers: true, genre: "文章・文書",
+  });
+  assert.deepEqual(reachLines([rec(1, 5000), rec(2, 5000)]), []);
+  // 中央値5,000円 → 手取り3,900円 → 20万円には月52件（週13件）
+  const lines = reachLines([1, 2, 3, 4, 5].map((n) => rec(n, 5000)));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /月20万円の目安/);
+  assert.match(lines[0], /手取り約3,900円/);
+  assert.match(lines[0], /月52件（週13件）/);
+  assert.match(lines[0], /仮に10%なら、週130件の応募/);
+  // 時給の募集は稼働時間で見る（時給1,500円 → 手取り1,170円 → 月171時間）
+  const h = reachLines([1, 2, 3].map((n) => rec(n, null, "時間単価", 1500)));
+  assert.match(h[0], /手取り約1,170円/);
+  assert.match(h[0], /月171時間/);
 });

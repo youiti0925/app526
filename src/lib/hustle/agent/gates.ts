@@ -21,6 +21,8 @@
  *   賠償上限は直近12か月の支払額（無料枠なら0円）。
  */
 
+import { stripNegatedClauses } from "./negation";
+
 export type GateId =
   | "confidentiality"
   | "warranty"
@@ -30,7 +32,7 @@ export type GateId =
   | "restricted_work"
   | "collection_source"
   | "eligibility"
-  | "ai_banned";
+  | "ai_prohibited";
 
 export interface GateHit {
   id: GateId;
@@ -48,6 +50,12 @@ interface GateRule {
   id: GateId;
   label: string;
   patterns: RegExp[];
+  /**
+   * 「〜は不要」「〜は一切ありません」と無いと言い切っている部分を除いてから見る。
+   * 機密の語は「社外秘の情報や社名のご開示は不要」のように安心させる文にも出る。
+   * 「クレジット表記なし」のように、無いこと自体が条件になるルールには付けない。
+   */
+  skipNegated?: boolean;
   why: string;
   negotiable: boolean;
   ask: string;
@@ -57,33 +65,11 @@ interface GateRule {
 const UNPRODUCIBLE_FORMATS =
   /(\.?prproj|premiere.{0,10}プロジェクト|プロジェクトファイル|\.aep|after ?effects.{0,10}プロジェクト|\.psd|photoshop.{0,8}(データ|形式|ファイル)|\.ai\b|illustrator.{0,8}(データ|形式|ファイル)|\.clip\b|クリスタ.{0,6}(データ|ファイル)|\.fig\b|figma.{0,8}(データ|ファイル)|レイヤー.{0,6}(分け|構造).{0,10}(納品|渡)|編集データ.{0,6}(も|込|付))/i;
 
-/** 募集の「AIを使わないで」の書き方。全部禁止のことも、一部（画像だけ・AIのみは不可 など）のこともある。 */
-const AI_BAN_PATTERNS: RegExp[] = [
-  /(生成AI|AI|ＡＩ|ChatGPT|チャットGPT|GPT)[^。\n]{0,15}(使用|利用|活用)?[^。\n]{0,4}(禁止|不可|NG|お断り|ご遠慮|厳禁|しないで|はできません)/i,
-  /(AI|ＡＩ)(のみ|だけ|任せ)[^。\n]{0,10}(不可|NG|お断り|ご遠慮|禁止|不採用)/i,
-  /(手書き|自力|ご自身)[^。\n]{0,8}(で|の)[^。\n]{0,6}(執筆|作成)[^。\n]{0,8}(AI|ＡＩ)/i,
-];
-
-/**
- * AIの使用を禁じている文を、募集文からそのまま抜き出す（禁止の範囲を人が判断するため）。
- * 禁止がなければ空の配列。
- */
-export function readAiBan(text: string): string[] {
-  const sentences = text.normalize("NFKC").slice(0, 8000).split(/(?<=[。！？!?])|\n/);
-  const found: string[] = [];
-  for (const raw of sentences) {
-    const s = raw.trim().replace(/^[・\-*※●■◆]+\s*/, "");
-    if (!s || !AI_BAN_PATTERNS.some((p) => p.test(s))) continue;
-    if (!found.includes(s)) found.push(s.length > 120 ? `${s.slice(0, 120)}…` : s);
-    if (found.length >= 3) break;
-  }
-  return found;
-}
-
 const GATE_RULES: GateRule[] = [
   {
     id: "confidentiality",
     label: "機密・NDA",
+    skipNegated: true,
     patterns: [
       /(NDA|秘密保持契約|機密保持契約)/i,
       /(社外秘|機密情報|非公開|未公開).{0,12}(資料|情報|データ|設定|企画)/,
@@ -110,16 +96,7 @@ const GATE_RULES: GateRule[] = [
       "生成AIのツールは、侵害クレームが来たら逆に**ユーザーが運営を補償する**条項を置いています（Midjourney・Descript・Runway・Google・NovelAI で確認）。賠償上限は直近12か月の支払額なので、無料枠なら0円です。さらに独占性は誰も売っていません（Google「Google may generate the same or similar content for others」、Runway「OUTPUTS MAY NOT BE UNIQUE」）。「他所で使われない」と約束すると履行不能になります。",
     negotiable: true,
     ask:
-      "独占的利用と第三者権利の表明保証を外してもらえるか確認してください。外せないなら、AI生成物を最終稿にせず、自分の手で作り直す前提で工数を見積もってください。",
-  },
-  {
-    id: "ai_banned",
-    label: "AI禁止あり",
-    patterns: AI_BAN_PATTERNS,
-    why:
-      "募集がAIの使用を禁じています（全部か一部かは範囲を見てください）。禁止された部分をあなた自身が作れるなら応募できます。禁止された部分をAIで作って納品することはしません（偽って納品すると、規約違反と信用の両方を失います）。",
-    negotiable: true,
-    ask: "禁止の範囲を読んで、その部分をあなた自身でやれるかを判断してください。やれないなら見送ってください。",
+      "生成AIを使う旨を先に伝え、独占的利用と第三者権利の表明保証を外してもらえるか確認してください。外せないなら、AI生成物を最終稿にせず、自分の手で作り直す前提で工数を見積もってください。",
   },
   {
     id: "format",
@@ -172,6 +149,24 @@ const GATE_RULES: GateRule[] = [
     ask: "この案件は受けられません。資格者に依頼するよう先方に伝えるのが正しい対応です。",
   },
   {
+    id: "ai_prohibited",
+    label: "AIの利用を禁止している",
+    skipNegated: true,
+    patterns: [
+      // 「ChatGPTなどの生成AIの使用は禁止です」「AI利用不可」「AIでの作成はご遠慮ください」
+      /(?<![A-Za-z])(生成AI|AIツール|AI|ChatGPT|チャットGPT|GPT|Gemini|Claude)(?![a-z])[^。\n]{0,16}(使用|利用|活用|使うこと|使って|生成|作成|執筆|翻訳)[^。\n]{0,10}(禁止(?!しません|していません|ではありません|ではない)|不可|NG|ご遠慮|お控え|控えて|厳禁|お断り|できません|いけません|避けて)/,
+      // 「AI禁止」「AIはNG」
+      /(?<![A-Za-z])(生成AI|AI|ChatGPT)(?![a-z])(の|は|を)?(使用|利用)?(は|を)?(禁止(?!しません|していません|ではありません|ではない)|不可|NG|厳禁|お断り)/,
+      // 「AIで作った文章は受け取れません」
+      /(?<![A-Za-z])(生成AI|AI|ChatGPT)(?![a-z])[^。\n]{0,12}(文章|記事|成果物|納品物|原稿|翻訳)[^。\n]{0,10}(受け付け|受け取れ|認め|不可|NG|お断り)/,
+    ],
+    why:
+      "AIを使って作業する前提なので、AIの利用を禁止している案件を受けると、契約に違反して納品することになります。" +
+      "使ったことを隠して納品するのも、依頼者を欺くことになります。",
+    negotiable: false,
+    ask: "この案件は受けません。AIを使わず全部あなたの手でやる前提なら、工数を見積もり直してください。",
+  },
+  {
     id: "collection_source",
     label: "収集元の規約確認が要る",
     patterns: [
@@ -218,15 +213,17 @@ export function checkGates(text: string): GateResult {
   const t = text.normalize("NFKC").slice(0, 8000);
   const hits: GateHit[] = [];
 
+  const asked = stripNegatedClauses(t);
+
   for (const rule of GATE_RULES) {
+    const body = rule.skipNegated ? asked : t;
     for (const p of rule.patterns) {
-      const m = t.match(p);
+      const m = body.match(p);
       if (!m) continue;
       hits.push({
         id: rule.id,
         label: rule.label,
-        // AI禁止は、禁止の範囲が分かるように文ごと出す
-        matched: rule.id === "ai_banned" ? (readAiBan(t)[0] ?? m[0].slice(0, 60)) : m[0].slice(0, 60),
+        matched: m[0].slice(0, 60),
         why: rule.why,
         negotiable: rule.negotiable,
         ask: rule.ask,
@@ -248,12 +245,8 @@ export function checkGates(text: string): GateResult {
     negotiable,
     note: blocking.length
       ? `${blocking.map((h) => h.label).join("・")} があります。交渉では外せないので、無料枠のAIを使う前提では受けられません。`
-      : `${hits.map(hitLabel).join("・")} があります。応募前に確認すれば通る可能性があります。`,
+      : `${hits.map((h) => h.label).join("・")} があります。応募前に確認すれば通る可能性があります。`,
   };
-}
-
-function hitLabel(h: GateHit): string {
-  return h.id === "ai_banned" ? `AI禁止あり（範囲:「${h.matched}」。禁止された部分をあなた自身でやれるなら応募可）` : h.label;
 }
 
 /** 確認事項を1本の文面にする。承認キューに出す。 */

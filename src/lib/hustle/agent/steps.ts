@@ -10,7 +10,7 @@ import { judgeDeliverability } from "./deliverability";
 import { expectedHourly, readCompetition } from "./competition";
 import { checkCapacity, monthlyHourly, readEngagement } from "./engagement";
 import { checkDeadline, readDeadline } from "./deadline";
-import { checkGates, readAiBan, renderGateQuestions } from "./gates";
+import { checkGates, renderGateQuestions } from "./gates";
 import { buildChecklist } from "./coverage";
 import { buildRenegotiation } from "./renegotiate";
 import { buildListing, listableWorkTypes, renderListing } from "./listing";
@@ -532,8 +532,6 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       fitNotes,
       reason,
       minHourlyJpy: minHourly,
-      // AIの使用を禁じる文（範囲）。禁止された部分は本人が作業する前提で、一覧と提案文に反映する
-      aiBan: readAiBan(lead.rawText),
       gates: {
         passed: gates.passed,
         negotiable: gates.negotiable,
@@ -879,10 +877,12 @@ function buildProposalPrompt(lead: Lead, background: string, learned: LearnedPar
 - ${learned.targetProposalChars}文字前後。長文は読まれない。
 - 誇張・成果保証を書かない。
 - 事実として確認できないこと（実績数値、資格、経歴）を創作しない。埋める箇所は 【要確認: 何を書くか】 の形で残す。
+- 作業の進め方（生成AIを使うことなど）は、わざわざ書かない。ただし「AIを使っていない」「すべて手作業」とも書かない。募集文がAIの使用の有無を尋ねている場合は、そこに【要確認: AIの使用の有無を聞かれている】を残す（人が答える）。
+- 下の「自分の経歴」にない分野（翻訳・プログラミング・Webなど）の経験があるようには書かない。経験を書かず、進め方・確認の仕方・納期など、できることだけを具体的に書く。
+- 契約や仮払いの前に、無償のサンプルや試作を作ると約束しない。
 - 冒頭2行で「この募集を読んだ上で書いている」ことが伝わること。
 - 相手が一番不安なこと（納期、途中で消えないか、指示が通じるか）を先回りして潰す。
-- 質問は最後に1〜2個だけ。
-- AIを使うことには触れない。${
+- 質問は最後に1〜2個だけ。${
     aiBan.length
       ? `\n- この募集はAIの使用を禁じています（「${aiBan.join("」「")}」）。禁止された部分は応募者本人が自分で作業する前提で書き、その部分をAIで作る・AIで効率化するといった内容は書かない。`
       : ""

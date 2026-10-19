@@ -512,18 +512,72 @@ test("機密・本人性の判定: 定型の表示や「記入しないでくだ
   assert.ok(JSON.stringify(checkGates("顧客の個人情報を含む名簿を入力します")).includes("機密・NDA"));
 });
 
-test("AI禁止の募集は自動で見送らず、禁止の範囲を抜き出して「確認」に回す", async () => {
-  const { checkGates, readAiBan } = await import("../../dist-test/agent/gates.js");
-  const hit = (t) => checkGates(t).hits.find((h) => h.id === "ai_banned");
-  assert.ok(hit("記事はAI使用禁止です。コピペチェックも行います"));
-  assert.ok(hit("ChatGPTなどの生成AIの利用はご遠慮ください"));
-  assert.ok(hit("AIのみで作成した提案は不採用とします"));
-  assert.ok(!hit("ChatGPTを使った業務効率化のサポートをお願いします"));
-  assert.ok(!hit("AIツールの導入支援。社内向けの手順書を作ってください"));
-  // 交渉（確認）で通る扱い。理由には禁止の範囲がそのまま入る
-  const g = checkGates("ロゴのデザインをお願いします。\n・画像生成AIの使用は禁止です。\n・ラフはAIで作ってもかまいません。");
-  assert.equal(g.negotiable, true);
-  assert.match(g.note, /AI禁止あり（範囲:「画像生成AIの使用は禁止です。」/);
-  assert.deepEqual(readAiBan("記事作成です。構成はお任せします。AI使用禁止です。よろしくお願いします。"), ["AI使用禁止です。"]);
-  assert.deepEqual(readAiBan("データ入力のお仕事です。"), []);
+test("無いと言い切っている文は条件に数えない（電話は一切ありません／出社なし／社外秘の開示は不要）", async () => {
+  const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const { stripNegatedClauses } = await import("../../dist-test/agent/negation.js");
+
+  // 実データ: 在宅のデータ整理の募集が、安心させる一文で「現地作業・電話」に落ちていた
+  const home = "完全在宅（出社なし）です。営業活動・電話連絡・ライティング作成・手作業でのデータ打ち込みは一切ありません。AIを使った整理をお願いします。";
+  assert.ok(!judgeDeliverability(home).matched.includes("onsite"), "否定文の電話・出社で現地作業にしない");
+  // 本当に求めている電話は、そのまま拾う
+  assert.ok(judgeDeliverability("お客様への電話対応をお願いします。").matched.includes("onsite"));
+  assert.ok(judgeDeliverability("週1回の出社が必須です。").matched.includes("onsite"));
+  // 否定の言い切りが別の節にあっても、前の節は残す
+  assert.ok(judgeDeliverability("撮影が必要ですが、編集は不要です。").matched.includes("onsite"));
+
+  // 実データ: 「社名のご開示は不要」の注意書きが機密・NDAに当たっていた
+  assert.ok(!JSON.stringify(checkGates("30分のヒアリングです。※社外秘の情報や社名のご開示は不要です。")).includes("機密・NDA"));
+  assert.ok(!JSON.stringify(checkGates("NDAの締結は必要ありません。")).includes("機密・NDA"));
+  assert.ok(JSON.stringify(checkGates("社外秘の資料を扱います。NDAを締結していただきます。")).includes("機密・NDA"));
+  // 無いこと自体が条件になるもの（クレジット表記なし）は消さない
+  assert.ok(JSON.stringify(checkGates("納品物はクレジット表記なしでお願いします。")).includes("クレジット"));
+
+  // 並んだ語は両方消えるが、助詞のある別の節は残る
+  assert.equal(stripNegatedClauses("出社、電話連絡は一切ありません。"), "。");
+  assert.match(stripNegatedClauses("NDAを締結してください、電話は不要です。"), /NDAを締結してください/);
+  assert.doesNotMatch(stripNegatedClauses("NDAを締結してください、電話は不要です。"), /電話/);
+  // 「問題ありませんか？」のような質問や、不要な〜（修飾）は消さない
+  assert.match(stripNegatedClauses("電話でも問題ありませんか？"), /電話/);
+  assert.match(stripNegatedClauses("不要な電話は断ってください。"), /電話/);
+});
+
+test("語の一部には当たらない（予算アロケーションの「ロケ」、ユーザー名「SAI12」の「SAI」）", async () => {
+  const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  assert.ok(!judgeDeliverability("広告の予算アロケーションの提案資料を作ります。").matched.includes("onsite"));
+  assert.ok(!judgeDeliverability("応募者一覧\nSAI12 さん 2026/10/19").matched.includes("art"));
+  assert.ok(judgeDeliverability("ロケ撮影の補助をお願いします。").matched.includes("onsite"));
+  assert.ok(judgeDeliverability("SAIで線画を描ける方").matched.includes("art"));
+});
+
+test("詐欺判定: 作るホームページの仕様（LINEの友だち追加ページへリンク）は、ワーカーをLINEに誘う文と読まない", async () => {
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const spec = "HPの全体リニューアルをお願いします。\n・LINEは、既存の友だち追加ページへリンクしてください。\n・Instagramは、保存済みのフィードを表示してください。";
+  const ids = scoreScam(spec).signals.map((s) => s.id);
+  assert.ok(!ids.includes("offplatform_link") && !ids.includes("line_only_contact"));
+  // ワーカーへの誘導や、リンクそのものは従来どおり拾う
+  assert.ok(scoreScam("詳細はLINEでお話しします。友だち追加をお願いします。").signals.some((s) => s.id === "offplatform_link"));
+  assert.ok(scoreScam("LINEの友だち追加ページへリンクして連絡ください https://lin.ee/abc").signals.some((s) => s.id === "offplatform_link"));
+});
+
+test("AIの利用を禁止している募集は受けない（使っていいと書いてあるものは落とさない）", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const hit = (t) => JSON.stringify(checkGates(t)).includes("AIの利用を禁止");
+  for (const t of [
+    "ChatGPTなどの生成AIの使用は禁止です。",
+    "AI利用不可です。ご自身の言葉で書いてください。",
+    "生成AIを使った執筆はご遠慮ください。",
+    "AIの使用はNGとさせていただきます",
+    "AIで作った文章は受け取れません。",
+    "※AI禁止",
+    "ＡＩの使用は禁止",
+  ]) assert.ok(hit(t), `落とすべき: ${t}`);
+  for (const t of [
+    "生成AIの使用は禁止しません。むしろ歓迎です。",
+    "ChatGPTを活用できる方歓迎です。",
+    "AI利用OK。納期は厳守でお願いします。",
+    "EMAILの利用は不可です。チャットでお願いします。",
+    "AIの使用を禁止する旨の記載は一切ありません。",
+    "記事を10本書いてください。AIを使えば速いです。",
+  ]) assert.ok(!hit(t), `落としてはいけない: ${t}`);
 });
