@@ -9,6 +9,7 @@
  *   node scripts/cw-patrol.mjs queue-add <募集URL> --proposal 提案文.txt   # 人が確かめた提案文つきで一覧に足す
  *   node scripts/cw-patrol.mjs queue-redraft [番号…] [--force]       # 提案文が空の件の提案文を作り直す（--force: 入っている件も）
  *   node scripts/cw-patrol.mjs queue-set <番号> --proposal 提案文.txt  # その件の提案文をファイルの文に差し替える
+ *   node scripts/cw-patrol.mjs rejudge <募集URLか番号>…              # 判定のルールを直したあとに、前に落とした募集を読み直して判定し、一覧に足す（最大5件。応募画面は開かない）
  *   node scripts/cw-patrol.mjs page <募集IDまたはURL>…               # 募集の本文（判定に渡す部分）を表示する
  *   node scripts/cw-patrol.mjs read <https://crowdworks.jp/…のURL>…   # 画面の文字とリンクを表示する（メッセージの受信箱・スカウトの形を調べる用。読むだけ）
  *   node scripts/cw-patrol.mjs messages [--last 3] [--max 800]       # 受信箱のやり取りを読んで、状態・危険信号・最後の数通の本文を表示する（読むだけ）
@@ -966,6 +967,63 @@ async function queueAdd() {
 }
 
 /**
+ * 募集を指定して、読み直して判定し直し、応募してよい／確認してから応募 なら一覧に足す(最大5件)。
+ *   rejudge <募集URLか番号>…
+ * 巡回は「判定済みの募集」を二度と読まないので、判定のルールを直したあとに、前に落とした募集を拾い直す用。
+ * 応募画面は開かない・送信しない。
+ */
+async function rejudge() {
+  const ids = [...new Set(argv.slice(1).filter((a) => !a.startsWith("--")).map((a) => jobIdFromUrl(a)).filter(Boolean))].slice(0, 5);
+  if (!ids.length) die("使い方: node scripts/cw-patrol.mjs rejudge <募集URLか番号>…（最大5件。判定のルールを直したあとに、前に落とした募集を読み直す）");
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  try {
+    ensureBuilt();
+    const { core } = loadLib();
+    const pages = [];
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    try {
+      for (const [i, id] of ids.entries()) {
+        if (i > 0) await politeWait();
+        try {
+          const p = await readPage(page, jobUrl(id));
+          if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
+          const title = p.title.replace(/\s*[|｜].*$/, "").trim() || "（題名不明）";
+          pages.push({ id, title, p });
+        } catch (e) {
+          console.log(`読めませんでした: ${jobUrl(id)} ${e.message}`);
+        }
+      }
+    } finally {
+      await ctx.close();
+    }
+    const items = [];
+    for (const { id, title, p } of pages) {
+      const link = { key: `job:${id}`, url: jobUrl(id) };
+      const j = judgeJob(core.jobBodyForJudging(p.text, title), title, link.url);
+      console.log(`判定: ${j.verdict}  ${title}  ${link.url}`);
+      if (/^(応募してよい|確認してから応募)/.test(j.verdict)) {
+        const item = core.buildQueueItem({ link, applyUrl: applyUrl(id), title, pageText: p.text, judged: { verdict: j.verdict, detail: j.detail }, background: readBackground() });
+        if (/^見送り/.test(item.verdict)) console.log(`  → 関門・危険信号で見送りをすすめるので、一覧には足しません`);
+        else items.push(item);
+      }
+    }
+    if (items.length) {
+      const before = readJson(QUEUE_JSON, core.emptyQueue());
+      const after = core.addToQueue(before, items);
+      writeJson(QUEUE_JSON, after);
+      fs.writeFileSync(QUEUE_MD, core.queueMarkdown(after));
+      const known = new Set(before.items.map((i) => i.id));
+      for (const i of after.items.filter((x) => !known.has(x.id))) console.log(`一覧に足しました: 【${i.no}】${i.title}`);
+      for (const i of items.filter((x) => known.has(x.id))) console.log(`すでに一覧にあります: ${i.title}`);
+    } else console.log("一覧に足す募集はありませんでした");
+  } finally {
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
+/**
  * 一覧にあるのに提案文が空の件（または番号で指した件）に、提案文を作り直して入れる。番号と状態はそのまま。
  *   queue-redraft [番号…]      番号なしなら、提案文が空の「一覧」の件すべて
  * 募集のページを読み直して判定をやり直す（応募画面は開かない・送信しない）。
@@ -1355,9 +1413,9 @@ function budgets() {
   console.log(loadLib().core.summarizeBudgets(records));
 }
 
-const commands = { setup, run, fill, reply, autosend, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, page: pageShow, read: readShow, messages: messagesShow, schedule: () => registerSchedule(), "test-mail": () => testMail() };
+const commands = { setup, run, fill, reply, autosend, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, rejudge, page: pageShow, read: readShow, messages: messagesShow, schedule: () => registerSchedule(), "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | page <募集ID>… | read <crowdworks.jpのURL>… | messages [--last 3] | queue-mark approved|sent|skipped 番号… | fill --approved | reply <契約のURL> --check | autosend status | schedule | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | rejudge <募集URLか番号>… | page <募集ID>… | read <crowdworks.jpのURL>… | messages [--last 3] | queue-mark approved|sent|skipped 番号… | fill --approved | reply <契約のURL> --check | autosend status | schedule | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();
