@@ -782,6 +782,18 @@ test("誤判定の修正: 「あれば」の任意のポートフォリオの依
   assert.ok(identity("応募時にポートフォリオをご提示ください。"), "応募の条件として出させるものは今まで通り拾う");
 });
 
+test("誤判定の修正: 「研修講師」「対面研修」は、本人が人前に立つ仕事（ランサーズの生成AI研修講師が「応募してよい」になっていた）", async () => {
+  const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  const identity = (t) => judgeDeliverability(t).matched.includes("personal_identity");
+  const onsite = (t) => judgeDeliverability(t).matched.includes("onsite");
+  assert.ok(identity("【業務委託｜時給1万円】生成AI×デザイン・動画制作の業務自動化研修講師募集"), "研修講師は本人が話す仕事");
+  assert.ok(identity("セミナー講師として登壇していただきます。"));
+  assert.ok(onsite("東京・関東近郊での対面研修が基本です。"), "対面研修は会場に行く仕事");
+  assert.ok(!identity("研修講師向けのスライド資料を作成してください。"), "講師のための資料づくりは除く");
+  assert.ok(!identity("登壇資料の作成をお願いします。"), "登壇資料の作成は本人が登壇する仕事ではない");
+  assert.ok(!onsite("打ち合わせは対面ではなくオンラインで行います。"), "対面の打ち合わせの有無は拾わない");
+});
+
 test("誤判定の修正: 題名の「漫画動画シナリオ」と分類タグの「記事作成」は、漫画の制作にしない／「NG：AIに…考えさせて」はAIの禁止として読む", async () => {
   const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
   const { readAiRestriction } = await import("../../dist-test/agent/ai-restriction.js");
