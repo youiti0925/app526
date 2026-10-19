@@ -290,13 +290,34 @@ function readPayAmount(body: string, labelAt: number): { min: number; max: numbe
   return max >= min ? { min, max } : null;
 }
 
+/**
+ * 支払い方式の表示を探す。ページの題名にも「…(時間単価制)の仕事・求人」と出てくるので、
+ * 括弧の中のものは飛ばし、すぐ後ろに金額（か「相談」）があるものを選ぶ。なければ最初のもの。
+ */
+function findPayLabel(body: string): RegExpExecArray | null {
+  let first: RegExpExecArray | null = null;
+  for (const m of body.matchAll(/(固定報酬制|時間単価制|コンペ形式|タスク形式)/g)) {
+    const mm = m as RegExpExecArray;
+    if (/[(（]/.test(body[mm.index - 1] ?? "")) continue;
+    first ??= mm;
+    const section = body.slice(mm.index, mm.index + 90);
+    if (new RegExp(AMOUNT).test(section) || /相談/.test(section)) return mm;
+  }
+  return first;
+}
+
+/** 「必要なスキル」の欄（次の見出しまでの短い範囲）。Excel の仕事かどうかは、題名とここを一番信用する */
+function skillsOf(body: string): string {
+  return body.match(/必要なスキル([\s\S]{0,100})/)?.[1] ?? "";
+}
+
 /** 読んだ募集から、予算と種類を1件分の記録にする。分類は、依頼者欄・おすすめより前の本文だけで行う。 */
 export function budgetRecord(link: { key: string; url: string }, title: string, text: string, at: Date = new Date()): BudgetRecord {
   const body = jobBodyForJudging(text).normalize("NFKC").slice(0, 6000);
   const head = body.slice(0, 600);
   // 募集ページの先頭に出る「固定報酬制」「時間単価制」「コンペ形式」「タスク形式」の最初のものがその募集の支払い方式
   const PAY_TYPES: Record<string, BudgetRecord["payType"]> = { 固定報酬制: "固定報酬", 時間単価制: "時間単価", コンペ形式: "コンペ", タスク形式: "タスク" };
-  const found = /(固定報酬制|時間単価制|コンペ形式|タスク形式)/.exec(body);
+  const found = findPayLabel(body);
   const payType: BudgetRecord["payType"] = found
     ? PAY_TYPES[found[1]]
     : /コンペ/.test(head) ? "コンペ" : /タスク形式/.test(head) ? "タスク" : /時間単価|時給/.test(head) ? "時間単価" : /固定報酬/.test(head) ? "固定報酬" : "不明";
@@ -325,8 +346,9 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
     budgetMaxJpy,
     hourlyJpy,
     hourlyMaxJpy,
-    excelVba: mentions(EXCEL_VBA, title, body, 3),
-    quality: mentions(QUALITY, title, body, 2),
+    // 題名か「必要なスキル」に出ていれば当たり。本文だけなら、飾りの語に引っ張られないよう多めに出たものだけ
+    excelVba: mentions(EXCEL_VBA, `${title}\n${skillsOf(body)}`, body, 6),
+    quality: mentions(QUALITY, `${title}\n${skillsOf(body)}`, body, 3),
     payType,
   };
 }

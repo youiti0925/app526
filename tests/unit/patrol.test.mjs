@@ -174,7 +174,9 @@ test("予算の記録: おすすめ欄のExcelは数えず、時給は固定報�
   assert.equal(a.budgetJpy, 30000);
   // 本文に1回だけ出る飾りの語は数えない。題名に出る・本文に2回以上出る募集は数える
   assert.equal(budgetRecord({ key: "job:11", url: "u" }, "資料作成", "固定報酬制 報酬 10,000円 Excelが使える方歓迎").excelVba, false);
-  assert.equal(budgetRecord({ key: "job:12", url: "u" }, "資料作成", "固定報酬制 報酬 10,000円 Excelで表を作り、Excelで集計し、Excelでグラフにします").excelVba, true);
+  assert.equal(budgetRecord({ key: "job:12", url: "u" }, "資料作成", "固定報酬制 報酬 10,000円 Excelで表を作り、Excelで集計し、Excelでグラフにします").excelVba, false, "本文に数回出るだけでは当たりにしない");
+  assert.equal(budgetRecord({ key: "job:12", url: "u" }, "資料作成", "固定報酬制 報酬 10,000円 資料を作ります。必要なスキル Excel VBA 関数").excelVba, true, "必要なスキルに出ていれば当たり");
+  assert.equal(budgetRecord({ key: "job:12", url: "u" }, "資料作成", `固定報酬制 報酬 10,000円 ${"Excelで集計します。".repeat(6)}`).excelVba, true, "本文に何度も出る募集は当たり");
   assert.equal(budgetRecord({ key: "job:16", url: "u" }, "公務員試験の講師", "固定報酬制 ワーカーと相談する 必要なスキル 法律 数学 マクロ経済 ミクロ経済 マクロ経済学").excelVba, false, "マクロ経済はExcelのマクロではない");
   const h = budgetRecord({ key: "job:13", url: "u" }, "スプレッドシートの関数でレポート構築", "時間単価制\n時給\n1,500円 〜 2,000円\n週10時間");
   assert.equal(h.payType, "時間単価");
@@ -196,6 +198,14 @@ test("予算の記録: おすすめ欄のExcelは数えず、時給は固定報�
   const text = summarizeBudgets([h, task, bad, a, small]);
   assert.ok(text.includes("すべて: 5件（報酬が読めた固定報酬 1件"), text);
   assert.ok(text.includes("時給の募集 1件（時給の下限の中央値 1,500円）"));
+});
+
+test("支払い方式は、題名の「(時間単価制)の仕事」ではなく、金額のすぐ前の表示から読む", () => {
+  const page = `スプレッドシートの関数でレポート構築(時間単価制)の仕事・求人【フルリモート】\n仕事の概要\n時間単価制 1,500円 〜 2,000円\n稼働時間/週 10時間/週\n${"本文です。".repeat(60)}\nクライアント情報`;
+  const r = budgetRecord({ key: "job:20", url: "u" }, "スプレッドシートの関数でレポート構築", page);
+  assert.equal(r.payType, "時間単価");
+  assert.equal(r.hourlyJpy, 1500);
+  assert.equal(r.hourlyMaxJpy, 2000);
 });
 
 test("判定に渡す本文: 依頼者欄・おすすめ・ページ下部の定型文を落とす", () => {
