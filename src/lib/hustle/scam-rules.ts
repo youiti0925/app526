@@ -171,7 +171,8 @@ export const SCAM_RULES: ScamRule[] = [
     patterns: [
       /(招待|紹介|インバイト)\s*(リンク|コード|URL)[^。\n]{0,40}(会員登録|新規登録|口座開設|アカウント)/,
       /(下記|以下|こちら)の\s*(リンク|URL)\s*から[^。\n]{0,30}(会員登録|新規登録|無料登録|口座開設|アカウント(作成|登録)|インストール|ダウンロード)/,
-      /https?:\/\/\S*(invitation|invite|referral|refer=|ref=|aff_|affiliate)\S*/i,
+      // クラウドワークス・ランサーズ自身のページへのリンク（tech.crowdworks.jp/job_offers/…?ref=… など）は紹介リンクではない
+      /https?:\/\/(?![\w.-]*(?:crowdworks|lancers)\.jp\/)\S*(invitation|invite|referral|refer=|ref=|aff_|affiliate)\S*/i,
     ],
   },
   {

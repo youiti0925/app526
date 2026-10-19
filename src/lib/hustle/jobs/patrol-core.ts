@@ -309,7 +309,7 @@ function readPayAmount(body: string, labelAt: number): { min: number; max: numbe
  */
 function findPayLabel(body: string): RegExpExecArray | null {
   let first: RegExpExecArray | null = null;
-  for (const m of body.matchAll(/(固定報酬制|時間単価制|コンペ形式|タスク形式)/g)) {
+  for (const m of body.matchAll(/(固定報酬制|時間単価制|コンペ形式|タスク形式|タスク(?=\s*[0-9,.]+\s*円\s*[\/／]\s*件))/g)) {
     const mm = m as RegExpExecArray;
     if (/[(（]/.test(body[mm.index - 1] ?? "")) continue;
     first ??= mm;
@@ -367,7 +367,7 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
   const body = jobBodyForJudging(text, title).normalize("NFKC").slice(0, 6000);
   const head = body.slice(0, 600);
   // 募集ページの先頭に出る「固定報酬制」「時間単価制」「コンペ形式」「タスク形式」の最初のものがその募集の支払い方式
-  const PAY_TYPES: Record<string, BudgetRecord["payType"]> = { 固定報酬制: "固定報酬", 時間単価制: "時間単価", コンペ形式: "コンペ", タスク形式: "タスク" };
+  const PAY_TYPES: Record<string, BudgetRecord["payType"]> = { 固定報酬制: "固定報酬", 時間単価制: "時間単価", コンペ形式: "コンペ", タスク形式: "タスク", タスク: "タスク" };
   const found = findPayLabel(body);
   const payType: BudgetRecord["payType"] = found
     ? PAY_TYPES[found[1]]

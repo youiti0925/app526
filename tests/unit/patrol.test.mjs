@@ -493,6 +493,18 @@ test("判定に渡す本文: ページ先頭のサイト共通メニュー・パ
   assert.ok(!explainJob(title, page).includes("ご意見箱"));
 });
 
+test("タスク形式は「タスク 33円 / 件」の表示でも支払い方式をタスクと読む。プラットフォーム自身へのリンクは紹介リンクにしない", async () => {
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const page = `マイページ\n仕事を探す\n【18歳〜49歳の方限定】服に関するアンケート\n仕事の概要\nタスク\n\n33円 / 件\n募集件数\n120件\n仕事の詳細\n${"回答をお願いします。".repeat(20)}\nクライアント情報\n○○の詳細を見る`;
+  const r = budgetRecord({ key: "job:66", url: "u" }, "【18歳〜49歳の方限定】服に関するアンケート", page);
+  assert.equal(r.payType, "タスク");
+  assert.equal(r.budgetJpy, null);
+  // CW自身のページへのリンクは紹介リンクではない。業者の紹介リンクは従来どおり拾う
+  const own = "詳細はこちら https://tech.crowdworks.jp/job_offers/30966?ref=job_offers_show をご覧ください。";
+  assert.ok(!scoreScam(own).signals.some((s) => s.id === "referral_signup"));
+  assert.ok(scoreScam("登録はこちら https://example.com/signup?ref=abc123 から。").signals.some((s) => s.id === "referral_signup"));
+});
+
 test("パンくず（…の仕事・求人）は判定の本文に入れない。仕事の種類は題名に当たったものを先にする", () => {
   const crumbs = "マイページ\n仕事を探す\nシステム開発の仕事・求人\n保守・運用・更新の仕事・求人\n";
   const body = "⭐【VBA】ECシステムの構築・開発業務案件⭐\n仕事の概要\n固定報酬制 500,000円 〜 1,000,000円\n毎月の稼働時間：160時間程度の常駐型です。\n" + "詳細な作業内容は面談でご説明します。".repeat(8) + "\nクライアント情報\n募集実績 4,103 件\n○○の詳細を見る";
