@@ -841,6 +841,8 @@ export function stripNonQuantities(text: string): string {
     text
       // 規格番号: ISO9001 / ISO 14001 / JIS Z 7253 / IEC 62443
       .replace(/\b(ISO|IEC|JIS|ANSI|ASTM)\s?[A-Z]?\s?[0-9-]{3,7}/gi, " ")
+      // ランサーズの募集ページ上部の数（提案数 88 件・当選人数 0 件・募集人数2人）は、作る量ではない
+      .replace(/(提案数|当選人数|募集人数|応募数|閲覧数|お気に入り数?)\s*[0-9,]+\s*(?:件|人|回)?/g, " ")
       // 年号・西暦
       .replace(/\b(19|20)[0-9]{2}\s*年?/g, " ")
       // 5桁以上の連番（タグ・ID・郵便番号のたぐい）。

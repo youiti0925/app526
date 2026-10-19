@@ -782,6 +782,16 @@ test("誤判定の修正: 「あれば」の任意のポートフォリオの依
   assert.ok(identity("応募時にポートフォリオをご提示ください。"), "応募の条件として出させるものは今まで通り拾う");
 });
 
+test("誤判定の修正: ランサーズの「提案数 88 件」は記事の本数にしない（手作業352時間と見積もっていた）", async () => {
+  const { estimateByWorkType, stripNonQuantities } = await import("../../dist-test/agent/worktypes.js");
+  assert.doesNotMatch(stripNonQuantities("提案数 88 件 当選人数 0 件 (募集人数2人)"), /88|募集人数/);
+  const e = estimateByWorkType(
+    "【1文字2円/1記事/5,000～10,000文字程度】SEO記事のライティング\nプロジェクト 10,000円~ 20,000円 10,000 円／5,000 文字 (文字単価：2.00 円) 募集締切まで 1日と14時間 提案数 88 件 当選人数 0 件 (募集人数2人)\nSEOコラムのライティングをお願いします。記事数 1 本"
+  );
+  assert.ok(e);
+  assert.ok(e.manualHours < 40, `1本の記事を${e.manualHours}時間と見積もっている`);
+});
+
 test("誤判定の修正: 「AIを使ったらブロック」も、AIの禁止として読む", async () => {
   const { readAiRestriction } = await import("../../dist-test/agent/ai-restriction.js");
   const r = readAiRestriction("生成AIを使用したと思われる方は、ブロックします。");
