@@ -473,10 +473,20 @@ function findPayLabel(body: string): RegExpExecArray | null {
   return first;
 }
 
-/** 「契約金額(目安): 1,320円」の金額。文字単価の募集で、画面が総額の目安を出している。なければ null */
-function readEstimatedContract(body: string): number | null {
-  const m = body.match(/契約金額\s*[(（]?\s*目安\s*[)）]?\s*[:：]?\s*([0-9][0-9,]*)\s*円/);
-  return m ? yen(m[1]) : null;
+/**
+ * 「契約金額(目安): 1,320円」の金額。文字単価の募集で、画面が総額の目安を出している。なければ null。
+ * 「契約金額(目安): 〜 5,000円」（上限だけ）や「1,000円 〜 5,000円」（幅）の形もある。
+ * 上限だけのときは、下限が分からないので上限を下限としても使う（金額欄は人が確かめて入れる）。
+ */
+function readEstimatedContract(body: string): { min: number; max: number } | null {
+  const m = body.match(/契約金額\s*[(（]?\s*目安\s*[)）]?\s*[:：]?\s*(?:([0-9][0-9,]*)\s*円)?\s*(?:[〜~～-]\s*([0-9][0-9,]*)\s*円)?/);
+  if (!m) return null;
+  const lo = m[1] ? yen(m[1]) : null;
+  const hi = m[2] ? yen(m[2]) : null;
+  if (lo === null && hi === null) return null;
+  const max = hi ?? lo!;
+  const min = lo ?? max;
+  return max >= min ? { min, max } : null;
 }
 
 /** 「必要なスキル」の欄（次の見出しまでの短い範囲）。Excel の仕事かどうかは、題名とここを一番信用する */
@@ -545,8 +555,8 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
       // 文字単価（1.2円など）の募集は、画面が「契約金額(目安)」として総額の目安を出している
       const est = readEstimatedContract(body);
       if (est !== null) {
-        budgetJpy = est;
-        budgetMaxJpy = est;
+        budgetJpy = est.min;
+        budgetMaxJpy = est.max;
         budgetEstimated = true;
       }
     }
@@ -1039,7 +1049,8 @@ export function buildQueueItem(args: {
     price = lo;
   } else if (rec.budgetJpy != null && rec.budgetEstimated) {
     // 文字単価の募集。画面の「契約金額(目安)」で、確定した額ではない。応募画面の金額欄は人が確かめて入れる
-    payText = `${rec.payType} 契約金額の目安 ${rec.budgetJpy.toLocaleString()}円（文字単価から画面が計算した額。確定ではありません）`;
+    const eHi = rec.budgetMaxJpy ?? rec.budgetJpy;
+    payText = `${rec.payType} 契約金額の目安 ${rec.budgetJpy === eHi ? "" : rec.budgetJpy.toLocaleString() + "〜"}${eHi.toLocaleString()}円（文字単価から画面が計算した額。確定ではありません）`;
     checks.push("金額は文字単価からの目安です。応募画面の金額（文字単価や総額）を確かめて入れる");
   } else if (rec.budgetJpy != null) {
     const lo = rec.budgetJpy;

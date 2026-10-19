@@ -741,3 +741,12 @@ test("提案文の稼働の曜日・時間帯が経歴に無ければ注意、�
   const it = buildQueueItem({ link: { key: "job:9", url: "u" }, applyUrl: "a", title: "記事のお仕事", pageText: page, judged: { verdict: "確認してから応募", detail }, background: bg });
   assert.ok(it.checks.includes("報酬が1記事いくらか書かれていません") && it.checks.includes("継続の頻度が不明です"));
 });
+
+test("文字単価の募集: 契約金額(目安)が「〜 5,000円」（上限だけ）や「1,000円 〜 5,000円」（幅）でも金額として読む", () => {
+  const upper = budgetRecord({ key: "job:70", url: "u" }, "t", "固定報酬制\n1.0円\n契約金額（目安）: 〜 5,000円\n1記事あたりの文字数 3000 文字\n記事を書いてください");
+  assert.deepEqual([upper.budgetJpy, upper.budgetMaxJpy, upper.budgetEstimated], [5000, 5000, true]);
+  const range = budgetRecord({ key: "job:71", url: "u" }, "t", "固定報酬制 1.0円 契約金額(目安): 1,000円 〜 5,000円 記事を書いてください");
+  assert.deepEqual([range.budgetJpy, range.budgetMaxJpy], [1000, 5000]);
+  const none = budgetRecord({ key: "job:72", url: "u" }, "t", "固定報酬制 1.0円 契約金額(目安): ワーカーと相談 記事を書いてください");
+  assert.equal(none.budgetJpy, null);
+});
