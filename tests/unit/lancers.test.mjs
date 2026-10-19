@@ -122,3 +122,32 @@ test("検索語は前回の続きから順番に回し、一周したら最初�
   assert.deepEqual(rotateKeywords(all, 0, 9).words, all);
   assert.ok(DEFAULT_KEYWORDS.includes("文字起こし") && DEFAULT_KEYWORDS.includes("翻訳") && DEFAULT_KEYWORDS.includes("Python"));
 });
+
+test("予算の読み取り: 固定・単価・時給を分ける", async () => {
+  const { parseBudget } = await import("../../scripts/lib/lancers.mjs");
+  assert.deepEqual(parseBudget("50,000円 ~ 100,000円"), { kind: "fixed", low: 50000, high: 100000 });
+  assert.deepEqual(parseBudget("〜5,000円"), { kind: "fixed", low: 5000, high: 5000 });
+  assert.equal(parseBudget("1件40円").kind, "unit");
+  assert.equal(parseBudget("時給1,500円").kind, "hourly");
+  assert.deepEqual(parseBudget("応相談"), { kind: "fixed", low: null, high: null });
+});
+
+test("募集の数と予算を検索語ごとに集計し、同じ募集は1回だけ数える", async () => {
+  const { summarizeMarket, formatMarket } = await import("../../scripts/lib/lancers.mjs");
+  const now = new Date("2026-10-19T00:00:00Z");
+  const at = "2026-10-18T00:00:00Z";
+  const rows = summarizeMarket(
+    [
+      { id: "1", keyword: "翻訳", price: "10,000円", at },
+      { id: "1", keyword: "翻訳", price: "10,000円", at },
+      { id: "2", keyword: "翻訳", price: "30,000円", at },
+      { id: "3", keyword: "翻訳", price: "1件40円", at },
+      { id: "4", keyword: "記事作成", price: "5,000円", at },
+      { id: "5", keyword: "記事作成", price: "5,000円", at: "2026-09-01T00:00:00Z" },
+    ],
+    { days: 7, now }
+  );
+  assert.deepEqual(rows[0], { keyword: "翻訳", count: 3, perMonth: 13, medianFixed: 20000, fixedCount: 2, unit: 1, hourly: 0 });
+  assert.equal(rows[1].count, 1);
+  assert.match(formatMarket(rows, 7), /\| 翻訳 \| 3 \| 13 \| 20,000円（2件）/);
+});

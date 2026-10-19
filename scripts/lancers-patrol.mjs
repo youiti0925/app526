@@ -5,6 +5,7 @@
  *   node scripts/lancers-patrol.mjs run                 # 巡回して一覧を書く（判定と提案文は job.mjs judge）
  *   node scripts/lancers-patrol.mjs run --show          # 画面を見ながら
  *   node scripts/lancers-patrol.mjs run --no-judge      # 判定せずに集めるだけ
+ *   node scripts/lancers-patrol.mjs market [--days 7] [--out フォルダ]  # 仕事の種類ごとの募集数と予算の集計
  *   node scripts/lancers-patrol.mjs run --keywords "エクセル,VBA" --out C:\Users\…\副業\ランサーズ応募候補
  *
  * 守ること（変えない）:
@@ -30,6 +31,8 @@ import {
   detailUrl,
   extractDetailInPage,
   extractListInPage,
+  formatMarket,
+  summarizeMarket,
   formatList,
   normalizeDetail,
   normalizeListItem,
@@ -41,6 +44,7 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 const HOME = process.env.LANCERS_PATROL_HOME || path.join(os.homedir(), ".lancers-patrol");
 const SEEN = path.join(HOME, "seen.json");
 const STATE = path.join(HOME, "state.json");
+const MARKET_LOG = path.join(HOME, "market-log.jsonl");
 const PROFILE = path.join(HOME, "browser-profile");
 
 const argv = process.argv.slice(2);
@@ -136,6 +140,10 @@ async function run() {
         if (items.length || !raw.length) break;
       }
       log(`「${w}」 ${items.length}件`);
+      // 募集の数と予算を、仕事の種類（検索語）ごとに記録する（market で集計）
+      fs.mkdirSync(HOME, { recursive: true });
+      const at = new Date().toISOString();
+      fs.appendFileSync(MARKET_LOG, items.map((it) => JSON.stringify({ id: it.id, keyword: w, price: it.price, at }) + "\n").join(""));
       for (const it of items) {
         if (seen.has(it.id) || found.has(it.id) || it.closed) continue;
         found.set(it.id, { ...it, keyword: w, score: clientScore(it) });
@@ -188,12 +196,28 @@ async function run() {
   }
 }
 
-if (cmd === "run") {
+function market() {
+  const days = Number(opt("--days") ?? 7);
+  const records = fs.existsSync(MARKET_LOG)
+    ? fs.readFileSync(MARKET_LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
+    : [];
+  const md = formatMarket(summarizeMarket(records, { days }), days);
+  const out = opt("--out");
+  if (out) {
+    fs.mkdirSync(out, { recursive: true });
+    fs.writeFileSync(path.join(out, "ランサーズ募集の数と予算.md"), md);
+  }
+  console.log(md);
+}
+
+if (cmd === "market") {
+  market();
+} else if (cmd === "run") {
   run().catch((e) => {
     console.error(`エラー: ${e.message}`);
     process.exit(1);
   });
 } else {
-  console.log("使い方: node scripts/lancers-patrol.mjs run [--show] [--no-judge] [--keywords エクセル,VBA] [--out フォルダ]");
+  console.log("使い方: node scripts/lancers-patrol.mjs run [--show] [--no-judge] [--keywords エクセル,VBA] [--out フォルダ] | market [--days 7] [--out フォルダ]");
   process.exit(cmd ? 2 : 0);
 }

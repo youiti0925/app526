@@ -265,3 +265,55 @@ export function formatList(items, { when = new Date() } = {}) {
   });
   return lines.join("\n") + "\n";
 }
+
+/** 「50,000円 ~ 100,000円」「〜5,000円」「1件40円」などから、下限と上限（円）を読む。時給・単価は kind で分ける。 */
+export function parseBudget(text) {
+  const t = `${text ?? ""}`.replace(/\s+/g, "");
+  const nums = [...t.matchAll(/([\d,]+)円/g)].map((m) => Number(m[1].replace(/,/g, ""))).filter((n) => n > 0);
+  const kind = /時給|\/時間|時間あたり/.test(t) ? "hourly" : /1件|件あたり|\/件|1商品|1記事|文字単価|1文字/.test(t) ? "unit" : "fixed";
+  if (!nums.length) return { kind, low: null, high: null };
+  return { kind, low: Math.min(...nums), high: Math.max(...nums) };
+}
+
+const median = (xs) => {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
+};
+
+/**
+ * 記録した募集（{id, keyword, price, at}）を検索語ごとにまとめる。同じ募集は1回だけ数える。
+ * 「月に何件・いくらの仕事があるか」を、推測ではなく見た数で出すため。
+ */
+export function summarizeMarket(records, { days = 7, now = new Date() } = {}) {
+  const since = now.getTime() - days * 86_400_000;
+  const byId = new Map();
+  for (const r of records) if (Date.parse(r.at) >= since && !byId.has(r.id)) byId.set(r.id, r);
+  const groups = new Map();
+  for (const r of byId.values()) {
+    const g = groups.get(r.keyword) ?? { keyword: r.keyword, count: 0, fixed: [], unit: 0, hourly: 0 };
+    g.count++;
+    const b = parseBudget(r.price);
+    if (b.kind === "fixed" && b.low != null) g.fixed.push(b.high);
+    else if (b.kind === "unit") g.unit++;
+    else if (b.kind === "hourly") g.hourly++;
+    groups.set(r.keyword, g);
+  }
+  return [...groups.values()]
+    .map((g) => ({ keyword: g.keyword, count: g.count, perMonth: Math.round((g.count / days) * 30), medianFixed: median(g.fixed), fixedCount: g.fixed.length, unit: g.unit, hourly: g.hourly }))
+    .sort((a, b) => b.count - a.count);
+}
+
+export function formatMarket(rows, days) {
+  const lines = [
+    `# ランサーズ 仕事の種類ごとの募集数と予算（直近${days}日に巡回で見た分）`,
+    "",
+    "| 検索語 | 見た募集 | 月あたり（換算） | 固定報酬の上限の中央値 | 単価制 | 時給制 |",
+    "|---|---|---|---|---|---|",
+  ];
+  for (const r of rows)
+    lines.push(`| ${r.keyword} | ${r.count} | ${r.perMonth} | ${r.medianFixed != null ? `${r.medianFixed.toLocaleString()}円（${r.fixedCount}件）` : "—"} | ${r.unit} | ${r.hourly} |`);
+  lines.push("", "※ 1回の巡回で見るのは各検索語の新着1ページ（約30件）なので、実際の募集数はこれより多い。");
+  return lines.join("\n") + "\n";
+}
