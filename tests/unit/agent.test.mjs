@@ -774,6 +774,14 @@ test("誤判定の修正: 「出社して働いている」は応募者の条件
   assert.ok(!survey("アンケートの設計アシスタント募集のお仕事(質問・アンケート)\n仕事の概要"), "作る側・集計する側の題名は除く");
 });
 
+test("誤判定の修正: 「あれば」の任意のポートフォリオの依頼（ランサーズの「■応募方法」）は、本人であることが要る仕事にしない", async () => {
+  const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  const identity = (t) => judgeDeliverability(t).matched.includes("personal_identity");
+  assert.ok(!identity("記事を執筆します。\n■応募方法\n・簡単な実績やポートフォリオがあればご提示いただけると幸いです。\n■備考"), "「あれば」の任意の依頼は、応募方法の欄にあっても条件ではない");
+  assert.ok(!identity("ポートフォリオがあればご提示ください。"), "あればの任意の依頼は条件にしない");
+  assert.ok(identity("応募時にポートフォリオをご提示ください。"), "応募の条件として出させるものは今まで通り拾う");
+});
+
 test("誤判定の修正: 「AIを使ったらブロック」も、AIの禁止として読む", async () => {
   const { readAiRestriction } = await import("../../dist-test/agent/ai-restriction.js");
   const r = readAiRestriction("生成AIを使用したと思われる方は、ブロックします。");
