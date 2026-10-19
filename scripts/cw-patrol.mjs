@@ -929,8 +929,16 @@ async function queueRedraft() {
         judged: { verdict: j.verdict, detail: j.detail },
         background: readBackground(),
       });
+      const reasonLine = j.detail.match(/^理由: (.+)$/m)?.[1] ?? "";
+      if (/^見送り/.test(j.verdict) && !core.cleanProposal(item.proposal)) {
+        // 判定のやり直しで見送りになった（Claudeの判定は毎回少しぶれる）。一覧の件は消さず、前の判定と今回の理由を並べて載せる
+        const note = `再判定では見送りになりました（${reasonLine.slice(0, 160) || "理由は読めませんでした"}）。前回は「${t.verdict}」。ゆうさんが募集ページを見て決める`;
+        state = { ...state, items: state.items.map((i) => (i.id === t.id ? { ...i, checks: [note, ...i.checks.filter((c) => !c.startsWith("再判定では見送り"))] } : i)) };
+        console.log(`- 【${t.no}】${title.slice(0, 40)}: 再判定は見送り。前の判定を残して注意を足しました\n    理由: ${reasonLine}\n${j.detail.split("\n").filter((l) => /^(手取り時給|あなたが手を動かす時間|仕事全体の作業量|競争|・)/.test(l)).map((l) => "    " + l).join("\n")}`);
+        continue;
+      }
       state = { ...state, items: state.items.map((i) => (i.id === t.id ? { ...item, no: i.no, status: i.status } : i)) };
-      console.log(`- 【${t.no}】${title.slice(0, 40)}: ${core.cleanProposal(item.proposal) ? "提案文を入れました" : "提案文は出ませんでした（判定: " + j.verdict + "）"}`);
+      console.log(`- 【${t.no}】${title.slice(0, 40)}: ${core.cleanProposal(item.proposal) ? "提案文を入れました" : "提案文は出ませんでした（判定: " + j.verdict + (reasonLine ? "。理由: " + reasonLine : "") + "）"}`);
     }
     writeJson(QUEUE_JSON, state);
     fs.writeFileSync(QUEUE_MD, core.queueMarkdown(state));
