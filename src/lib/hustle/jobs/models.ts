@@ -260,9 +260,24 @@ function childEnv(): NodeJS.ProcessEnv {
 
 let resolvedBin: string | null = null;
 
+/** npm の claude（claude.cmd など）が置かれたフォルダから、隣の node_modules にある claude.exe の場所を作る。 */
+export function claudeExeBeside(npmBinDir: string): string {
+  return path.win32.join(npmBinDir, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+}
+
+/**
+ * where が使えないとき（タスクスケジューラから PATH が短い状態で呼ばれ、System32 も npm も PATH に無いとき）に、
+ * npm の既定の置き場所（%APPDATA%\npm）にある claude.exe を候補にする。
+ */
+export function fallbackClaudeExeCandidates(env: NodeJS.ProcessEnv): string[] {
+  const dirs = [env.APPDATA && path.win32.join(env.APPDATA, "npm"), env.USERPROFILE && path.win32.join(env.USERPROFILE, "AppData", "Roaming", "npm")];
+  return [...new Set(dirs.filter((d): d is string => Boolean(d)).map(claudeExeBeside))];
+}
+
 /**
  * claude コマンドの場所。Windows では npm が入れるのは claude.cmd で、shell なしの spawn では起動できないため、
  * 隣の node_modules にある claude.exe を探して使う。CLAUDE_BIN があればそれを優先する。
+ * where は System32 の where.exe を場所指定で呼ぶ（PATH に System32 が無くても動くように）。
  */
 export function resolveClaudeBin(): string {
   if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
@@ -270,13 +285,18 @@ export function resolveClaudeBin(): string {
   if (resolvedBin) return resolvedBin;
   resolvedBin = "claude";
   try {
-    const r = spawnSync("where", ["claude"], { encoding: "utf8" });
+    const sysRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+    const whereExe = path.win32.join(sysRoot, "System32", "where.exe");
+    const r = spawnSync(fs.existsSync(whereExe) ? whereExe : "where", ["claude"], { encoding: "utf8" });
     for (const line of String(r.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
       if (/\.exe$/i.test(line)) return (resolvedBin = line);
-      const exe = path.join(path.dirname(line), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+      const exe = claudeExeBeside(path.dirname(line));
       if (fs.existsSync(exe)) return (resolvedBin = exe);
     }
   } catch {}
+  for (const exe of fallbackClaudeExeCandidates(process.env)) {
+    if (fs.existsSync(exe)) return (resolvedBin = exe);
+  }
   return resolvedBin;
 }
 

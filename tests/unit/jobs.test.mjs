@@ -630,3 +630,13 @@ test("claude の場所: CLAUDE_BIN を優先する", async () => {
   if (old === undefined) delete process.env.CLAUDE_BIN;
   else process.env.CLAUDE_BIN = old;
 });
+
+test("claude の場所: PATH が短いとき（タスクスケジューラ）でも npm の既定の場所の claude.exe を候補にする", async () => {
+  const { fallbackClaudeExeCandidates, claudeExeBeside } = await import("../../dist-test/jobs/models.js");
+  const exe = "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe";
+  assert.equal(claudeExeBeside("C:\\Users\\u\\AppData\\Roaming\\npm"), exe);
+  // APPDATA と USERPROFILE が同じ場所を指すときは1つにまとめる
+  assert.deepEqual(fallbackClaudeExeCandidates({ APPDATA: "C:\\Users\\u\\AppData\\Roaming", USERPROFILE: "C:\\Users\\u" }), [exe]);
+  assert.deepEqual(fallbackClaudeExeCandidates({ USERPROFILE: "C:\\Users\\u" }), [exe]);
+  assert.deepEqual(fallbackClaudeExeCandidates({}), []);
+});
