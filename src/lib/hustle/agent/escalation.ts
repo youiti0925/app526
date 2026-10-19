@@ -84,8 +84,10 @@ export function needsEscalation(triage: Record<string, unknown>): EscalationReas
 }
 
 /** 上位モデルに回す案件を集める。 */
-export function collectEscalations(limit = 10): EscalationItem[] {
-  return readLeads("triaged", 100)
+export function collectEscalations(limit = 10, ids?: string[]): EscalationItem[] {
+  // id が指定されたときは、その案件を直接引く。上位100件(点数順)に入っていない案件が、判定に回らず取り残されないように
+  const leads = ids ? [...readLeadsByIds(ids).values()].filter((l) => l.status === "triaged") : readLeads("triaged", 100);
+  return leads
     .filter((lead) => {
       const t = lead.triage as Record<string, unknown>;
       return Array.isArray(t.escalationReasons) && (t.escalationReasons as unknown[]).length > 0;

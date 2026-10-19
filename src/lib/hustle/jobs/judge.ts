@@ -81,7 +81,7 @@ export interface EscalationOutcome {
  */
 export async function resolveEscalations(leadIds?: string[], limit = 5): Promise<EscalationOutcome> {
   const want = leadIds ? new Set(leadIds) : null;
-  const pending = collectEscalations(100).filter((e) => !want || want.has(e.leadId)).slice(0, limit);
+  const pending = collectEscalations(100, leadIds).filter((e) => !want || want.has(e.leadId)).slice(0, limit);
   if (pending.length === 0) return { requested: 0, applied: 0, note: "" };
   const res = await callClaudeCli({ purpose: "judge", tier: "standard", prompt: buildBrief(pending), schema: ESCALATION_SCHEMA });
   recordUsage({ ...res.usage, jobId: null, recipeId: null });

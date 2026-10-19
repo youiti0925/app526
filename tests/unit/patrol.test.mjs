@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { setProposal, proposalChecks, cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
+import { ruleChecks, setProposal, proposalChecks, cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -550,6 +550,37 @@ test("提案文の差し替え: 番号・状態・ほかの注意は残し、提
   const bad = setProposal(base, "【要確認: 年数】です。", "Excel");
   assert.ok(bad.checks.some((c) => c.startsWith("提案文に【要確認】")) && bad.checks.some((c) => c.startsWith("応募60人")));
   assert.deepEqual(proposalChecks("本文です。", undefined), []);
+});
+
+test("一覧の注意に関門・危険信号を載せる。交渉で外せないものがあれば見送りをすすめ、機械が見送りにした件は理由つきで別に載せる", () => {
+  const page = (body) => `固定報酬制 5,000円 〜 10,000円\n応募した人 10 人 契約した人 0 人 募集人数 3 人\n応募期限 2026年10月29日\n${body}\n${"仕事の説明です。".repeat(30)}\nクライアント情報\n募集実績 300 件\n総合評価 4.8\nプロジェクト完了率 95 %\n○○の詳細を見る`;
+  const judged = { verdict: "確認してから応募", detail: "理由: テスト" };
+  const mk = (body, extra = {}) => buildQueueItem({ link: { key: "job:50", url: "u" }, applyUrl: "a", title: "テストの仕事", pageText: page(body), judged: extra.judged ?? judged });
+
+  // 士業の独占業務(補助金の事業計画書)は、交渉で外せないので見送りをすすめる
+  const sub = mk("補助金コンサル業務の事業計画作成業務を依頼します。");
+  assert.equal(sub.verdict, "見送り");
+  assert.ok(sub.checks[0].startsWith("見送りをすすめます") && sub.checks[0].includes("士業の独占業務"));
+  // 確認すれば通る関門(平日昼の会議)は、注意に載せて「確認してから応募」のまま
+  const hours = mk("以下のうち1つに参加必須です。木曜 13:00〜16:00 金曜 13:00〜16:00");
+  assert.equal(hours.verdict, "確認してから応募");
+  assert.ok(hours.checks.some((c) => c.includes("平日の日中に参加が必須の予定")));
+  // 関門に当たらない普通の募集には、関門の注意が付かない
+  const plain = mk("Excelでデータを集計してください。");
+  assert.deepEqual(ruleChecks("テストの仕事", page("Excelでデータを集計してください。")), { lines: [], blocking: [] });
+  assert.equal(plain.verdict, "確認してから応募");
+  assert.ok(!plain.checks.some((c) => c.includes("見送りをすすめます")));
+
+  // 上位の判定が出なかったことが一覧に出る
+  const nj = mk("Excelでデータを集計してください。", { judged: { verdict: "確認してから応募", detail: "理由: x\nルールで判定しきれず、Claudeの判定も得られませんでした（生成に失敗しました）。募集文を読んで人が判断してください" } });
+  assert.ok(nj.checks[0].includes("Claudeの判定も得られませんでした") && nj.checks[0].includes("ルールだけの判定"));
+
+  // 機械が見送りにした件は、理由つきで「見送りにした案件」に載る(一覧の件数には数えない)
+  let q = addToQueue(emptyQueue(), [plain, { ...sub, id: "51" }]);
+  q = { ...q, items: q.items.map((i) => (i.id === "51" ? { ...i, status: "skipped", skipReason: "士業の独占業務(補助金の事業計画書)" } : i)) };
+  const md = queueMarkdown(q, new Date("2026-10-19T00:00:00Z"));
+  assert.ok(md.includes("一覧 1件／承認済み 0件"));
+  assert.ok(md.includes("# 見送りにした案件") && md.includes("士業の独占業務(補助金の事業計画書)"));
 });
 
 test("パンくず（…の仕事・求人）は判定の本文に入れない。仕事の種類は題名に当たったものを先にする", () => {

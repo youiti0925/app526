@@ -603,3 +603,84 @@ test("AIの禁止は見送りでなく確認に回し、禁止の範囲を本文
   assert.equal(readAiRestriction("AIの使用は禁止しません。歓迎です。").restricted, false);
   assert.equal(readAiRestriction("記事を10本書いてください。").restricted, false);
 });
+
+// --- 本物の募集(2026-10-19 に PC で読んだもの)で見つかった見落とし -----------------------------
+
+test("本物の募集: シナリオライター募集(AIは調査のみ可・平日昼の会議が必須)は、AI禁止と平日昼の拘束を拾う", async () => {
+  const { readAiRestriction } = await import("../../dist-test/agent/ai-restriction.js");
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const { judgeDeliverability, explainDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  const text = [
+    "YouTubeで大人気の「スカッとする話」をご執筆いただける、シナリオライターさんを募集しています☆",
+    "【報酬】初回トライアル：5,000円 / 1本 本採用後：10,000円 / 1本",
+    "■ シナリオ打ち合わせ（週3時間程度）",
+    "以下の日程のうち、いずれか1つに参加必須です。",
+    "木曜 13:00〜16:00",
+    "金曜 13:00〜16:00",
+    "※設定すり合わせのため、不参加の場合はシナリオをお渡しできません。",
+    "【注意事項】",
+    "他サイトからのコピー＆ペーストは固く禁止いたします。",
+    "AIはリサーチでの使用を推奨しておりますが、それ以外は禁止です。",
+  ].join("\n");
+  const ai = readAiRestriction(text);
+  assert.equal(ai.restricted, true, "「AIはリサーチでの使用を推奨…それ以外は禁止」を禁止と読む");
+  assert.ok(ai.scope.some((s) => s.includes("それ以外は禁止")));
+  const g = checkGates(text);
+  const ids = g.hits.map((h) => h.id);
+  assert.ok(ids.includes("ai_prohibited") && ids.includes("fixed_hours"), ids.join(","));
+  // 禁止の文の「リサーチ」を、調査・要約の仕事の根拠にしない
+  assert.ok(!explainDeliverability(text).some((m) => m.label.includes("調査") && m.matched.includes("リサーチ")));
+  assert.ok(judgeDeliverability(text).canDeliver);
+  // 平日の日中でない・必須でない書き方は拾わない
+  assert.ok(!checkGates("打ち合わせは土曜 10:00〜11:00 に参加できる方歓迎です。").hits.some((h) => h.id === "fixed_hours"));
+  assert.ok(!checkGates("稼働時間は平日 9:00〜18:00 の間で自由に決められます。").hits.some((h) => h.id === "fixed_hours"));
+});
+
+test("本物の募集: 補助金の事業計画書の作成は士業の独占業務の関門に当たる。「今日まで」は急かしではない", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const text = [
+    "弊社は「補助金コンサル業務、WEB制作事業」を行っている会社です。【補助金コンサル業務の事業計画作成業務】を依頼させていただきたいです。",
+    "※社会保険労務士の資格をお持ちの方は優遇させていただきます。",
+    "今日まで「完全内製」と「外注コンサルタントへ依頼」を並行してクライアントを支援しており、100社以上の実績があります。",
+    "【報酬（1案件あたり）】省力化投資補助金：20万円〜",
+  ].join("\n");
+  const g = checkGates(text);
+  assert.ok(g.hits.some((h) => h.id === "restricted_work"));
+  assert.equal(g.negotiable, false, "交渉では外せない(見送り)");
+  assert.ok(!scoreScam(text).signals.some((s) => s.id === "urgency_pressure"));
+  // 本当の急かしは拾う
+  assert.ok(scoreScam("本日限定の募集です。").signals.some((s) => s.id === "urgency_pressure"));
+  assert.ok(scoreScam("今日までにご応募ください。").signals.some((s) => s.id === "urgency_pressure"));
+});
+
+test("本物の募集: 契約金額は仮の額を入力させる・DMを大量に送る募集は危険信号に、成果報酬のみ(最低保証なし)は関門に当たる", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const dm = [
+    "・ターゲットになる企業を探していただき、こちらが用意したテンプレートのメッセージを送信していただく作業です。",
+    "・送信件数目安：週100件程度のDMを送っていただく形です。",
+    "・新規の送信先リストアップ＋DM送信１件ごとに10円（返信対応は含まない）",
+    "※固定報酬金額は仮で3000円とご入力ください。",
+    "※契約金額を入力する欄の下にある「クライアントに源泉徴収をしてもらう」のチェックを外してご応募ください！",
+  ].join("\n");
+  const r = scoreScam(dm);
+  const ids = r.signals.map((s) => s.id);
+  assert.ok(ids.includes("placeholder_contract_amount") && ids.includes("mass_dm"), ids.join(","));
+  assert.equal(r.verdict, "danger");
+  // 普通の「契約金額」「DM」の言い方は拾わない
+  assert.equal(scoreScam("契約金額は応募時に5,000円と入力してください。DMで連絡します。").signals.some((s) => s.id === "placeholder_contract_amount"), false);
+
+  const sns = [
+    "報酬は、活動によって得られた成果に応じてお支払いする成果報酬制です。",
+    "成果によって報酬額は異なり、固定給や最低報酬の保証はありません。",
+    "具体的な報酬単価や支払条件については、契約前にご案内します。",
+  ].join("\n");
+  const g = checkGates(sns);
+  assert.ok(g.hits.some((h) => h.id === "commission_only") && g.negotiable === false);
+  // 「保証はありません」を、収入の断定と読まない
+  assert.equal(scoreScam(sns).signals.some((s) => s.id === "guaranteed_income"), false);
+  assert.ok(scoreScam("月収50万円を保証します。").signals.some((s) => s.id === "guaranteed_income"));
+  // 成果報酬が上乗せで、固定の報酬もある募集は関門に当たらない
+  assert.equal(checkGates("固定報酬は1記事3,000円です。成果に応じて別途ボーナスがあります。").hits.some((h) => h.id === "commission_only"), false);
+});

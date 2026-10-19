@@ -497,16 +497,17 @@ async function run() {
       judged.push({ title: t.title, url: t.url, verdict: j.verdict, detail: j.detail });
       // 応募してよい／確認してから応募 は、依頼者の信頼度つきで「応募の下書き一覧」に足す（画面を開いて待たない）
       if (/^(応募してよい|確認してから応募)/.test(j.verdict)) {
-        queueItems.push(
-          core.buildQueueItem({
-            link: t.link,
-            applyUrl: applyUrl(jobIdFromUrl(t.url)),
-            title: t.title,
-            pageText: t.pageText,
-            judged: { verdict: j.verdict, detail: j.detail },
-            background: readBackground(),
-          })
-        );
+        const item = core.buildQueueItem({
+          link: t.link,
+          applyUrl: applyUrl(jobIdFromUrl(t.url)),
+          title: t.title,
+          pageText: t.pageText,
+          judged: { verdict: j.verdict, detail: j.detail },
+          background: readBackground(),
+        });
+        // 関門・危険信号で見送りをすすめる募集(AIの判定と食い違ったとき)は、一覧に足さない
+        if (!/^見送り/.test(item.verdict)) queueItems.push(item);
+        else log(`一覧に足しませんでした（見送りをすすめます）: ${t.title}`);
       }
     }
     let queue = null;
@@ -935,11 +936,12 @@ async function queueRedraft() {
         background: readBackground(),
       });
       const reasonLine = j.detail.match(/^理由: (.+)$/m)?.[1] ?? "";
-      if (/^見送り/.test(j.verdict) && !core.cleanProposal(item.proposal)) {
-        // 判定のやり直しで見送りになった（Claudeの判定は毎回少しぶれる）。一覧の件は消さず、前の判定と今回の理由を並べて載せる
-        const note = `再判定では見送りになりました（${reasonLine.slice(0, 160) || "理由は読めませんでした"}）。前回は「${t.verdict}」。ゆうさんが募集ページを見て決める`;
-        state = { ...state, items: state.items.map((i) => (i.id === t.id ? { ...i, checks: [note, ...i.checks.filter((c) => !c.startsWith("再判定では見送り"))] } : i)) };
-        console.log(`- 【${t.no}】${title.slice(0, 40)}: 再判定は見送り。前の判定を残して注意を足しました\n    理由: ${reasonLine}\n${j.detail.split("\n").filter((l) => /^(手取り時給|あなたが手を動かす時間|仕事全体の作業量|競争|・)/.test(l)).map((l) => "    " + l).join("\n")}`);
+      if (/^見送り/.test(j.verdict) || /^見送り/.test(item.verdict)) {
+        // 今のルールと再判定で見送りになった。一覧から外し、理由(ルールが見つけたこと＋Claudeの理由)を「見送りにした案件」に載せる
+        const ruleNote = item.checks.filter((c) => !c.startsWith("提案文")).slice(0, 4).join(" / ");
+        const why = [ruleNote, reasonLine ? `Claudeの判定: ${reasonLine}` : ""].filter(Boolean).join(" ｜ ");
+        state = { ...state, items: state.items.map((i) => (i.id === t.id ? { ...i, status: "skipped", skipReason: why.slice(0, 400) || "再判定で見送り" } : i)) };
+        console.log(`- 【${t.no}】${title.slice(0, 40)}: 見送りにしました\n    理由: ${why}`);
         continue;
       }
       state = { ...state, items: state.items.map((i) => (i.id === t.id ? { ...item, no: i.no, status: i.status } : i)) };

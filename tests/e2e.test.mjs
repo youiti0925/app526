@@ -200,6 +200,21 @@ test("上位の判定が提案文を付けなかった案件(見送りを検算�
   assert.ok(agentDb.readInbox(undefined, 300).some((i) => i.leadId === lead.id && i.kind === "proposal"), "提案文が作られていない");
 });
 
+test("上位判定に回す案件は、点数順の上位100件に入っていなくても、id を指定すれば取り残されない", () => {
+  const { collectEscalations } = require_(path.join(ROOT, "lib/hustle/agent/escalation.js"));
+  const mk = (n, score) => {
+    const lead = agentDb.insertLead({ source: "manual", externalId: `e2e:esc-${n}`, url: `https://example.test/jobs/esc${n}`, title: `回す案件${n}`, rawText: "記事作成をお願いします。".repeat(30), budgetJpy: 50_000 }).lead;
+    agentDb.updateLead(lead.id, { status: "triaged", score, triage: { escalationReasons: [{ code: "x", note: "x" }] } });
+    return lead;
+  };
+  const low = mk("low", 1);
+  for (let i = 0; i < 105; i++) mk(`hi${i}`, 90);
+  // 点数順の上位100件には入らない
+  assert.ok(!collectEscalations(200).some((e) => e.leadId === low.id));
+  // id を指定すると取れる
+  assert.deepEqual(collectEscalations(10, [low.id]).map((e) => e.leadId), [low.id]);
+});
+
 // --- 仕事ライン: DBとのつなぎ目（AIは呼ばない） ---
 
 test("仕事ライン: 依頼は1件ずつ取り合わずに取れ、手順書は版で残り、承認した行が手本になる", () => {

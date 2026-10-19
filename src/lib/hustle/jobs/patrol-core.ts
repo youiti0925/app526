@@ -673,6 +673,8 @@ export interface QueueItem {
   aiRestriction?: string;
   /** 送る前に見ること */
   checks: string[];
+  /** 機械が見送りにしたときの理由（人が「見送り」にした件には無い）。一覧の「見送りにした案件」に載る */
+  skipReason?: string;
   status: QueueStatus;
   at: string;
 }
@@ -736,6 +738,28 @@ function daysLeft(deadline: string | null, now: Date): number | null {
   const jst = new Date(now.getTime() + 9 * 3_600_000);
   const today = Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate());
   return Math.round((end - today) / 86_400_000);
+}
+
+/**
+ * 募集の本文をルールで見た結果を、「送る前に見ること」の行にする（AIは使わない）。
+ * 関門（機密・表明保証・士業の独占業務・平日昼の拘束・成果報酬のみ…。AIの使用の禁止は別に扱う）と、詐欺の危険信号。
+ * blocking は交渉では外せないもの（これがあれば見送りをすすめる）。
+ */
+export function ruleChecks(title: string, pageText: string): { lines: string[]; blocking: string[] } {
+  const body = jobBodyForJudging(pageText, title).normalize("NFKC").slice(0, 6000);
+  const lines: string[] = [];
+  const blocking: string[] = [];
+  for (const h of checkGates(body).hits) {
+    if (h.id === "ai_prohibited") continue;
+    lines.push(`${h.label}（募集文: 「${h.matched}」）。${h.ask}`);
+    if (!h.negotiable) blocking.push(h.label);
+  }
+  const scam = scoreScam(body);
+  if (scam.verdict !== "safe") {
+    lines.push(`危険信号 ${scam.score}点（${scam.signals.map((sg) => sg.label).join("／")}）`);
+    if (scam.verdict === "danger") blocking.push("詐欺・搾取の危険信号が強い");
+  }
+  return { lines, blocking };
 }
 
 /** 「送る前に見ること」のうち、提案文の中身から決まるものの先頭の言葉（提案文を差し替えるときに入れ替える） */
@@ -810,6 +834,17 @@ export function buildQueueItem(args: {
     checks.unshift(`${ai.summary}。この範囲を、ゆうさん自身が手でやれるか決めてください（やれなければ見送り）。提案文が、その範囲を手作業で行う前提になっているかも読んで確かめる`);
     if (verdict.startsWith("応募してよい")) verdict = "確認してから応募";
   }
+  // 関門・危険信号(AIの使用の禁止以外)。交渉では外せないものがあれば見送りをすすめる
+  const rules = ruleChecks(args.title, args.pageText);
+  checks.push(...rules.lines);
+  if (rules.lines.length && verdict.startsWith("応募してよい")) verdict = "確認してから応募";
+  if (rules.blocking.length) {
+    verdict = "見送り";
+    checks.unshift(`見送りをすすめます: ${rules.blocking.join("・")}`);
+  }
+  // 上位の判定(Claude)が出なかった・反映できなかったときは、そのことを一覧に出す(ルールだけの判定になっている)
+  const noJudge = args.judged.detail.match(/^(ルールで判定しきれず、Claudeの判定も得られませんでした[^\n]*|Claudeの判定を反映できませんでした[^\n]*)$/m)?.[1];
+  if (noJudge) checks.unshift(`${noJudge.slice(0, 200)}。ルールだけの判定です。募集文を読んで決める`);
   if (client.tier === "注意") {
     checks.push(`依頼者の評価・完了率に注意（${client.summary}）`);
     if (verdict.startsWith("応募してよい")) verdict = "確認してから応募";
@@ -944,5 +979,16 @@ export function queueMarkdown(state: QueueState, at: Date = new Date()): string 
       ...pending.flatMap((i) => [queueItemText(i), ""])
     );
   } else out.push("", "一覧に載っている案件はありません。");
+  const machineSkipped = state.items.filter((i) => i.status === "skipped" && i.skipReason);
+  if (machineSkipped.length) {
+    out.push(
+      "",
+      "# 見送りにした案件（理由つき。見送りの理由に納得できなければ「承認 番号」で一覧に戻せます）",
+      "",
+      "| 番号 | 案件 | 理由 |",
+      "| --- | --- | --- |",
+      ...machineSkipped.map((i) => `| ${i.no} | ${cell(shortTitle(i.title))}（${i.url}） | ${cell(i.skipReason ?? "").slice(0, 300)} |`)
+    );
+  }
   return out.join("\n");
 }
