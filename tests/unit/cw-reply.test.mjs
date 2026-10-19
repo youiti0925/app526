@@ -117,6 +117,31 @@ test("欄の選び方: 送信ボタンに文字が無い(画像・アイコン)�
   assert.equal(pickReplyForm([two]).ok, false);
 });
 
+test("欄の選び方: 本物の契約画面の形(返信欄は div#messageForm の中・ボタンは type=button の「メッセージを投稿する」。納品の欄はダイアログの中)", () => {
+  const forms = [
+    form({ index: 0, name: "content", buttons: [{ key: "0-0", label: "送信する", type: "button", shown: true, disabled: true }] }),
+    form({
+      index: 1,
+      id: "message_body",
+      name: "message[body]",
+      placeholder: "ここにメッセージ",
+      buttons: [
+        { key: "1-0", label: "新しい条件を提示する", type: "button", shown: false, disabled: false },
+        { key: "1-1", label: "テンプレートを作成", type: "button", shown: true, disabled: false },
+        { key: "1-2", label: "メッセージを投稿する", type: "button", shown: true, disabled: false },
+      ],
+    }),
+    form({ index: 2, id: "message_body", name: "message[body]", shown: false, inDialog: true, formAction: "/milestones/13915956/complete", buttons: [{ key: "2-0", label: "納品完了報告をする", type: "submit", shown: false, disabled: true }] }),
+  ];
+  const r = pickReplyForm(forms);
+  assert.equal(r.ok, true);
+  assert.equal(r.textarea, '[data-cwp-ta="1"]');
+  assert.equal(r.buttonLabel, "メッセージを投稿する");
+  // 納品のダイアログが開いて見えていても、納品の欄は選ばない
+  const open = forms.map((f) => (f.index === 2 ? { ...f, shown: true, buttons: f.buttons.map((b) => ({ ...b, shown: true, disabled: false })) } : f));
+  assert.equal(pickReplyForm(open).textarea, '[data-cwp-ta="1"]');
+});
+
 test("欄の選び方: 見つからない・複数ある・ボタンが曖昧なときは選ばない", () => {
   assert.equal(pickReplyForm([]).ok, false);
   assert.equal(pickReplyForm([form({ index: 0, shown: false })]).ok, false);

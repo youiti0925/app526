@@ -120,7 +120,7 @@ export function scanReplyForms() {
   return out;
 }
 
-const NOT_REPLY = /feedback|opinion|ご意見|意見箱|search|検索|report|通報|違反|memo|メモ/i;
+const NOT_REPLY = /feedback|opinion|ご意見|意見箱|search|検索|report|通報|違反|memo|メモ|milestones|complete|納品|完了報告/i;
 const SEND_LABEL = /送信|返信|投稿/;
 const DELIVERY_LABEL = /納品|完了報告/;
 const NOT_SEND_LABEL = /キャンセル|削除|下書き|取り消|閉じる|ご意見|通報|違反/;
@@ -133,7 +133,7 @@ export function pickReplyForm(forms) {
   const seen = (forms ?? []).map((f) => `textarea#${f.id || "-"} name=${f.name || "-"} 見える=${f.shown} ボタン=[${f.buttons.map((b) => b.label || b.type).join("|")}]`);
   const candidates = [];
   for (const f of forms ?? []) {
-    if (!f.shown) continue;
+    if (!f.shown || f.inDialog) continue;
     if (NOT_REPLY.test(`${f.id} ${f.name} ${f.placeholder} ${f.formAction}`)) continue;
     const sends = f.buttons.filter(
       (b) => b.shown && !b.disabled && !NOT_SEND_LABEL.test(b.label) && !DELIVERY_LABEL.test(b.label) && (SEND_LABEL.test(b.label) || (b.label === "" && b.type === "submit"))

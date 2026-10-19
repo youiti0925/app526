@@ -59,6 +59,11 @@ interface GateRule {
    * 「クレジット表記なし」のように、無いこと自体が条件になるルールには付けない。
    */
   skipNegated?: boolean;
+  /**
+   * 記事ライターの募集で、「・営業リスト作成、CRM」のような箇条書きは、記事で扱うテーマの例であって
+   * ワーカーへの作業の依頼ではない。その箇条書きを除いてから見る。
+   */
+  skipTopicBullets?: boolean;
   why: string;
   negotiable: boolean;
   ask: string;
@@ -127,6 +132,7 @@ const GATE_RULES: GateRule[] = [
   {
     id: "personal_data",
     label: "個人の連絡先を集める仕事",
+    skipTopicBullets: true,
     patterns: [
       /(個人|顧客|会員|見込み客|インフルエンサー|フォロワー)[^。\n]{0,12}(氏名|名前|メール|電話番号|連絡先|住所|アカウント)[^。\n]{0,15}(収集|リスト|抽出|取得|入力|まとめ|集め)/,
       /(経営者|代表者|担当者)[^。\n]{0,8}(の)?(メール|電話|LINE|連絡先)[^。\n]{0,12}(収集|リスト|抽出|取得|集め)/,
@@ -233,6 +239,18 @@ export interface GateResult {
   note: string;
 }
 
+/** 記事ライターの募集か(題名・冒頭に「記事」「ライター」「ライティング」「執筆」がある) */
+const WRITER_JOB = /(記事|ライター|ライティング|執筆|コラム|ブログ)/;
+
+/**
+ * 記事ライターの募集では、「・」の箇条書き(1行でも、空白で区切られていても)を取り除く。
+ * ライター以外の募集は、そのまま返す。
+ */
+export function dropTopicBullets(t: string): string {
+  if (!WRITER_JOB.test(t.slice(0, 300))) return t;
+  return t.replace(/(^|[\s　])[・•●▶▷][^\n]*?(?=[\s　][・•●▶▷]|\n|$)/g, "$1");
+}
+
 /**
  * 4つの関門を通すかどうか。
  *
@@ -245,9 +263,10 @@ export function checkGates(text: string): GateResult {
   const hits: GateHit[] = [];
 
   const asked = stripNegatedClauses(t);
+  const topicsDropped = dropTopicBullets(t);
 
   for (const rule of GATE_RULES) {
-    const body = rule.skipNegated ? asked : t;
+    const body = rule.skipNegated ? asked : rule.skipTopicBullets ? topicsDropped : t;
     for (const p of rule.patterns) {
       const m = body.match(p);
       if (!m) continue;

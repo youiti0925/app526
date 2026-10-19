@@ -22,14 +22,34 @@ export interface Deadline {
 const num = (s: string): number => Number(s.replace(/[,，\s]/g, ""));
 
 /**
+ * 「即日」「本日中」が、納期のことを言っているか。
+ * 「即日スタート」「即日お支払い」「即日勤務可」のような、始まりや支払いの話は納期ではない。
+ * 納期の語（納品・提出・完了・対応・お願い など）が近くにあるものだけを即日納品とみなす。
+ */
+function sameDayDelivery(t: string): boolean {
+  const word = "(?:即日|本日中|今日中)";
+  const near = "(?:納品|納期|提出|完了|対応|仕上げ|回答|返信|お願い|までに|ご対応)";
+  const notDelivery = /^(?:スタート|開始|稼働|勤務|支払|お支払|入金|報酬|採用|契約|OK|ok|可|でき|から|より|参加)/;
+  for (const m of t.matchAll(new RegExp(word, "g"))) {
+    if (m.index === undefined) continue;
+    const after = t.slice(m.index + m[0].length, m.index + m[0].length + 12);
+    if (notDelivery.test(after)) continue;
+    const around = t.slice(Math.max(0, m.index - 8), m.index) + after.slice(0, 8);
+    if (new RegExp(near).test(around)) return true;
+  }
+  return false;
+}
+
+/**
  * 納期を日数で読む。
  * 相対（「2週間以内」）も絶対（「2026年9月10日まで」）も拾う。
  */
 export function readDeadline(text: string, now: Date = new Date()): Deadline {
   const t = text.normalize("NFKC").slice(0, 8000);
-  const rushed = /(即日|本日中|今日中|至急|大至急|明日まで|24時間以内)/.test(t);
+  const sameDay = sameDayDelivery(t);
+  const rushed = sameDay || /(至急|大至急|明日まで|24時間以内)/.test(t);
 
-  if (/(即日|本日中|今日中)/.test(t)) {
+  if (sameDay) {
     return { days: 0, basis: "即日・当日中と書かれています", rushed: true };
   }
 

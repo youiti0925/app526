@@ -684,3 +684,48 @@ test("本物の募集: 契約金額は仮の額を入力させる・DMを大量�
   // 成果報酬が上乗せで、固定の報酬もある募集は関門に当たらない
   assert.equal(checkGates("固定報酬は1記事3,000円です。成果に応じて別途ボーナスがあります。").hits.some((h) => h.id === "commission_only"), false);
 });
+
+// --- 2026-10-19 実データ(クラウドワークスの新着)で出た誤判定 --------------------------------
+
+test("「来社は一切なく、完全在宅」は現地作業に数えない。ただし「ではなく」の対比や、本当の来社は残す", async () => {
+  const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  const { stripNegatedClauses } = await import("../../dist-test/agent/negation.js");
+  assert.ok(!judgeDeliverability("作業はマネーフォワード上で行います。・来社は一切なく、完全在宅でのお仕事です。").matched.includes("onsite"));
+  assert.ok(!judgeDeliverability("出社はなく、在宅で完結します。").matched.includes("onsite"));
+  assert.ok(judgeDeliverability("オンラインではなく、来社での打ち合わせが必須です。").matched.includes("onsite"));
+  assert.ok(judgeDeliverability("週1回の来社が必要です。").matched.includes("onsite"));
+  assert.match(stripNegatedClauses("電話ではなく、メールで連絡します。"), /電話/);
+});
+
+test("記事ライターの募集の「・営業リスト作成、CRM」は、記事のテーマ例であって個人情報を集める依頼ではない。リスト作成の募集は従来どおり止める", async () => {
+  const { checkGates, dropTopicBullets } = await import("../../dist-test/agent/gates.js");
+  const writer =
+    "【AI好き歓迎】Claude Code・AIエージェントのX記事ライター募集 仕事の概要 固定報酬制 " +
+    "記事のテーマ例 【マーケティングAX】 ・営業リスト作成、CRM、商談分析 ・営業資料の自動作成 【コンテンツ制作】 ・画像生成、動画生成";
+  assert.ok(!JSON.stringify(checkGates(writer)).includes("個人の連絡先"));
+  assert.ok(!dropTopicBullets(writer).includes("営業リスト"));
+  // ライターの募集でも、箇条書きの外で個人の連絡先の収集を頼んでいれば止める
+  assert.ok(JSON.stringify(checkGates("記事ライター募集。あわせて、経営者のメールアドレスを収集してリストにしてください。")).includes("個人の連絡先"));
+  // ライター以外の募集は、箇条書きでも従来どおり止める
+  assert.ok(JSON.stringify(checkGates("データ入力のお仕事です。\n・営業リスト作成\n・住所の確認")).includes("個人の連絡先"));
+  assert.ok(JSON.stringify(checkGates("営業リスト作成のお仕事です。")).includes("個人の連絡先"));
+});
+
+test("詐欺判定: 「コピペするだけのAI完結作業ではありません」のような、そうではないと言う文は訴求に数えない", async () => {
+  const { scoreScam } = await import("../../dist-test/scam-rules.js");
+  const text = "ただ出力されたものをコピペするだけのAI完結作業ではありません。記事の構成と事実確認をお願いします。";
+  assert.ok(!scoreScam(text).signals.some((s) => s.id === "effortless_claim"));
+  assert.ok(scoreScam("スマホだけで簡単に稼げます。コピペするだけ。").signals.some((s) => s.id === "effortless_claim"));
+  assert.ok(scoreScam("1日10分で月10万円。").signals.some((s) => s.id === "effortless_claim"));
+});
+
+test("納期: 「即日スタート」「即日お支払い」は即日納品ではない。納品や提出の話のときだけ即日と読む", async () => {
+  const { readDeadline } = await import("../../dist-test/agent/deadline.js");
+  const now = new Date("2026-10-19T03:00:00+09:00");
+  assert.notEqual(readDeadline("即日スタート可能な方を募集します。納品希望日は11月2日です。", now).days, 0);
+  assert.equal(readDeadline("報酬は即日お支払いします。", now).rushed, false);
+  assert.equal(readDeadline("即日勤務できる方歓迎。", now).days === 0, false);
+  assert.equal(readDeadline("即日納品でお願いします。", now).days, 0);
+  assert.equal(readDeadline("本日中にご対応いただける方。", now).days, 0);
+  assert.equal(readDeadline("至急対応お願いします。", now).rushed, true);
+});

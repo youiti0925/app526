@@ -13,7 +13,7 @@
  *   node scripts/cw-patrol.mjs read <https://crowdworks.jp/…のURL>…   # 画面の文字とリンクを表示する（メッセージの受信箱・スカウトの形を調べる用。読むだけ）
  *   node scripts/cw-patrol.mjs messages [--last 3] [--max 800]       # 受信箱のやり取りを読んで、状態・危険信号・最後の数通の本文を表示する（読むだけ）
  *   node scripts/cw-patrol.mjs reply <契約のURL> --check [--dump]   # 返信の入力欄と送信ボタンを探すだけ（入力も送信もしない。--dump で画面の作りも出す）
- *   node scripts/cw-patrol.mjs reply <契約のURL> --text 文.txt        # 返信を入力して止める（送信は自分で押す）
+ *   node scripts/cw-patrol.mjs reply <契約のURL> --text 文.txt        # 返信を入力して止める（送信は自分で押す）。--from-thread なら、巡回が作る「理由を聞く質問」を使う
  *   node scripts/cw-patrol.mjs autosend status|on|off               # 許可した種類（理由を聞く質問）だけの自動送信。初期はオフ
  *   node scripts/cw-patrol.mjs queue-mark approved|sent|skipped 3 5   # 一覧の番号に印を付ける（承認 = approved）
  *   node scripts/cw-patrol.mjs fill --approved             # 承認した件だけ、入力済みの応募画面を開く（最大5件。「応募する」は自分で押す）
@@ -1252,9 +1252,11 @@ async function reply() {
   const kind = optValue("kind") || "reason-question";
   const send = argv.includes("--send");
   const checkOnly = argv.includes("--check");
-  if (!isThreadUrl(url) || (!textFile && !checkOnly)) die("使い方: node scripts/cw-patrol.mjs reply <https://crowdworks.jp/contracts/番号> --text 文.txt [--kind reason-question] [--check | --send --announced \"スレッドで伝えた一言\"]");
-  const text = textFile ? fs.readFileSync(path.resolve(textFile), "utf8").replace(/\r\n/g, "\n").trim() : "";
-  const problems = checkOnly && !textFile ? [] : validateReplyText(text);
+  const fromThread = argv.includes("--from-thread");
+  if (!isThreadUrl(url) || (!textFile && !fromThread && !checkOnly)) die("使い方: node scripts/cw-patrol.mjs reply <https://crowdworks.jp/contracts/番号> (--text 文.txt | --from-thread) [--kind reason-question] [--check | --send --announced \"スレッドで伝えた一言\"]");
+  if (fromThread && kind !== "reason-question") die("--from-thread で作れるのは reason-question（外のチャットへ誘う相手に理由を聞く質問）だけです");
+  let text = textFile ? fs.readFileSync(path.resolve(textFile), "utf8").replace(/\r\n/g, "\n").trim() : "";
+  const problems = textFile ? validateReplyText(text) : [];
   if (problems.length) die(problems.join("\n"));
   const config = readJson(CONFIG, null);
   if (!config) die("まだ設定されていません。先に setup を実行してください");
@@ -1265,6 +1267,7 @@ async function reply() {
     if (!gate.ok) die(`送りません: ${gate.reason}`);
   }
   if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  if (fromThread) ensureBuilt();
   fs.mkdirSync(HOME, { recursive: true });
   fs.writeFileSync(LOCK, String(process.pid));
   const touch = setInterval(() => fs.utimesSync(LOCK, new Date(), new Date()), 60_000);
@@ -1275,6 +1278,16 @@ async function reply() {
       const p = await readPage(page, url);
       if (isLoginPage(p.finalUrl)) fail("ログインが切れています。setup でログインし直してください");
       if (kind === "reason-question" && p.text.includes("外部でのやり取りが必要な理由")) fail("このやり取りには、同じ質問をもう送っています（画面に質問の文があります）。送りません");
+      if (fromThread) {
+        // 画面のやり取りを読んで、巡回が作る「理由を聞く質問」と同じ文を使う(外のチャットへの誘いが無い・質問済みなら作られない)
+        const { cw } = loadLib();
+        const review = cw.reviewCwThread(cw.parseCwThreads(p.text, config.me)[0], new Date());
+        if (!review.draftReply) fail("この画面には、理由を聞く質問を送る条件がありません（外のチャットへの誘いが読めない、または質問済み、または最後の発言が自分）。送りません");
+        text = review.draftReply.trim();
+        const bad = validateReplyText(text);
+        if (bad.length) fail(bad.join(" / "));
+        log(`送る文（${text.length}字）:\n${text}`);
+      }
       const forms = await page.evaluate(scanReplyForms);
       const pick = pickReplyForm(forms);
       for (const s of pick.seen) log(`  画面の欄: ${s}`);
@@ -1298,13 +1311,21 @@ async function reply() {
         await new Promise((resolve) => ctx.on("close", resolve));
         return;
       }
-      // ゆっくり: 入力してから少しおいて押す
+      // ゆっくり: 入力してから少しおいて押す。画面が作り直されていないか、欄とボタンをもう一度探して確かめてから押す
       await politeWait();
       await politeWait();
-      await page.locator(pick.button).first().click();
+      const again = pickReplyForm(await page.evaluate(scanReplyForms));
+      if (!again.ok || again.buttonLabel !== pick.buttonLabel) fail(`入力のあとで、送信ボタンを見つけ直せませんでした（${again.ok ? "ボタンが変わりました" : again.reason}）。送っていません`);
+      const stillThere = String(await page.locator(again.textarea).first().inputValue()).replace(/\r\n/g, "\n").trim();
+      if (stillThere !== text) fail("入力した文が画面から消えています。送っていません");
+      await page.locator(again.button).first().click();
       await page.waitForTimeout(4000);
-      const after = await readPage(page, url);
-      const confirmed = sentTextAppears(after.text, text);
+      // 画面に出たか(読み直す前に今の画面を見て、出ていなければ読み直して見る)
+      let confirmed = sentTextAppears(await page.evaluate(() => document.body?.innerText ?? ""), text);
+      if (!confirmed) {
+        const after = await readPage(page, url);
+        confirmed = sentTextAppears(after.text, text);
+      }
       fs.appendFileSync(SENT_LOG, `${JSON.stringify({ at: new Date().toISOString(), url, kind, text, announced: optValue("announced"), buttonLabel: pick.buttonLabel, confirmed })}\n`);
       log(confirmed ? `送りました: ${url}` : `送信ボタンを押しましたが、画面に送った文が見えません。画面を確かめてください: ${url}`);
     } finally {
