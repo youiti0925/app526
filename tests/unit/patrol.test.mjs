@@ -265,7 +265,7 @@ test("判定の出力から提案文だけを取り出す", () => {
   assert.equal(extractProposal("提案文なし"), "");
 });
 
-test("応募の下書き一覧: 依頼者の信頼度順・要確認の印と注意を出し、承認した件だけ送信待ちにする", () => {
+test("応募の下書き一覧: 依頼者の信頼度順・要確認の印と注意を出し、承認した件だけ承認済みにする", () => {
   const mk = (id, title, client, extra = {}) =>
     buildQueueItem({
       link: { key: `job:${id}`, url: `https://crowdworks.jp/public/jobs/${id}` },
@@ -293,7 +293,9 @@ test("応募の下書き一覧: 依頼者の信頼度順・要確認の印と注
   assert.deepEqual(m.missing, [9]);
   const md = queueMarkdown(m.state, new Date("2026-10-19T00:00:00Z"));
   assert.ok(md.includes("「承認 3 5」のように"));
-  assert.ok(md.includes("承認待ち 2件／承認済み（送信待ち） 1件"));
+  assert.ok(md.includes("一覧 2件／承認済み 1件"));
+  assert.ok(!md.includes("待ち"), "一覧に「待ち」と書かない");
+  assert.ok(md.includes("| 番号 | 案件 | 報酬 | 応募期限 | 依頼者 | AI禁止 | 判定 |"));
   assert.ok(md.indexOf("初めての依頼者") < md.indexOf("評価の低い依頼者"));
   assert.ok(md.includes("proposals/new?job_offer_id=2"));
   // 3週間たった未承認は外れ、承認済みは残る

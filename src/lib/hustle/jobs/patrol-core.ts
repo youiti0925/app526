@@ -97,7 +97,7 @@ export interface ReportInput {
   loginExpired: boolean;
   /** 公開募集（ココナラ・ままワークス）の自動収集の結果。応募候補の件数と、メールに載せる本文（提案文つき） */
   scan?: { candidates: number; body: string } | null;
-  /** 応募の下書き一覧。今回増えた分と、承認待ちの合計 */
+  /** 応募の下書き一覧。今回増えた分と、一覧の合計 */
   queue?: { added: QueueItem[]; pendingTotal: number } | null;
 }
 
@@ -146,7 +146,7 @@ export function buildReport(input: ReportInput): PatrolReport {
     section(`応募を考える ${picks.length}件（送るかどうかはあなたが決める。送信はしません）`);
     if (input.queue?.added.length) {
       out.push(
-        `応募の下書き一覧に ${input.queue.added.length}件 足しました（承認待ちは全部で ${input.queue.pendingTotal}件）。依頼者の信頼度が高い順です。`,
+        `応募の下書き一覧に ${input.queue.added.length}件 足しました（一覧は全部で ${input.queue.pendingTotal}件）。依頼者の信頼度が高い順です。`,
         "承認のしかた: 送りたい件の番号を、スレッドに「承認 3 5」のように返します。承認した件だけ入力済みの画面を開き、「応募する」はあなたが押します。"
       );
       for (const i of sortQueue(input.queue.added)) out.push("", queueItemText(i));
@@ -840,7 +840,21 @@ export function queueItemText(i: QueueItem): string {
   return lines.join("\n");
 }
 
-/** ゆうさんが後から見る一覧（Markdown）。承認待ちを、依頼者の信頼度が高い順に並べる。 */
+/** 一覧の表の1行ぶんの文字から、表を壊す「|」と改行を外す */
+const cell = (t: string): string => t.replace(/[|\n]/g, " ").trim();
+
+/** 一覧の表の1行（番号・案件・報酬・期限・依頼者・AI禁止・判定） */
+function queueRow(i: QueueItem): string {
+  const pay = i.payText.split("。")[0];
+  const c = i.client;
+  const client = `${c.tier}｜評価${c.rating ?? "—"}｜募集実績${c.orders ?? "—"}件｜完了率${c.completionRate ?? "—"}${c.completionRate !== null ? "%" : ""}`;
+  return `| ${i.no} | ${cell(shortTitle(i.title))} | ${cell(pay.length > 60 ? `${pay.slice(0, 60)}…` : pay)} | ${i.deadline ?? "—"} | ${cell(client)} | ${i.aiRestriction ? "あり" : "なし"} | ${cell(i.verdict)} |`;
+}
+
+/**
+ * ゆうさんが好きなときに見る一覧（Markdown）。承認の返事の有無に関わらず、巡回と下書きづくりは止まらない。
+ * 最初に1件1行の表、その下に1件ずつの全文（URL・報酬・期限・依頼者・AI禁止・提案文）。依頼者の信頼度が高い順。
+ */
 export function queueMarkdown(state: QueueState, at: Date = new Date()): string {
   const pending = sortQueue(state.items.filter((i) => i.status === "pending"));
   const approved = state.items.filter((i) => i.status === "approved");
@@ -848,14 +862,26 @@ export function queueMarkdown(state: QueueState, at: Date = new Date()): string 
   const out = [
     `# 応募の下書き一覧（${jst} 時点）`,
     "",
-    "承認のしかた: 送りたい件の番号を、スレッドに「承認 3 5」のように返します。承認した件だけ、PCで入力済みの応募画面を開きます（最大5件）。",
-    "「応募する」を押すのはゆうさんです。承認のない件は、入力も送信もしません。送らない件は「見送り 2」と返すと一覧から外します。",
-    "依頼者の並べ方: 募集実績が多く、評価と完了率が高い依頼者を上に出しています。",
+    "使い方: 送りたい件の番号を、スレッドに「承認 3 5」のように返すと、PCで入力済みの応募画面を開きます（最大5件）。「応募する」を押すのはゆうさんです。",
+    "送らない件は「見送り 2」と返すと一覧から外します。返事がなくても、巡回と下書きづくりは続き、この一覧に足されていきます。",
+    "並べ方: 募集実績が多く、評価と完了率が高い依頼者を上に出しています。",
     "",
-    `承認待ち ${pending.length}件／承認済み（送信待ち） ${approved.length}件`,
+    `一覧 ${pending.length}件／承認済み ${approved.length}件`,
   ];
-  if (approved.length) out.push("", "# 承認済み（送信待ち）", ...approved.map((i) => `- 【${i.no}】${shortTitle(i.title)} ${i.applyUrl}`));
-  if (pending.length) out.push("", "# 承認待ち", "", ...pending.flatMap((i) => [queueItemText(i), ""]));
-  else out.push("", "承認待ちはありません。");
+  if (approved.length) out.push("", "# 承認済み（応募画面を開いてあります。「応募する」を押すだけ）", ...approved.map((i) => `- 【${i.no}】${shortTitle(i.title)} ${i.applyUrl}`));
+  if (pending.length) {
+    out.push(
+      "",
+      "# 一覧（1件1行）",
+      "",
+      "| 番号 | 案件 | 報酬 | 応募期限 | 依頼者 | AI禁止 | 判定 |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      ...pending.map(queueRow),
+      "",
+      "# 1件ずつ（URL・報酬・提案文の全文）",
+      "",
+      ...pending.flatMap((i) => [queueItemText(i), ""])
+    );
+  } else out.push("", "一覧に載っている案件はありません。");
   return out.join("\n");
 }
