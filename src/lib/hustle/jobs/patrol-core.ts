@@ -414,20 +414,30 @@ export function encodeHeader(text: string): string {
   return /^[\x20-\x7e]*$/.test(text) ? text : `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`;
 }
 
-/** プレーンテキストのメール本文を組み立てる（改行は CRLF、本文は base64）。 */
-export function buildMimeMessage(m: { from: string; to: string; subject: string; body: string; date?: Date }): string {
-  const b64 = Buffer.from(m.body.replace(/\r?\n/g, "\r\n"), "utf8").toString("base64");
-  const lines = b64.match(/.{1,76}/g) ?? [""];
+/** メール本文を組み立てる（改行は CRLF、本文は base64）。html があれば、文字だけの本文を代わりに付けた2部構成にする。 */
+export function buildMimeMessage(m: { from: string; to: string; subject: string; body: string; html?: string; date?: Date }): string {
+  const b64 = (t: string) => Buffer.from(t.replace(/\r?\n/g, "\r\n"), "utf8").toString("base64").match(/.{1,76}/g) ?? [""];
+  const head = [`From: ${m.from}`, `To: ${m.to}`, `Subject: ${encodeHeader(m.subject)}`, `Date: ${(m.date ?? new Date()).toUTCString()}`, "MIME-Version: 1.0"];
+  if (!m.html) {
+    return [...head, "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", ...b64(m.body)].join("\r\n");
+  }
+  const boundary = `cwpatrol-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return [
-    `From: ${m.from}`,
-    `To: ${m.to}`,
-    `Subject: ${encodeHeader(m.subject)}`,
-    `Date: ${(m.date ?? new Date()).toUTCString()}`,
-    "MIME-Version: 1.0",
+    ...head,
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: base64",
     "",
-    ...lines,
+    ...b64(m.body),
+    `--${boundary}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    ...b64(m.html),
+    `--${boundary}--`,
+    "",
   ].join("\r\n");
 }
 

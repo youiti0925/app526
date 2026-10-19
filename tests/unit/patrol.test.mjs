@@ -784,3 +784,33 @@ test("提案文が年齢などの採用条件に「沿いません」と自分�
   assert.ok(bad.checks[0].includes("必須条件に合わないと自分で書いています"));
   assert.equal(mk("募集の条件に沿って進めます。").verdict, "確認してから応募");
 });
+
+test("メール: 見やすい形(HTML)のまとめと、文字だけの本文を2部構成で送る", async () => {
+  const { buildReportHtml, escapeHtml } = await import("../../dist-test/jobs/patrol-mail.js");
+  const review = reviewCwThread(parseCwThreads(THREAD, "taro_test")[0], new Date("2026-10-08T00:00:00+09:00"));
+  const html = buildReportHtml({
+    threads: [{ review, url: "https://crowdworks.jp/messages/1", changed: true }],
+    jobs: [
+      { title: "良い<募集>", url: "https://crowdworks.jp/public/jobs/9", verdict: "応募してよい", detail: "結論: 応募してよい\n--- 提案文 ---\n本文" },
+      { title: "安い募集", url: "https://crowdworks.jp/public/jobs/8", verdict: "見送り", detail: "結論: 見送り\n理由: 安すぎる" },
+    ],
+    errors: [],
+    loginExpired: false,
+    notes: ["単価の記録"],
+  });
+  assert.ok(html.includes("今やること 1件"));
+  assert.ok(html.includes("良い&lt;募集&gt;") && !html.includes("良い<募集>"));
+  assert.ok(html.includes("危ない相手") && html.includes("見送った新着 1件") && html.includes("単価の記録"));
+  assert.ok(html.includes('href="https://crowdworks.jp/public/jobs/9"'));
+  assert.equal(escapeHtml(`<a href="x">&`), "&lt;a href=&quot;x&quot;&gt;&amp;");
+  assert.ok(buildReportHtml({ threads: [], jobs: [], errors: [], loginExpired: true }).includes("ログインが切れました"));
+
+  const msg = buildMimeMessage({ from: "a@example.com", to: "a@example.com", subject: "件名", body: "文字", html: "<b>見た目</b>" });
+  const boundary = msg.match(/boundary="([^"]+)"/)[1];
+  assert.ok(msg.includes("Content-Type: multipart/alternative"));
+  const parts = msg.split(`--${boundary}`);
+  assert.equal(parts.length, 4);
+  assert.ok(parts[1].includes("text/plain") && parts[2].includes("text/html"));
+  const htmlB64 = parts[2].split("\r\n\r\n")[1].replace(/\r\n/g, "");
+  assert.equal(Buffer.from(htmlB64, "base64").toString("utf8"), "<b>見た目</b>");
+});
