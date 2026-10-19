@@ -929,7 +929,8 @@ export function unbackedSkillClaims(proposal: string, background: string | undef
   const bg = background.normalize("NFKC").toLowerCase();
   const found: string[] = [];
   for (const sentence of proposal.normalize("NFKC").split(/(?<=[。！？\n])/)) {
-    if (/ありません|ございません|なし|ない|未経験|初めて|新しい取り組み|不慣れ/.test(sentence)) continue;
+    // 「ライティング経験の有無」のような、募集が尋ねた項目名の繰り返しも、経験があると言っている文ではない
+    if (/ありません|ございません|なし|ない|未経験|初めて|新しい取り組み|不慣れ|有無/.test(sentence)) continue;
     for (const term of SKILL_TERMS) {
       const t = term.normalize("NFKC");
       if (bg.includes(t.toLowerCase())) continue;

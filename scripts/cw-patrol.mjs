@@ -1166,8 +1166,8 @@ function queueSet() {
   let item = target;
   if (file) item = core.setProposal(item, fs.readFileSync(path.resolve(file), "utf8").trim(), readBackground());
   if (price !== undefined) {
-    // 応募画面に入れる金額を人が決めたとき。「金額が読めませんでした」の注意は外す
-    item = { ...item, price, checks: item.checks.filter((c) => !c.startsWith("金額が読めませんでした")) };
+    // 応募画面に入れる金額を人が決めたとき。「金額が読めませんでした」「金額は文字単価からの目安です」の注意は外す
+    item = { ...item, price, checks: item.checks.filter((c) => !c.startsWith("金額が読めませんでした") && !c.startsWith("金額は文字単価からの目安です")) };
   }
   if (payText) item = { ...item, payText };
   const next = { ...state, items: state.items.map((i) => (i.no === no ? item : i)) };

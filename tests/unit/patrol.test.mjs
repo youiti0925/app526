@@ -541,6 +541,9 @@ test("提案文が経歴に無い道具の経験を言い切っていたら注�
   assert.deepEqual(unbackedSkillClaims("Googleスプレッドシートでの、集計レポートの新規構築のお仕事と理解しております。", bg), []);
   assert.deepEqual(unbackedSkillClaims("QUERY関数を使った経験はありません。Excel関数は使えます。", bg), []);
   assert.deepEqual(unbackedSkillClaims("Excel関数・VBAの経験があります。", bg), []);
+  // 募集が尋ねた項目名の繰り返し(「④ ライティング経験の有無」)は、経験があると言っている文ではない
+  assert.deepEqual(unbackedSkillClaims("④ ライティング経験の有無\nWeb記事の執筆経験はまだありません。", bg), []);
+  assert.deepEqual(unbackedSkillClaims("ライティング経験があります。", bg), ["ライティング"]);
   assert.deepEqual(unbackedSkillClaims("動画編集自体は新しい取り組みですが、丁寧に進めます。", bg), []);
   assert.deepEqual(unbackedSkillClaims("動画編集の経験があります。", undefined), [], "経歴が読めないときは調べない");
   // 一覧の注意にも出る
