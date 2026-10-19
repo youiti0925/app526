@@ -8,7 +8,7 @@
  *   node scripts/cw-patrol.mjs queue                       # 応募の下書き一覧（一覧・承認済み）を表示する
  *   node scripts/cw-patrol.mjs queue-add <募集URL> --proposal 提案文.txt   # 人が確かめた提案文つきで一覧に足す
  *   node scripts/cw-patrol.mjs queue-redraft [番号…] [--force]       # 提案文が空の件の提案文を作り直す（--force: 入っている件も）
- *   node scripts/cw-patrol.mjs queue-set <番号> --proposal 提案文.txt  # その件の提案文をファイルの文に差し替える
+ *   node scripts/cw-patrol.mjs queue-set <番号> [--proposal 提案文.txt] [--price 金額] [--pay-text 表示]  # その件の提案文・応募画面の金額・報酬の表示を差し替える
  *   node scripts/cw-patrol.mjs rejudge <募集URLか番号>…              # 判定のルールを直したあとに、前に落とした募集を読み直して判定し、一覧に足す（最大5件。応募画面は開かない）
  *   node scripts/cw-patrol.mjs page <募集IDまたはURL>…               # 募集の本文（判定に渡す部分）を表示する
  *   node scripts/cw-patrol.mjs read <https://crowdworks.jp/…のURL>…   # 画面の文字とリンクを表示する（メッセージの受信箱・スカウトの形を調べる用。読むだけ）
@@ -1135,23 +1135,33 @@ async function queueRedraft() {
 
 /**
  * 一覧の件の提案文を、ファイルの文に差し替える（番号と状態は変わらない。募集ページは読まない）。
- *   queue-set <番号> --proposal 提案文.txt
+ *   queue-set <番号> [--proposal 提案文.txt] [--price 金額] [--pay-text "報酬の表示"]
  */
 function queueSet() {
   const no = Number(argv[1]);
   const file = optValue("proposal");
-  if (!Number.isInteger(no) || !file) die("使い方: node scripts/cw-patrol.mjs queue-set <番号> --proposal 提案文.txt");
+  const priceArg = optValue("price");
+  const payText = optValue("pay-text");
+  if (!Number.isInteger(no) || (!file && !priceArg && !payText)) die("使い方: node scripts/cw-patrol.mjs queue-set <番号> [--proposal 提案文.txt] [--price 金額] [--pay-text \"報酬の表示\"]");
+  const price = priceArg === undefined ? undefined : Number(priceArg.replace(/,/g, ""));
+  if (price !== undefined && !(Number.isFinite(price) && price > 0)) die("--price は円の数字で指定してください");
   ensureBuilt();
   const { core } = loadLib();
   const state = readJson(QUEUE_JSON, core.emptyQueue());
   const target = state.items.find((i) => i.no === no);
   if (!target) die(`一覧に【${no}】がありません`);
-  const text = fs.readFileSync(path.resolve(file), "utf8").trim();
-  const next = { ...state, items: state.items.map((i) => (i.no === no ? core.setProposal(i, text, readBackground()) : i)) };
+  let item = target;
+  if (file) item = core.setProposal(item, fs.readFileSync(path.resolve(file), "utf8").trim(), readBackground());
+  if (price !== undefined) {
+    // 応募画面に入れる金額を人が決めたとき。「金額が読めませんでした」の注意は外す
+    item = { ...item, price, checks: item.checks.filter((c) => !c.startsWith("金額が読めませんでした")) };
+  }
+  if (payText) item = { ...item, payText };
+  const next = { ...state, items: state.items.map((i) => (i.no === no ? item : i)) };
   writeJson(QUEUE_JSON, next);
   fs.writeFileSync(QUEUE_MD, core.queueMarkdown(next));
   const done = next.items.find((i) => i.no === no);
-  console.log(`【${no}】の提案文を差し替えました（${done.proposal.length}字）。提案文に関する注意: ${done.checks.filter((c) => c.startsWith("提案文")).join(" / ") || "なし"}`);
+  console.log(`【${no}】を更新しました（提案文 ${done.proposal.length}字・応募画面の金額 ${done.price ?? "未設定"}・報酬の表示 ${done.payText}）。提案文に関する注意: ${done.checks.filter((c) => c.startsWith("提案文")).join(" / ") || "なし"}`);
 }
 
 /**
@@ -1459,7 +1469,7 @@ function budgets() {
 
 const commands = { setup, run, fill, reply, autosend, "add-search": addSearch, "add-keyword": addKeyword, explain, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, "queue-redraft": queueRedraft, "queue-set": queueSet, rejudge, page: pageShow, read: readShow, messages: messagesShow, schedule: () => registerSchedule(), "test-mail": () => testMail() };
 if (!commands[cmd]) {
-  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> --proposal 提案文.txt | rejudge <募集URLか番号>… | page <募集ID>… | read <crowdworks.jpのURL>… | messages [--last 3] | queue-mark approved|sent|skipped 番号… | fill --approved | reply <契約のURL> --check | autosend status | schedule | test-mail");
+  console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-redraft [番号…] [--force] | queue-set <番号> [--proposal 提案文.txt] [--price 金額] [--pay-text 表示] | rejudge <募集URLか番号>… | page <募集ID>… | read <crowdworks.jpのURL>… | messages [--last 3] | queue-mark approved|sent|skipped 番号… | fill --approved | reply <契約のURL> --check | autosend status | schedule | test-mail");
   process.exit(cmd ? 1 : 0);
 }
 await commands[cmd]();

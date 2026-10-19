@@ -970,11 +970,19 @@ export function ruleChecks(title: string, pageText: string): { lines: string[]; 
  * 関門で交渉では外せないもの・危険信号が強いもの・こちらでは納品できない型(現地作業・本人の感想など)のとき skip。
  * 「納品物が読み取れない」だけでは skip にしない(募集文が短いだけの普通の仕事もあるため)。
  */
+/** 固定報酬がこの額以下の仕事は、受けても時給の基準に届かない */
+const LOW_FIXED_PAY_JPY = 500;
+
 export function screenJob(title: string, pageText: string): { skip: boolean; reasons: string[] } {
   const body = jobBodyForJudging(pageText, title).normalize("NFKC").slice(0, 6000);
   const reasons = [...ruleChecks(title, pageText).blocking];
   const d = judgeDeliverability(body);
   if (!d.canDeliver && (d.routes.includes("physical") || d.routes.includes("taste"))) reasons.push(`こちらでは納品できない型（${d.note.replace(/。.*$/, "")}）`);
+  // 固定報酬が数百円の仕事は、手数料を引くと手取りが時給の基準に届かない(実データ: 1回100円の「記事を読んで感想」「リストへのテンプレ送信」)
+  const rec = budgetRecord({ key: "job:0", url: "" }, title, pageText);
+  if (rec.payType === "固定報酬" && !rec.budgetEstimated && rec.budgetMaxJpy != null && rec.budgetMaxJpy <= LOW_FIXED_PAY_JPY) {
+    reasons.push(`固定報酬が${rec.budgetMaxJpy.toLocaleString()}円で、手数料を引くと手取りが時給の基準に届かない`);
+  }
   return { skip: reasons.length > 0, reasons };
 }
 

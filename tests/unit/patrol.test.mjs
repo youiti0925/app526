@@ -699,6 +699,10 @@ test("受信箱のやり取り: 募集の内容が受けられない型なら、
   assert.equal(screenJob("体験レポ", "固定報酬制 49,000円\nクレジットカードの新規申し込みをして、空港ラウンジの現地の写真付きで感想を提出してください。").skip, true);
   assert.equal(screenJob("事務", "固定報酬制 10,000円\nExcelでデータを集計してください。社外秘の資料を扱います。NDAを締結していただきます。").skip, true);
   assert.equal(screenJob("集計", "固定報酬制 10,000円\nExcelでデータを集計し、グラフを作ってください。").skip, false);
+  // 手取りが時給の基準に届かない安い固定報酬は、返事を考える対象から外す（目安の金額は対象外）
+  assert.equal(screenJob("DM送信", "固定報酬制 110円\nテンプレートでDMを送ってください。").skip, true);
+  assert.equal(screenJob("読書", "固定報酬制 100円\nnoteの記事を読んで感想を書いてください。").skip, true);
+  assert.equal(screenJob("記事", "固定報酬制 2,000円\nWebライティングをお願いします。2000字です。").skip, false);
   // 本文が短くて何を納品するか読めないだけの募集は skip にしない
   assert.equal(screenJob("ご相談", "固定報酬制 5,000円\nご相談ください。").skip, false);
 

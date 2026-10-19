@@ -64,6 +64,12 @@ interface GateRule {
    * ワーカーへの作業の依頼ではない。その箇条書きを除いてから見る。
    */
   skipTopicBullets?: boolean;
+  /**
+   * 弱い当たり方のパターン。weakUnless に当たる文脈（例: 集めるのは店舗・企業の情報）のときは数えない。
+   * 「営業リスト作成」は、依頼の目的欄の語であることが多く、集める中身が法人・店舗の情報なら個人情報ではない。
+   */
+  weakPatterns?: RegExp[];
+  weakUnless?: RegExp;
   why: string;
   negotiable: boolean;
   ask: string;
@@ -136,8 +142,11 @@ const GATE_RULES: GateRule[] = [
     patterns: [
       /(個人|顧客|会員|見込み客|インフルエンサー|フォロワー)[^。\n]{0,12}(氏名|名前|メール|電話番号|連絡先|住所|アカウント)[^。\n]{0,15}(収集|リスト|抽出|取得|入力|まとめ|集め)/,
       /(経営者|代表者|担当者)[^。\n]{0,8}(の)?(メール|電話|LINE|連絡先)[^。\n]{0,12}(収集|リスト|抽出|取得|集め)/,
-      /(名簿|リードリスト|営業リスト)[^。\n]{0,10}(作成|収集|販売|購入)/,
     ],
+    // 「営業リスト作成」は、集める中身が店舗・企業の情報（Googleマップで指定業者の名称・住所・電話を集める等）なら個人情報ではない
+    weakPatterns: [/(名簿|リードリスト|営業リスト)[^。\n]{0,10}(作成|収集|販売|購入)/],
+    weakUnless:
+      /(Googleマップ|グーグルマップ|地図)[^。\n]{0,40}(業者|店舗|店|企業|会社|事業者|施設|ショップ|クリニック|医院)|(指定|対象)の?(業者|店舗|企業|会社|事業者)(の|に関する)?(情報|名称|住所|電話|ホームページ)|(法人|企業|店舗|事業者)(の)?(情報|リスト)/,
     why:
       "特定の個人の氏名・連絡先を集めてリストにして渡す仕事は、個人情報保護法の適用を受けます。本人の同意なく収集した個人データの第三者提供は原則できず、名簿屋の届出（オプトアウト）の話になります。会社名・代表電話・住所のような法人情報のリストは問題ありません。",
     negotiable: false,
@@ -267,7 +276,8 @@ export function checkGates(text: string): GateResult {
 
   for (const rule of GATE_RULES) {
     const body = rule.skipNegated ? asked : rule.skipTopicBullets ? topicsDropped : t;
-    for (const p of rule.patterns) {
+    const weak = rule.weakPatterns && !(rule.weakUnless && rule.weakUnless.test(body)) ? rule.weakPatterns : [];
+    for (const p of [...rule.patterns, ...weak]) {
       const m = body.match(p);
       if (!m) continue;
       hits.push({

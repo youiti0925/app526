@@ -746,3 +746,34 @@ test("納期: 募集ページの「掲載日」「応募期限」は納期では
   assert.equal(stripPostingDates("掲載日 2026年10月19日 応募期限 10月31日 納期 11月5日").includes("11月5日"), true);
   assert.equal(stripPostingDates("掲載日 2026年10月19日 応募期限 10月31日").includes("10月"), false);
 });
+
+// --- 2026-10-19 PCの巡回で見つかった判定の誤り(4件) --------------------------------------------
+
+test("誤判定の修正: 営業リスト作成でも、Googleマップ等の事業者情報は個人情報集めにしない", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const has = (t) => checkGates(t).hits.some((h) => h.id === "personal_data");
+  assert.ok(!has("Googleマップの飲食店情報を元に、営業リストの作成をお願いします。店舗名・住所・電話番号を入力します。"), "店舗・企業の情報は個人情報集めではない");
+  assert.ok(!has("法人情報をまとめた営業リストを作成してください。"));
+  assert.ok(has("名簿を収集してください。"), "事業者の文脈が無い名簿集めは今まで通り拾う");
+  assert.ok(has("個人の氏名と電話番号を集めてリストにしてください。"), "個人の氏名・連絡先は今まで通り拾う");
+});
+
+test("誤判定の修正: 「出社して働いている」は応募者の条件ではない／応募方法のアンケートは回答する仕事ではない", async () => {
+  const { judgeDeliverability } = await import("../../dist-test/agent/deliverability.js");
+  const onsite = (t) => judgeDeliverability(t).matched.includes("onsite");
+  assert.ok(!onsite("私たちは出社して働いているメンバーが中心です。ご自宅からの作業で大丈夫です。"), "依頼者側の様子は条件に数えない");
+  assert.ok(onsite("週3日は出社が必要です。"), "応募者への出社の条件は今まで通り拾う");
+  assert.ok(!onsite("ライター・編集・接客などの経験は問いません。"), "並べた例の中の接客は現地作業にしない");
+  assert.ok(onsite("店舗での接客をお願いします。"));
+  const survey = (t) => judgeDeliverability(t).matched.includes("personal_identity");
+  assert.ok(!survey("応募方法: 以下のアンケートに回答の上、ご応募ください。\n記事を書いてください。"), "応募方法のアンケートは仕事ではない");
+});
+
+test("誤判定の修正: 「AIを使ったらブロック」も、AIの禁止として読む", async () => {
+  const { readAiRestriction } = await import("../../dist-test/agent/ai-restriction.js");
+  const r = readAiRestriction("生成AIを使用したと思われる方は、ブロックします。");
+  assert.equal(r.restricted, true);
+  assert.equal(readAiRestriction("AIを使用した場合は契約解除となります。").restricted, true);
+  assert.equal(readAiRestriction("生成AIを使用したデータの納品は非承認とします。").restricted, true);
+  assert.equal(readAiRestriction("AIを活用して効率よく進めてください。").restricted, false);
+});
