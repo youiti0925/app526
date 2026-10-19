@@ -200,6 +200,33 @@ test("上位の判定が提案文を付けなかった案件(見送りを検算�
   assert.ok(agentDb.readInbox(undefined, 300).some((i) => i.leadId === lead.id && i.kind === "proposal"), "提案文が作られていない");
 });
 
+test("上位の判定が「見送り」で作業時間を付けなかったときも、見送りとして反映される(捨てない)", () => {
+  const { applyVerdicts } = require_(path.join(ROOT, "lib/hustle/agent/escalation.js"));
+  const lead = agentDb.insertLead({
+    source: "manual",
+    externalId: "e2e:reject-no-hours",
+    url: "https://example.test/jobs/rnh",
+    title: "経験者のみの募集",
+    rawText: "公式LINEの運用経験が必須です。報酬は5,500円です。".repeat(8),
+    budgetJpy: 5_500,
+  }).lead;
+  agentDb.updateLead(lead.id, { status: "triaged", verdict: "unknown", triage: { escalationReasons: [{ code: "x", note: "x" }] } });
+  const applied = applyVerdicts([
+    { leadId: lead.id, estimatedHours: null, basis: "", offeredJpy: null, verdict: "reject", reason: "必須の経験を満たせない", risks: [], proposal: "", confidence: "high" },
+  ]);
+  assert.equal(applied.applied, 1);
+  assert.equal(applied.skipped.length, 0);
+  const after = agentDb.readLeadsByIds([lead.id]).get(lead.id);
+  assert.equal(after.status, "rejected");
+  assert.equal(after.verdict, "reject");
+  assert.equal(after.triage.reason, "必須の経験を満たせない");
+  // 見送りではない判定が時間なしで返ったときは、これまでどおり反映しない
+  const lead2 = agentDb.insertLead({ source: "manual", externalId: "e2e:proceed-no-hours", url: "https://example.test/jobs/pnh", title: "時間なし", rawText: "記事作成。".repeat(30), budgetJpy: 20_000 }).lead;
+  const r2 = applyVerdicts([{ leadId: lead2.id, estimatedHours: null, basis: "", offeredJpy: null, verdict: "proceed", reason: "", risks: [], proposal: "", confidence: "low" }]);
+  assert.equal(r2.applied, 0);
+  assert.equal(r2.skipped.length, 1);
+});
+
 test("上位判定に回す案件は、点数順の上位100件に入っていなくても、id を指定すれば取り残されない", () => {
   const { collectEscalations } = require_(path.join(ROOT, "lib/hustle/agent/escalation.js"));
   const mk = (n, score) => {
