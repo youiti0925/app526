@@ -932,7 +932,57 @@ export function screenJob(title: string, pageText: string): { skip: boolean; rea
 }
 
 /** 「送る前に見ること」のうち、提案文の中身から決まるものの先頭の言葉（提案文を差し替えるときに入れ替える） */
-const PROPOSAL_CHECK_PREFIXES = ["提案文が出ていません", "提案文に、AIを使って", "提案文に、経歴に書かれていない", "提案文に【要確認】"];
+const PROPOSAL_CHECK_PREFIXES = ["提案文が出ていません", "提案文に、AIを使って", "提案文に、経歴に書かれていない", "提案文に、稼働の曜日", "提案文に、「得意」", "提案文に【要確認】"];
+
+/** 提案文に書きがちな稼働の曜日・時間帯。経歴に書かれていない組み合わせを、ゆうさんの実際の稼働と思って書いていないかを調べる */
+const AVAILABILITY_TERMS = ["平日夜間", "平日の夜", "平日夜", "平日の朝", "平日朝", "平日昼", "平日の日中", "早朝", "深夜", "夜間", "土日祝", "土日", "週末", "休日", "祝日"];
+
+/**
+ * 提案文が書いた稼働の曜日・時間帯のうち、経歴（プロフィール）の文章に無いもの。
+ * 実際の稼働は本人しか分からない。モデルが「平日夜間・土日祝」のように補って書くことがあったので、
+ * 経歴に無い言い方は一覧の注意に出して、本人が実際の稼働と合うか確かめられるようにする。
+ * 経歴が読めないとき（background が無い）は調べない。
+ */
+export function unbackedAvailability(proposal: string, background: string | undefined): string[] {
+  if (background === undefined || !proposal) return [];
+  const bg = background.normalize("NFKC");
+  const text = proposal.normalize("NFKC");
+  const found = AVAILABILITY_TERMS.filter((t) => text.includes(t) && !bg.includes(t));
+  // 「平日夜間」と「夜間」のように重なる語は長いほうだけ
+  return found.filter((t) => !found.some((o) => o !== t && o.includes(t)));
+}
+
+/**
+ * 「得意」「自信があります」「強みです」と言い切っている文。経歴の事実から言える範囲か、本人が確かめる。
+ * （例: 「文章の推敲といったQA工程は得意分野と考えています」は、経歴に推敲の経験が無いのに強みと書いていた）
+ * 「ありません」「苦手」を含む文は拾わない。
+ */
+export function strengthClaims(proposal: string): string[] {
+  const out: string[] = [];
+  for (const sentence of proposal.normalize("NFKC").split(/(?<=[。！？\n])/)) {
+    if (/ありません|ございません|苦手|不慣れ|未経験/.test(sentence)) continue;
+    const m = sentence.match(/(得意|自信があ|強みで|強みと|強みを)/);
+    if (!m || m.index === undefined) continue;
+    const from = Math.max(0, m.index - 28);
+    out.push(sentence.slice(from, m.index + 14).replace(/\s+/g, " ").trim());
+  }
+  return out.slice(0, 2);
+}
+
+/**
+ * 判定の出力にある「送る前に詰めること:」の箇条書き。判定の理由は「条件を詰める必要がある箇所が 1件」とだけ出るので、
+ * その中身を一覧の「送る前に見ること」に載せる（今までは件数だけで、何を詰めるのかが一覧に無かった）。
+ */
+export function judgeRisks(detail: string): string[] {
+  const m = detail.match(/^送る前に詰めること:\n((?:・[^\n]*(?:\n|$))+)/m);
+  if (!m) return [];
+  return m[1]
+    .split("\n")
+    .map((l) => l.replace(/^・\s*/, "").trim())
+    .filter(Boolean)
+    .slice(0, 6)
+    .map((l) => (l.length > 160 ? `${l.slice(0, 160)}…` : l));
+}
 
 /** 提案文の中身から決まる「送る前に見ること」。提案文が空・AIの使用・経歴に無い経験・【要確認】の残り */
 export function proposalChecks(proposal: string, background?: string): string[] {
@@ -944,6 +994,10 @@ export function proposalChecks(proposal: string, background?: string): string[] 
   }
   const unbacked = unbackedSkillClaims(proposal, background);
   if (unbacked.length) out.push(`提案文に、経歴に書かれていない経験があるように読める箇所があります（${unbacked.join("・")}）。使ったことがなければ消してから送る`);
+  const avail = unbackedAvailability(proposal, background);
+  if (avail.length) out.push(`提案文に、稼働の曜日・時間帯（${avail.join("・")}）が書かれていますが、経歴の文章にはありません。実際に使える時間と合うか確かめてから送る`);
+  const strong = strengthClaims(proposal);
+  if (strong.length) out.push(`提案文に、「得意」「自信」と言い切る箇所があります（${strong.map((x) => `「…${x}…」`).join("、")}）。経歴に書かれた事実の範囲か確かめる。なければ「〜に取り組みます」に直す`);
   const left = proposal.match(/【要確認[^】]*】/g);
   if (left) out.push(`提案文に【要確認】が${left.length}か所残っています（${left.slice(0, 2).join("、")}）。事実を確かめて直してから送る`);
   return out;
@@ -997,6 +1051,8 @@ export function buildQueueItem(args: {
   }
 
   checks.push(...proposalChecks(proposal, args.background));
+  // 判定が「条件を詰める必要がある」とした中身(件数だけでは何を詰めるか分からない)
+  for (const r of judgeRisks(args.judged.detail)) if (!checks.includes(r)) checks.push(r);
   // AIの使用の禁止・制限は、一律に見送らず、禁止の範囲を載せて人が決める
   const ai = readAiRestriction(jobBodyForJudging(args.pageText, args.title));
   if (ai.restricted) {

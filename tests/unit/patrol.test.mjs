@@ -3,6 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
 import { ruleChecks, setProposal, proposalChecks, cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, screenJob, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint, inboxRowInfo, selectInboxRows, messageNotes } from "../../dist-test/jobs/patrol-core.js";
+import { unbackedAvailability, strengthClaims, judgeRisks } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -710,4 +711,33 @@ test("受信箱のやり取り: 募集の内容が受けられない型なら、
   assert.match(rpt.body, /募集の内容が受けられない型のやり取り 1件（返信しなくて大丈夫です）/);
   assert.ok(!rpt.body.includes("■ 返事を考える"));
   assert.equal(messageNotes(input.threads)[0].kind, "skip");
+});
+
+test("提案文の稼働の曜日・時間帯が経歴に無ければ注意、「得意」の言い切りも注意、判定の「送る前に詰めること」は一覧に載せる", () => {
+  const bg = "本業で約20年、精密部品の検査。土日祝で週6時間ほど稼働できます。";
+  // 経歴にある「土日祝」は注意しない。「平日夜間」は経歴に無いので注意(長いほうだけ出す)
+  assert.deepEqual(unbackedAvailability("稼働は平日夜間・土日祝を中心に週数時間程度です。", bg), ["平日夜間"]);
+  assert.deepEqual(unbackedAvailability("稼働は土日祝を中心に週6時間ほどです。", bg), []);
+  assert.deepEqual(unbackedAvailability("稼働は平日夜間です。", undefined), [], "経歴が読めないときは調べない");
+  assert.deepEqual(unbackedAvailability("夜間の対応もできます。", bg), ["夜間"]);
+
+  assert.equal(strengthClaims("文章の推敲といったQA工程は得意分野と考えています。").length, 1);
+  assert.ok(strengthClaims("文章の推敲といったQA工程は得意分野と考えています。")[0].includes("得意"));
+  assert.deepEqual(strengthClaims("翻訳は得意ではありませんが、丁寧に進めます。"), []);
+  assert.deepEqual(strengthClaims("検査の経験が約20年あります。"), []);
+
+  const checks = proposalChecks("稼働は平日夜間です。文章の推敲は得意分野です。", bg);
+  assert.ok(checks.some((c) => c.startsWith("提案文に、稼働の曜日") && c.includes("平日夜間")));
+  assert.ok(checks.some((c) => c.startsWith("提案文に、「得意」")));
+  // 提案文を差し替えると、これらの注意は付け直される
+  const base = { no: 1, id: "1", title: "t", url: "u", applyUrl: "a", verdict: "確認してから応募", reason: "", payType: "固定報酬", payText: "固定報酬", price: null, applicants: 1, openings: 1, deadline: null, client: { tier: "優良", summary: "s", orders: 1, rating: null, completionRate: null, thanks: null, identity: "済", raw: "" }, proposal: "", checks: ["金額が読めませんでした。"], status: "pending", at: "2026-10-19T00:00:00Z" };
+  const fixed = setProposal({ ...base, checks: ["金額が読めませんでした。", ...checks] }, "稼働は土日祝を中心にします。", bg);
+  assert.deepEqual(fixed.checks, ["金額が読めませんでした。"]);
+
+  const detail = "結論: 確認してから応募\n理由: 条件を詰める必要がある箇所が 2件\n送る前に詰めること:\n・報酬が1記事いくらか書かれていません\n・継続の頻度が不明です\n仕事ライン: まだこの型の手順書はありません\n\n--- 提案文 ---\n本文";
+  assert.deepEqual(judgeRisks(detail), ["報酬が1記事いくらか書かれていません", "継続の頻度が不明です"]);
+  assert.deepEqual(judgeRisks("結論: 応募してよい\n理由: x"), []);
+  const page = "固定報酬制 文字単価\n応募した人 3 人 契約した人 0 人 募集人数 1 人\n" + "仕事の説明です。".repeat(40) + "\nクライアント情報\n○○の詳細を見る";
+  const it = buildQueueItem({ link: { key: "job:9", url: "u" }, applyUrl: "a", title: "記事のお仕事", pageText: page, judged: { verdict: "確認してから応募", detail }, background: bg });
+  assert.ok(it.checks.includes("報酬が1記事いくらか書かれていません") && it.checks.includes("継続の頻度が不明です"));
 });
