@@ -63,7 +63,36 @@ export function normalizeListItem(raw) {
     rating,
     verified: !!raw.verified,
     closed: !!raw.closed || isClosedText(raw.remaining),
+    client: clientIdFromUrl(raw.clientHref ?? ""),
   };
+}
+
+/** 一覧の依頼者リンク（/client/<名前>）から依頼者を見分ける名前を取る。 */
+export function clientIdFromUrl(url) {
+  try {
+    const u = new URL(url, BASE);
+    if (u.hostname !== "www.lancers.jp") return null;
+    return u.pathname.match(/^\/client\/([^/]+)\/?$/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 並んだ順のまま、依頼者1人につき1件までに絞る。
+ * 依頼者が分からないものは、題名の先頭20文字が同じものを同じ依頼とみなす。
+ */
+export function onePerClient(items, limit = Infinity) {
+  const seen = new Set();
+  const out = [];
+  for (const it of items) {
+    if (out.length >= limit) break;
+    const key = it.client ? `c:${it.client}` : `t:${`${it.title ?? ""}`.replace(/\s+/g, "").slice(0, 20)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(it);
+  }
+  return out;
 }
 
 export const isClosedText = (s) => /募集終了|終了しました|キャンセル/.test(`${s ?? ""}`);
@@ -130,6 +159,7 @@ export function extractListInPage() {
       proposals: el.querySelector(".p-search-job-media__proposals")?.textContent ?? "",
       subnote: [...el.querySelectorAll(".c-avatar__subnote")].map((n) => n.textContent).join(" "),
       verified: !!el.querySelector("i.p-search-job-media__avatar-badge.is-verified"),
+      clientHref: el.querySelector(".p-search-job-media__avatar a[href*='/client/']")?.href ?? "",
       inLatest: !!el.closest("[class*='p-search-job__latest']"),
     };
   });

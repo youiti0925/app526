@@ -29,6 +29,7 @@ import {
   formatList,
   normalizeDetail,
   normalizeListItem,
+  onePerClient,
   searchUrl,
 } from "./lib/lancers.mjs";
 
@@ -130,7 +131,8 @@ async function run() {
     }
 
     // 依頼者の点数の高いものから詳細を読む
-    const picked = [...found.values()].sort((a, b) => b.score - a.score).slice(0, Math.min(MAX_DETAILS, MAX_PAGES - pages));
+    // 1人の依頼者が枠を埋めないよう、依頼者1人につき1件まで
+    const picked = onePerClient([...found.values()].sort((a, b) => b.score - a.score), Math.min(MAX_DETAILS, MAX_PAGES - pages));
     const results = [];
     for (const it of picked) {
       await politeWait();

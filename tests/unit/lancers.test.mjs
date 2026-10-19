@@ -1,7 +1,17 @@
 // ランサーズ巡回（lancers-patrol.mjs）の、通信しない部分。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clientScore, formatList, jobIdFromUrl, normalizeDetail, normalizeListItem, parseSubnote, searchUrl } from "../../scripts/lib/lancers.mjs";
+import {
+  clientIdFromUrl,
+  clientScore,
+  formatList,
+  jobIdFromUrl,
+  normalizeDetail,
+  normalizeListItem,
+  onePerClient,
+  parseSubnote,
+  searchUrl,
+} from "../../scripts/lib/lancers.mjs";
 
 test("検索URLは新着順、2ページ目から page を付ける", () => {
   assert.equal(searchUrl("VBA"), "https://www.lancers.jp/work/search?keyword=VBA&sort=started");
@@ -78,4 +88,28 @@ test("一覧: 題名の空白をまとめ、終わった募集と「当選者数
 test("詳細: 予算は幅のまま「円」をつめて読む", () => {
   assert.equal(normalizeDetail({ budget: " 50,000 円 ~ 100,000 円 " }).budget, "50,000円 ~ 100,000円");
   assert.equal(normalizeDetail({ budget: "~ 5,000 円" }).budget, "~ 5,000円");
+});
+
+test("依頼者は一覧の /client/<名前> で見分ける", () => {
+  assert.equal(clientIdFromUrl("https://www.lancers.jp/client/ops_desk"), "ops_desk");
+  assert.equal(clientIdFromUrl("/client/JCS20240724/"), "JCS20240724");
+  assert.equal(clientIdFromUrl("https://tech-agent.lancers.jp/client/x"), null);
+  assert.equal(clientIdFromUrl(""), null);
+  assert.equal(normalizeListItem({ href: "/work/detail/1", clientHref: "/client/abc" }).client, "abc");
+});
+
+test("詳細を読むのは依頼者1人につき1件まで、分からなければ題名の先頭20文字で見分ける", () => {
+  const picked = onePerClient(
+    [
+      { id: "1", client: "a", title: "電話対応スタッフ募集" },
+      { id: "2", client: "a", title: "フォーム送信スタッフ募集" },
+      { id: "3", client: "b", title: "見積書の雛形" },
+      { id: "4", client: null, title: "【急募】エクセルで見積書の雛形作成をお願いしたいです（1）" },
+      { id: "5", client: null, title: "【急募】 エクセルで見積書の雛形作成をお願いしたいです（2）" },
+      { id: "6", client: null, title: "別の依頼" },
+    ],
+    3
+  );
+  assert.deepEqual(picked.map((j) => j.id), ["1", "3", "4"]);
+  assert.deepEqual(onePerClient([{ id: "4", title: "【急募】エクセルで見積書の雛形作成をお願いしたいです（1）" }, { id: "5", title: "【急募】 エクセルで見積書の雛形作成をお願いしたいです（2）" }, { id: "6", title: "別" }]).map((j) => j.id), ["4", "6"]);
 });
