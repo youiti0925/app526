@@ -65,6 +65,7 @@
     "src/lib/hustle/jobs/judge-core.ts",
     "src/lib/hustle/jobs/cw-thread.ts",
     "src/lib/hustle/jobs/patrol-core.ts",
+    "src/lib/hustle/jobs/patrol-mail.ts",
     "src/lib/hustle/dataops/xlsx.ts"
   ]
 }

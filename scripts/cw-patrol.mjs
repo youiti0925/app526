@@ -106,6 +106,7 @@ function loadLib() {
   return {
     cw: req(path.join(DIST, "lib/hustle/jobs/cw-thread.js")),
     core: req(path.join(DIST, "lib/hustle/jobs/patrol-core.js")),
+    mail: req(path.join(DIST, "lib/hustle/jobs/patrol-mail.js")),
   };
 }
 
@@ -646,15 +647,25 @@ async function run() {
 
     writeJson(SEEN, seen);
     const scan = loginExpired ? null : runScan(errors);
-    const report = core.buildReport({ threads, jobs: judged, errors, loginExpired, scan, queue });
+    const reportInput = { threads, jobs: judged, errors, loginExpired, scan, queue };
+    const report = core.buildReport(reportInput);
     // 単価の記録（Excel/VBA の前提を確かめるため）をまとめの末尾に付ける
+    const notes = [];
     try {
       const recs = fs.readFileSync(BUDGET_LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-      if (recs.length) report.body += `\n\n■ ${core.summarizeBudgets(recs)}`;
+      if (recs.length) notes.push(core.summarizeBudgets(recs));
     } catch {}
+    for (const n of notes) report.body += `\n\n■ ${n}`;
+    // スマホで見やすい見た目（HTML）。作れなかったときは文字だけで送る
+    let html;
+    try {
+      html = loadLib().mail.buildReportHtml({ ...reportInput, notes });
+    } catch (e) {
+      log(`見やすい形のメールを作れませんでした（文字だけで送ります）: ${e.message}`);
+    }
     log(report.subject);
     if ((report.worthSending || argv.includes("--always")) && config.mail) {
-      const message = core.buildMimeMessage({ from: config.mail.user, to: config.mail.to, subject: report.subject, body: report.body });
+      const message = core.buildMimeMessage({ from: config.mail.user, to: config.mail.to, subject: report.subject, body: report.body, html });
       await sendMail({ user: config.mail.user, pass: config.mail.pass, to: config.mail.to, message });
       log(`Gメールに送りました（${config.mail.to}）`);
     } else if (!config.mail) {
