@@ -12,7 +12,26 @@
  */
 
 export const BASE = "https://www.lancers.jp";
-export const DEFAULT_KEYWORDS = ["エクセル", "Excel", "VBA", "マクロ", "スプレッドシート", "品質管理", "測定", "検査"];
+/**
+ * 見て回る検索語。Excel に限らず、Claude が作業して納品物を作れる仕事を全部入れる
+ * （書く・訳す・まとめる・調べる・入力する・作る）。体や本人の声・顔が要る仕事は判定（judge）で落ちる。
+ * 1回の巡回で全部は見られない（20ページまで）ので、KEYWORDS_PER_RUN 語ずつ順番に回す。
+ */
+export const DEFAULT_KEYWORDS = [
+  "エクセル", "記事作成", "文字起こし", "翻訳", "データ入力", "リサーチ", "資料作成", "Python",
+  "GAS", "ホームページ制作", "マクロ", "ライティング", "議事録", "英語", "リスト作成", "パワーポイント",
+  "WordPress", "スクレイピング", "校正", "要約", "スプレッドシート", "VBA", "LP制作", "マニュアル作成",
+];
+export const KEYWORDS_PER_RUN = 10;
+
+/** 前回の続きから n 語を選ぶ。戻り値の next を次回の cursor にする。 */
+export function rotateKeywords(all, cursor = 0, n = KEYWORDS_PER_RUN) {
+  if (!all.length) return { words: [], next: 0 };
+  const start = ((cursor % all.length) + all.length) % all.length;
+  const words = [];
+  for (let i = 0; i < Math.min(n, all.length); i++) words.push(all[(start + i) % all.length]);
+  return { words, next: (start + words.length) % all.length };
+}
 export const MAX_PAGES = 20;
 export const MAX_DETAILS = 8;
 

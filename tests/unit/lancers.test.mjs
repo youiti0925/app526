@@ -113,3 +113,12 @@ test("詳細を読むのは依頼者1人につき1件まで、分からなけれ
   assert.deepEqual(picked.map((j) => j.id), ["1", "3", "4"]);
   assert.deepEqual(onePerClient([{ id: "4", title: "【急募】エクセルで見積書の雛形作成をお願いしたいです（1）" }, { id: "5", title: "【急募】 エクセルで見積書の雛形作成をお願いしたいです（2）" }, { id: "6", title: "別" }]).map((j) => j.id), ["4", "6"]);
 });
+
+test("検索語は前回の続きから順番に回し、一周したら最初に戻る", async () => {
+  const { rotateKeywords, DEFAULT_KEYWORDS } = await import("../../scripts/lib/lancers.mjs");
+  const all = ["a", "b", "c", "d", "e"];
+  assert.deepEqual(rotateKeywords(all, 0, 3), { words: ["a", "b", "c"], next: 3 });
+  assert.deepEqual(rotateKeywords(all, 3, 3), { words: ["d", "e", "a"], next: 1 });
+  assert.deepEqual(rotateKeywords(all, 0, 9).words, all);
+  assert.ok(DEFAULT_KEYWORDS.includes("文字起こし") && DEFAULT_KEYWORDS.includes("翻訳") && DEFAULT_KEYWORDS.includes("Python"));
+});

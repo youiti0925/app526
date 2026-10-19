@@ -12,6 +12,9 @@
  *   - 1回に開くのは20ページまで、ページごとに6〜12秒あける。robots.txt で禁止のURLは開かない
  *   - 一覧は %USERPROFILE%\.lancers-patrol（既読の記録）と --out のフォルダに置き、リポジトリには入れない
  *
+ * 検索語は Excel に限らず、記事作成・文字起こし・翻訳・データ入力・リサーチ・資料作成・プログラミングなど
+ * Claude が納品物を作れる仕事全部（lib/lancers.mjs の DEFAULT_KEYWORDS）を、1回10語ずつ順番に回す。
+ *
  * 一覧の並びは「応募してよい」→ 依頼者の点数の高い順（発注数＝リピートの多さを一番重く）。
  */
 import { spawnSync } from "node:child_process";
@@ -20,6 +23,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   DEFAULT_KEYWORDS,
+  rotateKeywords,
   MAX_DETAILS,
   MAX_PAGES,
   clientScore,
@@ -36,6 +40,7 @@ import {
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HOME = process.env.LANCERS_PATROL_HOME || path.join(os.homedir(), ".lancers-patrol");
 const SEEN = path.join(HOME, "seen.json");
+const STATE = path.join(HOME, "state.json");
 const PROFILE = path.join(HOME, "browser-profile");
 
 const argv = process.argv.slice(2);
@@ -103,7 +108,14 @@ function judgeJob(text, title, url) {
 
 async function run() {
   const keywords = (opt("--keywords") ?? "").split(/[,、]/).map((s) => s.trim()).filter(Boolean);
-  const words = keywords.length ? keywords : DEFAULT_KEYWORDS;
+  const state = readJson(STATE, {});
+  const rot = rotateKeywords(DEFAULT_KEYWORDS, state.keywordCursor ?? 0);
+  const words = keywords.length ? keywords : rot.words;
+  if (!keywords.length) {
+    fs.mkdirSync(HOME, { recursive: true });
+    fs.writeFileSync(STATE, JSON.stringify({ ...state, keywordCursor: rot.next }));
+  }
+  log(`今回の検索語: ${words.join("・")}`);
   const outDir = opt("--out") ?? path.join(HOME, "lists");
   const seen = new Set(readJson(SEEN, []));
   let pages = 0;
