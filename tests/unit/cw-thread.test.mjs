@@ -1,7 +1,7 @@
 // クラウドワークスの画面テキストの読み取り。実在の相手・内容は入れず、形だけを似せた作り話で確かめる。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseCwThreads, reviewCwThread, formatCwReview, scamLabel } from "../../dist-test/jobs/cw-thread.js";
+import { parseCwThreads, reviewCwThread, formatCwReview, scamLabel, ASKED_MARK, externalContactQuestion } from "../../dist-test/jobs/cw-thread.js";
 
 const SAMPLE = `相談から契約まで：テスト商事 データ入力のお仕事
  詳しい説明はこちら
@@ -139,4 +139,46 @@ test("外のチャットへの誘いでない普通の連絡や、自分の発�
   const mine = CONTRACT_CHATWORK.replace("お仕事の内容に興味がありご連絡いたしました。", "チャットワークでのご連絡は控えております。");
   const r2 = reviewCwThread(parseCwThreads(mine.replace(/テスト企画\n2026年10月19日[\s\S]*$/, "テスト企画\n2026年10月19日 12:37\n承知しました。このままここでお願いします。\n"), "taro_test")[0], new Date("2026-10-19T18:00:00+09:00"));
   assert.ok(!r2.scam?.signals.some((s) => s.id === "thread_offplatform_chat"));
+});
+
+test("外のチャットへ誘われたら、クラウドワークスの中で理由を聞く返信の下書きを作る(否認の表示と仮払いに合わせる)", () => {
+  const r = reviewCwThread(parseCwThreads(CONTRACT_CHATWORK, "taro_test")[0], new Date("2026-10-19T18:00:00+09:00"));
+  assert.ok(r.draftReply, "下書きがある");
+  assert.ok(r.draftReply.includes("チャットワーク"));
+  assert.ok(r.draftReply.includes("否認"));
+  assert.ok(r.draftReply.includes("仮払いのご対応ありがとうございます"));
+  assert.ok(r.draftReply.includes(ASKED_MARK));
+  assert.ok(!r.draftReply.includes("待ち"));
+  // 否認の理由は画面に出ていないので、出ていないと言う(作り話の理由を書かない)
+  assert.ok(r.flags.some((f) => f.includes("否認の理由は画面に出ていません")));
+  // 否認でない誘い(LINEなど)は、先に仕事の内容をここで出してもらう形にする
+  const line = CONTRACT_CHATWORK.replace("サービス外連絡申請が否認されました。サービス外連絡申請ステータス： 否認（申請者：テスト企画 さん）\n", "").replace(/チャットワーク/g, "LINE").replace("chatwork.com/tester24", "lin.ee/abc");
+  const r2 = reviewCwThread(parseCwThreads(line, "taro_test")[0], new Date("2026-10-19T18:00:00+09:00"));
+  assert.ok(r2.draftReply.includes("LINE"));
+  assert.ok(!r2.draftReply.includes("否認"));
+  assert.ok(r2.draftReply.includes("お仕事の内容・報酬・納期"));
+});
+
+test("理由を聞いたあとは下書きを作り直さず、相手の返事を判定する", () => {
+  const asked = CONTRACT_CHATWORK + `\ntaro_test\n2026年10月19日 18:30\n${externalContactQuestion({ service: "チャットワーク", denied: true, afterPayment: true })}\n`;
+  const now = new Date("2026-10-20T09:00:00+09:00");
+  const r1 = reviewCwThread(parseCwThreads(asked, "taro_test")[0], now);
+  assert.equal(r1.draftReply, undefined);
+  assert.ok(r1.flags.some((f) => f.includes("質問済み")));
+  // 外へは誘わず、ここで答えた
+  const okReply = asked + "\nテスト企画\n2026年10月20日 08:00\nご指摘ありがとうございます。こちらのメッセージ内で進めます。まず、作業手順書をお送りします。\n";
+  const r2 = reviewCwThread(parseCwThreads(okReply, "taro_test")[0], now);
+  assert.ok(r2.flags.some((f) => f.includes("相手の返事があります")));
+  // 答えずにまた外へ誘った
+  const again = asked + "\nテスト企画\n2026年10月20日 08:00\nお手数ですが、チャットワークにて「tester」へご連絡ください。\n";
+  const r3 = reviewCwThread(parseCwThreads(again, "taro_test")[0], now);
+  assert.ok(r3.flags.some((f) => f.includes("答えずに外のチャットへ誘っています")));
+  assert.equal(r3.draftReply, undefined);
+});
+
+test("画面に否認の理由が書かれていれば、そのまま出す", () => {
+  const withReason = CONTRACT_CHATWORK.replace("サービス外連絡申請ステータス： 否認（申請者：テスト企画 さん）", "サービス外連絡申請ステータス： 否認（申請者：テスト企画 さん）\n否認理由：直接取引を目的とした申請と判断したため");
+  const r = reviewCwThread(parseCwThreads(withReason, "taro_test")[0], new Date("2026-10-19T18:00:00+09:00"));
+  assert.ok(r.flags.some((f) => f.includes("画面の表示") && f.includes("直接取引を目的とした申請と判断したため")));
+  assert.ok(!r.flags.some((f) => f.includes("否認の理由は画面に出ていません")));
 });

@@ -154,6 +154,10 @@ export interface MessageNote {
   why: string;
   /** すすめる対応 */
   advice: string;
+  /** 画面の注意(否認の表示とその理由の有無など) */
+  notes: string;
+  /** 外のチャットの理由を聞く、クラウドワークス内の返信の下書き(あれば) */
+  draft?: string;
   /** 前回の巡回から変わった(新着) */
   fresh: boolean;
 }
@@ -185,6 +189,8 @@ export function messageNotes(threads: ReportInput["threads"]): MessageNote[] {
       gist: collapse(lastClient?.text ?? "", 160),
       why: (scam?.signals ?? []).slice(0, 2).map((s) => s.label).join(" / "),
       advice: r.actions.slice(0, 2).join(" ／ "),
+      notes: r.flags.filter((f) => !f.includes("まだ業務を開始しないでください")).slice(0, 2).join(" ／ "),
+      ...(r.draftReply ? { draft: r.draftReply } : {}),
       fresh: t.changed,
     });
   }
@@ -302,6 +308,7 @@ export function buildReport(input: ReportInput): PatrolReport {
         if (gist) out.push(`  内容: ${gist}`);
         for (const f of t.review.flags) out.push(`  - ${f}`);
         for (const a of t.review.actions) out.push(`  → ${a}`);
+        if (t.review.draftReply) out.push("  返信の下書き:", ...t.review.draftReply.split("\n").map((l) => `    ${l}`));
         out.push(`  ${t.url}`);
       }
     }
@@ -1106,7 +1113,9 @@ export function queueMarkdown(state: QueueState, at: Date = new Date()): string 
         `- 画面: ${m.url}`,
         `- 相手の最後の発言: ${m.at ? m.at.slice(0, 16).replace("T", " ") : "日時不明"}${m.daysAgo !== null ? `（${m.daysAgo}日前）` : ""}`,
         `- 内容の冒頭: ${m.gist || "（読めませんでした）"}`,
+        ...(m.notes ? [`- 画面の注意: ${m.notes}`] : []),
         ...(m.advice ? [`- 対応: ${m.advice}`] : []),
+        ...(m.draft ? ["- 返信の下書き（クラウドワークスのメッセージ欄に貼る。送るのはゆうさんです）:", "", ...m.draft.split("\n").map((l) => `> ${l}`)] : []),
         ""
       );
     }

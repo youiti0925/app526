@@ -31,6 +31,8 @@ export interface CwThread {
   noWorkNotice: boolean;
   /** 画面全体の文字（画面の注意書きの確認用。保存はしない） */
   rawText?: string;
+  /** 画面に出ている「サービス外連絡申請が否認」の表示(その行と続く数行)。無ければ undefined */
+  denialNotice?: string;
 }
 
 export interface CwReview {
@@ -42,6 +44,8 @@ export interface CwReview {
   scam: ScamScoreResult | null;
   flags: string[];
   actions: string[];
+  /** 外のチャットへ誘われたときに、クラウドワークスの中で理由を聞く返信の下書き。送るのはあなた */
+  draftReply?: string;
 }
 
 const DATE_LINE = /^(\d{4})年(\d{1,2})月(\d{1,2})日\s+(\d{1,2}):(\d{2})$/;
@@ -109,6 +113,17 @@ function parseOne(lines: string[], myName: string): CwThread {
     });
   });
 
+  const denialIdx = lines.findIndex((l) => /サービス外連絡申請[^\n]{0,30}否認/.test(l));
+  const denialNotice =
+    denialIdx >= 0
+      ? lines
+          .slice(denialIdx, denialIdx + 4)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .join(" ／ ")
+          .slice(0, 300)
+      : undefined;
+
   return {
     title,
     stage,
@@ -117,6 +132,7 @@ function parseOne(lines: string[], myName: string): CwThread {
     myLatestOffer: mine ? yen(mine[1]) : null,
     noWorkNotice: /まだ業務を開始しないでください/.test(joined),
     rawText: joined,
+    ...(denialNotice ? { denialNotice } : {}),
   };
 }
 
@@ -150,6 +166,42 @@ export function offplatformSignal(clientText: string): ScamSignalHit | null {
     }
   }
   return null;
+}
+
+/** 質問済みかどうかを見分ける目印。下書きの文に必ず入れる */
+export const ASKED_MARK = "外部でのやり取りが必要な理由";
+
+/** 誘われている外のサービスの名前(文から読む。読めなければ「外部のチャット」) */
+export function offplatformServiceName(text: string): string {
+  const t = text.normalize("NFKC");
+  if (/チャットワーク|chatwork/i.test(t)) return "チャットワーク";
+  if (/LINE|ライン|lin\.ee|line\.me/i.test(t)) return "LINE";
+  if (/テレグラム|telegram|t\.me\//i.test(t)) return "Telegram";
+  if (/ディスコード|discord/i.test(t)) return "Discord";
+  if (/スカイプ|skype/i.test(t)) return "Skype";
+  if (/timerex|calendly|spir|予約/i.test(t)) return "外部の予約サイト";
+  return "外部のチャット";
+}
+
+/**
+ * 外のチャットへ誘われたときに、クラウドワークスの中で理由を聞く文。AIは使わない。
+ * denied: 画面にサービス外連絡申請の「否認」が出ているとき／afterPayment: 仮払いが済んでいるとき
+ */
+export function externalContactQuestion(opts: { service: string; denied: boolean; afterPayment: boolean }): string {
+  const lines = ["お世話になっております。" + (opts.afterPayment ? "仮払いのご対応ありがとうございます。" : "ご連絡ありがとうございます。")];
+  lines.push(
+    opts.denied
+      ? `${opts.service}でのご連絡とのことですが、サービス外連絡申請が「否認」と画面に表示されております。クラウドワークスの規約上、外部サービスの連絡先の追加はいたしかねます。`
+      : `${opts.service}でのご連絡とのことですが、クラウドワークスの規約上、外部サービスの連絡先の追加はいたしかねます。`
+  );
+  lines.push(
+    "お手数ですが、次の点を、このメッセージ内で教えていただけますでしょうか。",
+    `1. ${ASKED_MARK}`,
+    "2. クラウドワークスのメッセージ内では進められない理由",
+    opts.denied ? "3. 申請が否認された理由について、ご存じの内容があれば" : "3. お仕事の内容・報酬・納期（先にこのメッセージ内でご提示いただけますと助かります）",
+    "ご回答を確認のうえ、対応できるか判断いたします。よろしくお願いいたします。"
+  );
+  return lines.join("\n");
 }
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -192,17 +244,47 @@ export function reviewCwThread(thread: CwThread, now: Date): CwReview {
     .join("\n\n");
   let scam = clientText.trim().length >= 10 ? scoreScam(clientText) : null;
   const off = offplatformSignal(clientText);
+  let draftReply: string | undefined;
   if (off) {
     scam = combineSignals([...(scam?.signals ?? []), ...(scam?.signals.some((s) => s.id === off.id) ? [] : [off])]);
-    if (/サービス外連絡申請[^\n]{0,30}否認/.test(thread.rawText ?? "")) {
-      flags.push("依頼者のサービス外連絡申請は、クラウドワークスに否認されています。外のチャットへの誘いには応じないでください");
+    const denied = /サービス外連絡申請[^\n]{0,30}否認/.test(thread.rawText ?? "");
+    if (denied) {
+      // 否認の理由が画面に書かれていればそのまま出す。無ければ、無いと言う(理由は事務局が開示しないとされる。公式ページでは確かめられていない)
+      const shown = thread.denialNotice ?? "";
+      const reasonOnScreen = /理由|ため|違反|規約|基準/.test(shown.replace(/サービス外連絡申請[^／]*否認[^／]*/, "").replace(/※[^／]*外部の連絡先[^／]*/, ""));
+      flags.push(
+        "依頼者のサービス外連絡申請は、クラウドワークスに否認されています。外のチャットへの誘いには応じないでください" +
+          (reasonOnScreen ? `（画面の表示: ${shown}）` : "。否認の理由は画面に出ていません（事務局は理由の詳細を開示しないとされています。公式ページでは確かめられていません）")
+      );
     }
     // 危険な相手には「返事するか決めてください」より、外へ出ないことを先に伝える
     for (let i = actions.length - 1; i >= 0; i--) if (actions[i].includes("まだ返していません")) actions.splice(i, 1);
-    actions.push("チャットワークなどの連絡先は追加しない。クラウドワークスの中で「ここでやり取りしたい」と1回だけ伝え、応じなければ違反報告する");
+    actions.push("チャットワークなどの連絡先は追加しない。クラウドワークスの中で理由を聞き、応じなければ違反報告する");
+
+    // 理由を聞く質問は、まだ聞いていないときだけ下書きを作る。聞いたあとは、相手の返事を判定する
+    const askIdx = thread.messages.reduce((acc, m, i) => (m.mine && m.text.includes(ASKED_MARK) ? i : acc), -1);
+    if (askIdx < 0) {
+      if (waiting === "me") {
+        draftReply = externalContactQuestion({
+          service: offplatformServiceName(clientText),
+          denied,
+          afterPayment: /仮払い/.test(clientText),
+        });
+        actions.push("外部が必要な理由を聞く返信の下書きを作りました。クラウドワークスのメッセージ欄に貼って送ってください");
+      }
+    } else {
+      const after = thread.messages.slice(askIdx + 1).filter((m) => !m.mine);
+      if (after.length === 0) {
+        flags.push("外部が必要な理由を、クラウドワークスの中で質問済みです。相手の返事が来たら、巡回が読んで判定します");
+      } else if (offplatformSignal(after.map((m) => m.text).join("\n"))) {
+        flags.push("理由を質問したあとも、答えずに外のチャットへ誘っています。応じず、契約中なら「契約途中終了リクエスト」と「違反報告」をおすすめします");
+      } else {
+        flags.push("理由の質問に、相手の返事があります。外のチャットには誘っていません。内容を読んで、クラウドワークスの中で進められるか決めてください");
+      }
+    }
   }
 
-  return { thread, daysSinceLast, waiting, scam, flags, actions };
+  return { thread, daysSinceLast, waiting, scam, flags, actions, ...(draftReply ? { draftReply } : {}) };
 }
 
 /** 「安全」とは言わない。見つからなかっただけで、保証ではない。 */

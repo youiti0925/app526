@@ -1080,7 +1080,7 @@ async function pageShow() {
 
 /**
  * クラウドワークスの画面を1枚ずつ読んで、文字と、リンク（リンクの文字つき）を出す。読むだけ（ボタンは押さない）。
- *   read <https://crowdworks.jp/…のURL>… [--max 6000] [--all-links]
+ *   read <https://crowdworks.jp/…のURL>… [--max 6000] [--all-links] [--grep "言葉|言葉" [--around 120]]
  * メッセージの受信箱・スカウトなど、巡回がまだ読めていない画面の形を調べる用。
  * リンクは、メッセージ・スカウト・やり取り・通知に関わりそうなものだけを出す（--all-links で全部）。
  */
@@ -1108,6 +1108,22 @@ async function readShow() {
             seen.add(a.href);
             return allLinks || /message|scout|conversation|consult|proposal|contract|notification|inbox|dashboard|mypage/i.test(a.href) || /メッセージ|スカウト|未読|新着|通知|お知らせ|相談|契約|提案/.test(a.text);
           });
+          const grep = optValue("grep");
+          if (grep) {
+            // 長い規約などから、言葉の前後だけを取り出す(--grep "自動|ツール" [--around 120])
+            const around = Number(optValue("around")) || 120;
+            const re = new RegExp(grep, "g");
+            const hits = [];
+            for (const m of p.text.matchAll(re)) {
+              const from = Math.max(0, m.index - around);
+              const to = Math.min(p.text.length, m.index + m[0].length + around);
+              if (hits.length && from <= hits[hits.length - 1].to) hits[hits.length - 1].to = to;
+              else hits.push({ from, to });
+            }
+            console.log(`\n===== ${url}\n最終のURL: ${p.finalUrl}\n題名: ${p.title}\n全体の文字数: ${p.text.length}／「${grep}」に当たった所: ${hits.length}か所`);
+            for (const h of hits.slice(0, 60)) console.log(`--- ${h.from}〜${h.to}\n${p.text.slice(h.from, h.to)}`);
+            continue;
+          }
           console.log(`\n===== ${url}\n最終のURL: ${p.finalUrl}\n題名: ${p.title}\n--- 文字 ---\n${p.text.slice(0, max)}\n--- リンク（${links.length}件） ---`);
           for (const l of links.slice(0, 120)) console.log(`${l.text || "（文字なし）"}\t${l.href}`);
           // 返信の入力欄の形を調べる用(入力はしない)
