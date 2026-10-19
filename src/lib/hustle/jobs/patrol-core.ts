@@ -8,7 +8,8 @@
  */
 import type { CwReview } from "./cw-thread";
 import { checkGates } from "../agent/gates";
-import { getCapability, judgeDeliverability } from "../agent/deliverability";
+import { explainDeliverability, getCapability, judgeDeliverability } from "../agent/deliverability";
+import { scoreScam } from "../scam-rules";
 import { PLATFORM_FEES } from "../payout";
 import { readAiRestriction } from "../agent/ai-restriction";
 
@@ -264,6 +265,8 @@ export interface BudgetRecord {
   genre?: string | null;
   /** 募集文にAIの使用の禁止・制限が書かれているか */
   aiRestricted?: boolean;
+  /** 金額が「契約金額(目安)」（文字単価などから画面が計算した額）から読んだものか。確定した額ではない */
+  budgetEstimated?: boolean;
 }
 
 // 「マクロ経済」は Excel のマクロではない
@@ -316,9 +319,46 @@ function findPayLabel(body: string): RegExpExecArray | null {
   return first;
 }
 
+/** 「契約金額(目安): 1,320円」の金額。文字単価の募集で、画面が総額の目安を出している。なければ null */
+function readEstimatedContract(body: string): number | null {
+  const m = body.match(/契約金額\s*[(（]?\s*目安\s*[)）]?\s*[:：]?\s*([0-9][0-9,]*)\s*円/);
+  return m ? yen(m[1]) : null;
+}
+
 /** 「必要なスキル」の欄（次の見出しまでの短い範囲）。Excel の仕事かどうかは、題名とここを一番信用する */
 function skillsOf(body: string): string {
   return body.match(/必要なスキル([\s\S]{0,100})/)?.[1] ?? "";
+}
+
+/**
+ * 1件の募集が、なぜそう判定されたかを人が読める形で出す（誤判定の見直し用）。AIは使わない。
+ * 当たった語は前後15文字つきで出すので、定型文・否定文・語の一部に当たっていないかを読んで確かめられる。
+ */
+export function explainJob(title: string, text: string): string {
+  const body = jobBodyForJudging(text).normalize("NFKC").slice(0, 6000);
+  const rec = budgetRecord({ key: "job:0", url: "" }, title, text);
+  const d = judgeDeliverability(body);
+  const g = checkGates(body);
+  const scam = scoreScam(body);
+  const ai = readAiRestriction(body);
+  const client = readClientInfo(text);
+  const meta = readJobMeta(text);
+  const money =
+    rec.hourlyJpy != null ? `時給${rec.hourlyJpy}〜${rec.hourlyMaxJpy}円` : rec.budgetJpy != null ? `${rec.budgetJpy}〜${rec.budgetMaxJpy}円${rec.budgetEstimated ? "（契約金額の目安）" : ""}` : "金額は読めず";
+  const lines = [
+    `■ ${title}`,
+    `報酬: ${rec.payType} ${money}`,
+    `依頼者: ${client.tier}｜${client.summary}｜応募${meta.applicants ?? "?"}人・募集${meta.openings ?? "?"}人・期限 ${meta.deadline ?? "?"}`,
+    `納品の判定: ${d.canDeliver ? "出せる" : "出せない"}${d.canDeliver ? "" : `（${d.note}）`}`,
+    ...explainDeliverability(body).map((m) => `  - ${m.label}〔${m.route}〕 ← 「${m.matched}」`),
+    `関門: ${g.passed ? "通った" : `${g.hits.map((h) => h.label).join("・")}${g.negotiable ? "（確認すれば通る）" : "（交渉では外せない）"}`}`,
+    ...g.hits.map((h) => `  - ${h.label} ← 「${h.matched}」`),
+    `詐欺: ${scam.score}点（${scam.verdict}）`,
+    ...scam.signals.map((sg) => `  - ${sg.label}（重み${sg.weight}） ← ${sg.excerpt}`),
+    `AIの使用: ${ai.restricted ? ai.summary : "禁止の記載なし"}`,
+    `記録: 納品できる=${rec.delivers} 種類=${rec.genre ?? "—"}`,
+  ];
+  return lines.join("\n");
 }
 
 /** 読んだ募集から、予算と種類を1件分の記録にする。分類は、依頼者欄・おすすめより前の本文だけで行う。 */
@@ -336,6 +376,7 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
   let budgetMaxJpy: number | null = null;
   let hourlyJpy: number | null = null;
   let hourlyMaxJpy: number | null = null;
+  let budgetEstimated = false;
   // 支払い方式の表示が見つからない募集（アンケートなど）は、金額を当てずっぽうで読まない
   if (found && (payType === "時間単価" || payType === "固定報酬")) {
     const amount = readPayAmount(body, found.index);
@@ -345,6 +386,14 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
     } else if (amount) {
       budgetJpy = amount.min;
       budgetMaxJpy = amount.max;
+    } else if (payType === "固定報酬") {
+      // 文字単価（1.2円など）の募集は、画面が「契約金額(目安)」として総額の目安を出している
+      const est = readEstimatedContract(body);
+      if (est !== null) {
+        budgetJpy = est;
+        budgetMaxJpy = est;
+        budgetEstimated = true;
+      }
     }
   }
   return {
@@ -360,6 +409,7 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
     excelVba: mentions(EXCEL_VBA, `${title}\n${skillsOf(body)}`, body, 6),
     quality: mentions(QUALITY, `${title}\n${skillsOf(body)}`, body, 3),
     payType,
+    ...(budgetEstimated ? { budgetEstimated } : {}),
     ...deliveryOf(body),
   };
 }
@@ -605,6 +655,16 @@ export function extractProposal(detail: string): string {
 
 const FEE_RATE = 0.22;
 
+/** 「2026年10月19日」形式の期限まであと何日か（日本時間の日付で数える）。読めなければ null */
+function daysLeft(deadline: string | null, now: Date): number | null {
+  const m = deadline?.match(/^(20[0-9]{2})年([0-9]{1,2})月([0-9]{1,2})日$/);
+  if (!m) return null;
+  const end = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const jst = new Date(now.getTime() + 9 * 3_600_000);
+  const today = Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate());
+  return Math.round((end - today) / 86_400_000);
+}
+
 export function buildQueueItem(args: {
   link: { key: string; url: string };
   applyUrl: string;
@@ -630,6 +690,10 @@ export function buildQueueItem(args: {
     const hi = rec.hourlyMaxJpy ?? lo;
     payText = `時給${lo.toLocaleString()}${hi !== lo ? `〜${hi.toLocaleString()}` : ""}円（手数料22%を引いて手取り約${Math.round(lo * (1 - FEE_RATE)).toLocaleString()}円〜）`;
     price = lo;
+  } else if (rec.budgetJpy != null && rec.budgetEstimated) {
+    // 文字単価の募集。画面の「契約金額(目安)」で、確定した額ではない。応募画面の金額欄は人が確かめて入れる
+    payText = `${rec.payType} 契約金額の目安 ${rec.budgetJpy.toLocaleString()}円（文字単価から画面が計算した額。確定ではありません）`;
+    checks.push("金額は文字単価からの目安です。応募画面の金額（文字単価や総額）を確かめて入れる");
   } else if (rec.budgetJpy != null) {
     const lo = rec.budgetJpy;
     const hi = rec.budgetMaxJpy ?? lo;
@@ -653,6 +717,8 @@ export function buildQueueItem(args: {
     if (verdict.startsWith("応募してよい")) verdict = "確認してから応募";
   }
   if (client.tier === "不明") checks.push("依頼者の欄が読めていません。画面で評価と募集実績を確かめる");
+  const left2 = daysLeft(meta.deadline, args.at ?? new Date());
+  if (left2 !== null && left2 <= 1) checks.push(left2 < 0 ? `応募期限（${meta.deadline}）を過ぎています` : `応募期限が${left2 === 0 ? "今日" : "明日"}です（${meta.deadline}）。送るなら早めに`);
   if (meta.applicants !== null && meta.applicants >= 50) checks.push(`応募${meta.applicants}人${meta.openings ? `・募集${meta.openings}人` : ""}（競争が激しい）`);
   const reason = args.judged.detail.match(/^理由: (.+)$/m)?.[1]?.slice(0, 120) ?? "";
   return {

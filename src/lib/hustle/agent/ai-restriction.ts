@@ -52,3 +52,14 @@ export function readAiRestriction(text: string): AiRestriction {
     summary: `AI禁止あり（${kind === "all" ? "全面に見えます" : "一部の範囲に見えます"}）: ${scope.map((s) => `「${s}」`).join(" ")}`,
   };
 }
+
+/**
+ * 禁止・制限を言っている文を本文から外す。「生成AIの使用は禁止です」の「生成AI」が
+ * 画像生成の仕事の語として数えられないように、納品物の判定に渡す前に使う。
+ */
+export function stripAiBanSentences(text: string): string {
+  return text
+    .split(/(?<=[。！？!?\n])/)
+    .filter((s) => !AI_BAN_PATTERNS.some((p) => p.test(s.normalize("NFKC"))))
+    .join("");
+}

@@ -22,6 +22,7 @@
 
 import { blockedTools, obligationsFor } from "./licenses";
 import { stripNegatedClauses } from "./negation";
+import { stripAiBanSentences } from "./ai-restriction";
 
 /** どうやって作るか。 */
 export type Route =
@@ -386,11 +387,31 @@ function isNegated(text: string, pattern: RegExp): boolean {
   return sawAny;
 }
 
+/**
+ * 判定がどの語に当たったかを返す（誤判定の見直し用。判定そのものは judgeDeliverability）。
+ * 各能力について、最初に当たった語を前後15文字つきで返す。
+ */
+export function explainDeliverability(text: string): { id: Capability; label: string; route: Route; matched: string }[] {
+  const asked = stripAiBanSentences(stripNegatedClauses(text.slice(0, 8000)));
+  const out: { id: Capability; label: string; route: Route; matched: string }[] = [];
+  for (const c of CAPABILITIES) {
+    for (const p of c.patterns) {
+      const m = asked.match(p);
+      if (!m || m.index === undefined || isNegated(asked, p)) continue;
+      const from = Math.max(0, m.index - 15);
+      const to = Math.min(asked.length, m.index + m[0].length + 15);
+      out.push({ id: c.id, label: c.label, route: c.route, matched: asked.slice(from, to).replace(/\s+/g, " ") });
+      break;
+    }
+  }
+  return out;
+}
+
 /** 案件本文から、納品物と出せるかどうかを判定する。 */
 export function judgeDeliverability(text: string): DeliverabilityResult {
   const t = text.slice(0, 8000);
   // 「電話連絡は一切ありません」「出社なし」のように無いと言い切っている部分は、条件として数えない
-  const asked = stripNegatedClauses(t);
+  const asked = stripAiBanSentences(stripNegatedClauses(t));
   const matched = CAPABILITIES.filter((c) =>
     c.patterns.some((p) => p.test(asked) && !isNegated(asked, p))
   );

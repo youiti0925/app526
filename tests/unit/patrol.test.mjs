@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
+import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -379,4 +379,66 @@ test("応募の下書き一覧: AIの使用が禁止された募集は、禁止�
   });
   assert.equal(plain.aiRestriction, undefined);
   assert.equal(plain.verdict, "応募してよい");
+});
+
+test("文字単価の募集: 画面の「契約金額(目安)」を金額として読む（確定ではないと分かるように）", () => {
+  const page = "固定報酬制 1.2円（文字単価）\n契約金額(目安): 1,320円\nブログ記事を書いてください（1,100字）。";
+  const r = budgetRecord({ key: "job:41", url: "u" }, "ブログ記事（1,000字）", page);
+  assert.equal(r.budgetJpy, 1320);
+  assert.equal(r.budgetEstimated, true);
+  // 全角のかっこ・改行をはさんだ形でも読む
+  assert.equal(budgetRecord({ key: "job:42", url: "u" }, "t", "固定報酬制 0.8円\n契約金額（目安）\n40,000円\n記事").budgetJpy, 40000);
+  // 目安が無く「相談」だけなら、金額は読まない
+  const talk = budgetRecord({ key: "job:43", url: "u" }, "t", "固定報酬制 1.0円（文字単価）ワーカーと相談\n記事を書いてください");
+  assert.equal(talk.budgetJpy, null);
+  assert.equal(talk.budgetEstimated, undefined);
+  // 普通の固定報酬は従来どおり（目安扱いにしない）
+  const fixed = budgetRecord({ key: "job:44", url: "u" }, "t", "固定報酬制 5,000円\n記事を書いてください");
+  assert.equal(fixed.budgetJpy, 5000);
+  assert.equal(fixed.budgetEstimated, undefined);
+
+  // 一覧: 目安の金額は応募画面に自動で入れない（price なし）。確かめる注意を付ける
+  const item = buildQueueItem({
+    link: { key: "job:41", url: "https://crowdworks.jp/public/jobs/41" },
+    applyUrl: "x",
+    title: "ブログ記事",
+    pageText: page,
+    judged: { verdict: "応募してよい", detail: "結論: 応募してよい\n--- 提案文 ---\nはじめまして。" },
+  });
+  assert.equal(item.price, null);
+  assert.match(item.payText, /契約金額の目安 1,320円/);
+  assert.ok(item.checks.some((c) => /文字単価からの目安/.test(c)));
+});
+
+test("応募の下書き一覧: 応募期限が今日・明日なら知らせる（日本時間の日付で数える）", () => {
+  const make = (deadline, now) =>
+    buildQueueItem({
+      link: { key: "job:51", url: "https://crowdworks.jp/public/jobs/51" },
+      applyUrl: "x",
+      title: "t",
+      pageText: `固定報酬制 5,000円\n応募期限 ${deadline}\n記事を書いてください`,
+      judged: { verdict: "応募してよい", detail: "結論: 応募してよい\n--- 提案文 ---\nはじめまして。" },
+      at: new Date(now),
+    }).checks.join("|");
+  // 2026-10-19 23:30 JST = 14:30 UTC
+  assert.match(make("2026年10月19日", "2026-10-19T14:30:00Z"), /応募期限が今日です/);
+  assert.match(make("2026年10月20日", "2026-10-19T14:30:00Z"), /応募期限が明日です/);
+  assert.doesNotMatch(make("2026年10月30日", "2026-10-19T14:30:00Z"), /応募期限/);
+  assert.match(make("2026年10月18日", "2026-10-19T14:30:00Z"), /過ぎています/);
+});
+
+test("explainJob: 判定の理由を、当たった語（前後つき）といっしょに出す", () => {
+  const page =
+    "固定報酬制 5,000円\n完全在宅（出社なし）です。電話連絡は一切ありません。\nデータの整理をお願いします。商品の一覧表を見て、必要な項目をExcelの表に整理してください。件数は約300件で、締め切りまでに順次ご提出いただきます。項目の名前や並び順は、お渡しする見本のとおりにそろえてください。分からない点があれば、メッセージでご質問ください。丁寧に進めていただける方を探しています。\nChatGPTなどの生成AIの使用は禁止です。\nクライアント情報\nありがとう 3 件\n本人確認 済み\n総合評価 4.5\n募集実績 20 件\nプロジェクト完了率 90 %\n○○の詳細を見る";
+  const text = explainJob("データ整理", page);
+  assert.match(text, /■ データ整理/);
+  assert.match(text, /納品の判定: 出せる/);
+  assert.match(text, /AIの使用: AI禁止あり/);
+  assert.match(text, /関門: AIの使用の禁止・制限（確認すれば通る）/);
+  assert.match(text, /← 「.*生成AIの使用は禁止/);
+  // 否定文の「電話」「出社」は現地作業として数えない
+  assert.doesNotMatch(text, /現地作業/);
+  const phone = explainJob("電話受付", "固定報酬制 5,000円\nお客様からの電話対応をお願いします。");
+  assert.match(phone, /納品の判定: 出せない/);
+  assert.match(phone, /現地作業・電話〔physical〕 ← 「.*電話対応/);
 });
