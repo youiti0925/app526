@@ -1,5 +1,5 @@
 import { scoreScam } from "../scam-rules";
-import { computePayout, PLATFORM_FEES } from "../payout";
+import { computePayout, platformForUrl } from "../payout";
 import { computeStats, projectGoal, summarizeTasks, todayLocal, shiftDays, DEFAULT_MIN_WAGE_JPY } from "../analytics";
 import { readEntries, readPaths, readProfile, readTasks } from "../db";
 import { upsertTask } from "../repo";
@@ -211,6 +211,9 @@ const TRIAGE_PROMPT = (text: string, background: string) => `あなたは日本�
 次の案件について、実際にかかる時間と提示報酬だけを推定してください。楽観的に見積もらないでください。
 やりとり・修正対応・検収待ちの手戻りを必ず含めてください。
 
+offeredJpy は、estimatedHours の作業全体に対して受け取る報酬の総額です。
+「1件40円」のような単価のときは、単価ではなく「単価 × その時間でこなす件数」を入れてください。
+
 次のJSONだけを返してください:
 { "estimatedHours": { "low": 数値, "high": 数値 }, "offeredJpy": 数値 または null, "fitNotes": "依頼を受ける人の経歴で対応できるか。1〜2文。" }
 
@@ -228,7 +231,6 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
   const background = profile?.background ?? "";
   const minHourly = ctx.config.learned.minHourlyJpy;
   const weeklyHours = profile?.weeklyHours ?? 10;
-  const platform = PLATFORM_FEES.find((f) => f.id === "crowdworks")!;
   // 評価が少ないうちは、小さく短い正規の仕事を「実績づくり」として通す（track-record.ts）
   const wonCount = readLeads("won", 100).length;
   const trackUntil = Number(process.env.JOB_TRACK_RECORD_UNTIL) >= 0 && process.env.JOB_TRACK_RECORD_UNTIL !== undefined
@@ -254,6 +256,8 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
   let gated = 0;
 
   for (const lead of sorted) {
+    // 手数料は募集のサイトで変わる（ランサーズ16.5%＋550円、クラウドワークス22%＋500円）
+    const platform = platformForUrl(lead.url);
     const scam = scoreScam(lead.rawText);
     const risks = detectScopeRisks(lead.rawText);
     // 一番上の関門。私が納品物を作れない案件は、金額を見るまでもなく落とす。

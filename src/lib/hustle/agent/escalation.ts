@@ -1,5 +1,5 @@
 import { readProfile } from "../db";
-import { PLATFORM_FEES } from "../payout";
+import { platformForUrl } from "../payout";
 import { DEFAULT_MIN_WAGE_JPY } from "../analytics";
 import { readAgentConfig, readLeads, readLeadsByIds, updateLead, pushInbox, logEvent } from "./db";
 import type { Lead } from "./types";
@@ -117,7 +117,14 @@ export function collectEscalations(limit = 10): EscalationItem[] {
 export function buildBrief(items: EscalationItem[]): string {
   const profile = readProfile();
   const config = readAgentConfig();
-  const platform = PLATFORM_FEES.find((f) => f.id === "crowdworks")!;
+  // 案件ごとにサイトが違うことがある。全部同じサイトならその手数料、混ざっていれば案件ごとに書く
+  const platforms = [...new Map(items.map((it) => [platformForUrl(it.url).id, platformForUrl(it.url)])).values()];
+  const platform = platforms[0] ?? platformForUrl("");
+  const feeLine =
+    platforms.length > 1
+      ? `サイトごとに、${platforms.map((p) => `${p.name}はシステム手数料 ${Math.round(p.feeRate * 1000) / 10}% と振込手数料 ${p.withdrawalFeeJpy}円`).join("、")} が引かれます（各案件の「サイト」を見てください）。`
+      : `${platform.name} の場合、
+   システム手数料 ${Math.round(platform.feeRate * 1000) / 10}% と振込手数料 ${platform.withdrawalFeeJpy}円 が引かれます。`;
 
   const header = `# 案件の判定依頼
 
@@ -139,8 +146,7 @@ export function buildBrief(items: EscalationItem[]): string {
    増えることが実測で分かっています（出力が流暢なぶん、一次情報に当て直さないと
    誤りが浮かないため）。そこを計上してください。
 
-2. **実効時給**は手数料控除後で見ます。${platform.name} の場合、
-   システム手数料 ${Math.round(platform.feeRate * 100)}% と振込手数料 ${platform.withdrawalFeeJpy}円 が引かれます。
+2. **実効時給**は手数料控除後で見ます。${feeLine}
    手数料を引いた実効時給が ${config.learned.minHourlyJpy.toLocaleString()}円（現在の基準。最低賃金は ${DEFAULT_MIN_WAGE_JPY.toLocaleString()}円）を
    下回るなら verdict は "reject" にしてください。
 
@@ -181,7 +187,7 @@ ${
       "leadId": "案件のID（下の各案件に書いてあるものをそのまま）",
       "estimatedHours": { "low": 数値, "high": 数値 },
       "basis": "その時間になる根拠。作業量の内訳を具体的に。",
-      "offeredJpy": 数値 または null,
+      "offeredJpy": "estimatedHours の作業全体で受け取る報酬の総額（数値）。1件○円の単価なら、単価×その時間でこなす件数。読めなければ null",
       "verdict": "reject" | "verify_first" | "proceed",
       "reason": "その判定にした理由。1〜2文。",
       "risks": ["着手前に詰めるべき点"],
@@ -201,6 +207,7 @@ ${
       (item, i) => `## 案件 ${i + 1}
 
 - leadId: \`${item.leadId}\`
+- サイト: ${platformForUrl(item.url).name}
 - 判定できなかった理由: ${item.reasons.map((r) => REASON_LABELS[r]).join(" / ")}
 - 下位エンジンが読み取った報酬額: ${item.partial.budgetJpy ? `${item.partial.budgetJpy.toLocaleString()}円` : "読み取れず"}
 - 下位エンジンの詐欺スコア: ${item.partial.scamScore}/100（${item.partial.scamVerdict}）${
@@ -227,7 +234,6 @@ export interface ApplyResult {
 
 /** 上位モデルが返した判定を、案件と承認キューに書き戻す。 */
 export function applyVerdicts(verdicts: EscalationVerdict[], runId = "escalation"): ApplyResult {
-  const platform = PLATFORM_FEES.find((f) => f.id === "crowdworks")!;
   const config = readAgentConfig();
   const result: ApplyResult = { applied: 0, queued: 0, skipped: [] };
 
@@ -248,6 +254,7 @@ export function applyVerdicts(verdicts: EscalationVerdict[], runId = "escalation
     }
 
     const offered = Number.isFinite(v.offeredJpy) ? (v.offeredJpy as number) : lead.budgetJpy;
+    const platform = platformForUrl(lead.url);
 
     // Claude が見積もるのは仕事全体の作業量。時給は「あなたが手を動かす時間」で割る
     // （仕事ラインで自動化できる分は、あなたの時間に入らない）。ルールの判定で出した倍速を使う。

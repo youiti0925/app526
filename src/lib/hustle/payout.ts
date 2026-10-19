@@ -118,6 +118,26 @@ export interface PayoutBreakdown {
   warnings: string[];
 }
 
+/**
+ * 募集のURLから、手数料を計算するサイトを決める。分からなければクラウドワークス。
+ * 以前は判定が常にクラウドワークス（22%＋500円）で計算し、ランサーズの募集も
+ * 「CW手数料22%」で判定していた。
+ */
+export function platformForUrl(url: string | null | undefined): PlatformFee {
+  let host = "";
+  try {
+    host = new URL(url ?? "").hostname;
+  } catch {
+    host = "";
+  }
+  const id = /(^|\.)lancers\.jp$/.test(host)
+    ? "lancers"
+    : /(^|\.)coconala\.com$/.test(host)
+      ? "coconala"
+      : "crowdworks";
+  return PLATFORM_FEES.find((f) => f.id === id)!;
+}
+
 export function computePayout(
   grossJpy: number,
   platform: PlatformFee,

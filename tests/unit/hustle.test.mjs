@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 
 import { scoreScam, combineSignals } from "../../dist-test/scam-rules.js";
 import { computeStats, projectGoal, summarizeTasks, shiftDays, todayLocal } from "../../dist-test/analytics.js";
-import { computePayout, PLATFORM_FEES } from "../../dist-test/payout.js";
+import { computePayout, PLATFORM_FEES, platformForUrl } from "../../dist-test/payout.js";
 import { diagnose, planToTasks } from "../../dist-test/diagnose.js";
 import { PATH_DEFINITIONS } from "../../dist-test/paths-data.js";
 import { emptyProfile } from "../../dist-test/types.js";
@@ -973,4 +973,16 @@ test("契約前に lin.ee などのリンクでプラットフォーム外へ誘
 test("Googleフォームの応募案内や、普通のURLは外部誘導と判定しない", () => {
   const r = scoreScam("ポートフォリオは https://example.com/works をご覧ください。応募はクラウドワークスのメッセージでお願いします。");
   assert.ok(!r.signals.some((s) => s.id === "offplatform_link"));
+});
+
+test("手数料は募集のURLのサイトで決める（ランサーズの募集をクラウドワークスの手数料で計算しない）", () => {
+  assert.equal(platformForUrl("https://www.lancers.jp/work/detail/5617444?purpose=lancer").id, "lancers");
+  assert.equal(platformForUrl("https://coconala.com/requests/123").id, "coconala");
+  assert.equal(platformForUrl("https://crowdworks.jp/public/jobs/1").id, "crowdworks");
+  assert.equal(platformForUrl("").id, "crowdworks");
+  assert.equal(platformForUrl("https://evil-lancers.jp.example.com/").id, "crowdworks");
+  const l = platformForUrl("https://www.lancers.jp/work/detail/1");
+  assert.equal(l.feeRate, 0.165);
+  // 10,000円 → 手数料1,650円・振込550円 → 7,800円
+  assert.equal(computePayout(10000, l, 10).netJpy, 7800);
 });
