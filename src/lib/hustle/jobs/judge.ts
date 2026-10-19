@@ -132,6 +132,8 @@ export async function judgeLead(input: JudgeInput): Promise<JudgeResult> {
   const resolved = await resolveEscalations([lead.id]);
   const escalated = resolved.requested > 0;
   const note = resolved.note;
+  // 見送りと判定されたのを検算で応募できる側に直した案件は、提案文がまだ無い。下書きの工程をもう一度回して作る
+  if (resolved.applied > 0) await runAgent({ trigger: "manual", force: true, only: ["draft"] });
 
   const current = readLeadsByIds([lead.id]).get(lead.id) ?? lead;
   // 今回の判定で出たものだけ（同じ募集文を前に判定したときの分は含めない）

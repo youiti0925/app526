@@ -316,6 +316,16 @@ async function testMail(config = readJson(CONFIG, null)) {
 
 // --- run -----------------------------------------------------------------------------
 
+/** 経歴（提案文に使う library/profile.json）の文章。読めなければ undefined（提案文の経歴チェックは飛ばす） */
+function readBackground() {
+  try {
+    const bg = JSON.parse(fs.readFileSync(path.join(ROOT, "library", "profile.json"), "utf8")).background;
+    return typeof bg === "string" ? bg : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function judgeJob(text, title, url) {
   const tmp = path.join(HOME, "tmp-job.txt");
   fs.writeFileSync(tmp, text);
@@ -491,6 +501,7 @@ async function run() {
             title: t.title,
             pageText: t.pageText,
             judged: { verdict: j.verdict, detail: j.detail },
+            background: readBackground(),
           })
         );
       }
@@ -553,7 +564,7 @@ async function fill() {
     fs.mkdirSync(path.join(HOME, "queue-proposals"), { recursive: true });
     entries = approved.map((i) => {
       const file = path.join(HOME, "queue-proposals", `${i.no}.txt`);
-      fs.writeFileSync(file, i.proposal);
+      fs.writeFileSync(file, core.cleanProposal(i.proposal));
       return { url: i.url, proposal: file, price: i.price ?? undefined, days: undefined, no: i.no };
     });
   } else if (listFile) {
@@ -857,6 +868,7 @@ async function queueAdd() {
       title,
       pageText: p.text,
       judged: { verdict, detail: `理由: ${optValue("reason") ?? "人が確かめた提案文つき"}` },
+      background: readBackground(),
       proposal,
     });
     let state = readJson(QUEUE_JSON, core.emptyQueue());

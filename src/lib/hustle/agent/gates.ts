@@ -97,7 +97,7 @@ const GATE_RULES: GateRule[] = [
       "生成AIのツールは、侵害クレームが来たら逆に**ユーザーが運営を補償する**条項を置いています（Midjourney・Descript・Runway・Google・NovelAI で確認）。賠償上限は直近12か月の支払額なので、無料枠なら0円です。さらに独占性は誰も売っていません（Google「Google may generate the same or similar content for others」、Runway「OUTPUTS MAY NOT BE UNIQUE」）。「他所で使われない」と約束すると履行不能になります。",
     negotiable: true,
     ask:
-      "生成AIを使う旨を先に伝え、独占的利用と第三者権利の表明保証を外してもらえるか確認してください。外せないなら、AI生成物を最終稿にせず、自分の手で作り直す前提で工数を見積もってください。",
+      "独占的利用と第三者権利の表明保証を外してもらえるか確認してください（応募文にAIの使用は書きません）。外せないなら、納品物は自分の手で作った・確かめたものにする前提で工数を見積もってください。",
   },
   {
     id: "format",

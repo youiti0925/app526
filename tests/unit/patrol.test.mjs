@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
+import { cleanProposal, unbackedSkillClaims, classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, explainJob, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -505,6 +505,34 @@ test("タスク形式は「タスク 33円 / 件」の表示でも支払い方�
   const own = "詳細はこちら https://tech.crowdworks.jp/job_offers/30966?ref=job_offers_show をご覧ください。";
   assert.ok(!scoreScam(own).signals.some((s) => s.id === "referral_signup"));
   assert.ok(scoreScam("登録はこちら https://example.com/signup?ref=abc123 から。").signals.some((s) => s.id === "referral_signup"));
+});
+
+test("提案文: 判定の出力の「--- 応募前に確認すること ---」以降（社内メモ）は提案文に入れない", () => {
+  const detail = "結論: 確認してから応募\n\n--- 提案文 ---\n募集を拝見しました。\n\nよろしくお願いいたします。\n\n--- 応募前に確認すること ---\n# 応募前に確認すること\n権利の表明保証があります\n\n使ったAI: x";
+  assert.equal(extractProposal(detail), "募集を拝見しました。\n\nよろしくお願いいたします。");
+  assert.equal(cleanProposal("本文です。\n\n---\nメモ"), "本文です。");
+  // 以前の記録に混ざっていた分も、一覧と応募画面への入力では落とす
+  const item = { no: 1, id: "1", title: "t", url: "u", applyUrl: "a", verdict: "確認してから応募", reason: "", payType: "固定報酬", payText: "固定報酬 10,000円", price: 10000, applicants: 1, openings: 1, deadline: null, client: { tier: "普通", summary: "s", orders: 1, rating: null, completionRate: null, thanks: null, identity: "不明", raw: "" }, proposal: "本文です。\n\n--- 応募前に確認すること ---\n社内メモ", checks: [], status: "pending", at: "2026-10-19T00:00:00Z" };
+  const md = queueMarkdown({ nextNo: 2, items: [item] });
+  assert.ok(md.includes("> 本文です。") && !md.includes("社内メモ"));
+});
+
+test("提案文が経歴に無い道具の経験を言い切っていたら注意を出す（募集の言い換えや「経験はありません」は拾わない）", () => {
+  const bg = "本業で約20年、精密部品の検査。Excel関数・VBAマクロ・Word・PowerPointを使っています。ウェブ会議に対応できます。";
+  assert.deepEqual(unbackedSkillClaims("Googleスプレッドシート操作、ウェブ会議対応は可能です。", bg), ["Googleスプレッドシート"]);
+  assert.deepEqual(unbackedSkillClaims("Googleスプレッドシートでの、集計レポートの新規構築のお仕事と理解しております。", bg), []);
+  assert.deepEqual(unbackedSkillClaims("QUERY関数を使った経験はありません。Excel関数は使えます。", bg), []);
+  assert.deepEqual(unbackedSkillClaims("Excel関数・VBAの経験があります。", bg), []);
+  assert.deepEqual(unbackedSkillClaims("動画編集自体は新しい取り組みですが、丁寧に進めます。", bg), []);
+  assert.deepEqual(unbackedSkillClaims("動画編集の経験があります。", undefined), [], "経歴が読めないときは調べない");
+  // 一覧の注意にも出る
+  const page = "固定報酬制 10,000円\n応募した人 3 人 契約した人 0 人 募集人数 1 人\n" + "仕事の説明です。".repeat(40) + "\nクライアント情報\n○○の詳細を見る";
+  const it = buildQueueItem({
+    link: { key: "job:1", url: "u" }, applyUrl: "a", title: "転記のお仕事", pageText: page,
+    judged: { verdict: "応募してよい", detail: "理由: x\n\n--- 提案文 ---\nGoogleスプレッドシート操作は可能です。\n\n使ったAI: x" },
+    background: bg,
+  });
+  assert.ok(it.checks.some((c) => c.includes("経歴に書かれていない") && c.includes("Googleスプレッドシート")));
 });
 
 test("パンくず（…の仕事・求人）は判定の本文に入れない。仕事の種類は題名に当たったものを先にする", () => {

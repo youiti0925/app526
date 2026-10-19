@@ -686,8 +686,44 @@ export const emptyQueue = (): QueueState => ({ nextNo: 1, items: [] });
 
 /** 判定の出力の「--- 提案文 ---」から、提案文だけを取り出す。 */
 export function extractProposal(detail: string): string {
-  const m = detail.match(/--- 提案文 ---\n([\s\S]*?)(?:\n\s*※|\n使ったAI:|\n保存先:|\n次:|$)/);
-  return m ? m[1].trim() : "";
+  const m = detail.match(/--- 提案文 ---\n([\s\S]*?)(?:\n\s*---\s|\n\s*※|\n使ったAI:|\n保存先:|\n次:|$)/);
+  return m ? cleanProposal(m[1]) : "";
+}
+
+/**
+ * 提案文の本体だけにする。判定の出力は提案文のあとに「--- 応募前に確認すること ---」などの節が続くので、
+ * 次の「---」の線から後ろ（相手に送ってはいけない社内メモ）は落とす。
+ */
+export function cleanProposal(text: string): string {
+  return text.split(/\n\s*---(?:\s|$)/)[0].trim();
+}
+
+/** 提案文で「できる」と言いがちな道具・分野。経歴に無いのに経験があるように書いていないかを調べる */
+const SKILL_TERMS = [
+  "Googleスプレッドシート", "スプレッドシート", "Final Cut", "Premiere", "After Effects", "DaVinci", "Photoshop", "Illustrator", "Canva",
+  "WordPress", "Python", "JavaScript", "GAS", "SQL", "Notion", "Slack", "Chatwork", "Figma", "SEO", "TOEIC", "英語", "翻訳", "動画編集", "ライティング", "デザイン",
+];
+
+/**
+ * 提案文が、経歴（プロフィール）に書かれていない道具・分野の経験や対応を、あるように書いていないか。
+ * 「Googleスプレッドシート操作は可能です」のような言い切りだけ拾う（募集の言い換えや、「経験はありません」は拾わない）。
+ * 経歴が読めないとき（background が無い）は調べない。
+ */
+export function unbackedSkillClaims(proposal: string, background: string | undefined): string[] {
+  if (background === undefined || !proposal) return [];
+  const bg = background.normalize("NFKC").toLowerCase();
+  const found: string[] = [];
+  for (const sentence of proposal.normalize("NFKC").split(/(?<=[。！？\n])/)) {
+    if (/ありません|ございません|なし|ない|未経験|初めて|新しい取り組み|不慣れ/.test(sentence)) continue;
+    for (const term of SKILL_TERMS) {
+      const t = term.normalize("NFKC");
+      if (bg.includes(t.toLowerCase())) continue;
+      const claim = new RegExp(`${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^。、,\n]{0,8}(操作|経験|可能|できます|使え|使用|使って|対応可|得意|スキル|実績|習熟)`, "i");
+      if (claim.test(sentence) && !found.includes(term)) found.push(term);
+    }
+  }
+  // 「Googleスプレッドシート」と「スプレッドシート」の二重表示を避ける
+  return found.filter((t) => !found.some((o) => o !== t && o.includes(t)));
 }
 
 const FEE_RATE = 0.22;
@@ -711,12 +747,14 @@ export function buildQueueItem(args: {
   judged: { verdict: string; detail: string };
   /** 判定の出力ではなく、人が書いた提案文があるとき */
   proposal?: string;
+  /** 経歴（プロフィール）の文章。あれば、提案文が経歴に無い経験を書いていないか調べる */
+  background?: string;
   at?: Date;
 }): Omit<QueueItem, "no" | "status"> {
   const rec = budgetRecord(args.link, args.title, args.pageText, args.at);
   const client = readClientInfo(args.pageText);
   const meta = readJobMeta(args.pageText);
-  const proposal = (args.proposal ?? extractProposal(args.judged.detail)).trim();
+  const proposal = cleanProposal(args.proposal ?? extractProposal(args.judged.detail));
   const checks: string[] = [];
   let verdict = args.judged.verdict;
 
@@ -741,6 +779,8 @@ export function buildQueueItem(args: {
   }
 
   if (!proposal) checks.push("提案文が出ていません。書いてから送ってください");
+  const unbacked = unbackedSkillClaims(proposal, args.background);
+  if (unbacked.length) checks.push(`提案文に、経歴に書かれていない経験があるように読める箇所があります（${unbacked.join("・")}）。使ったことがなければ消してから送る`);
   const left = proposal.match(/【要確認[^】]*】/g);
   if (left) checks.push(`提案文に【要確認】が${left.length}か所残っています（${left.slice(0, 2).join("、")}）。事実を確かめて直してから送る`);
   // AIの使用の禁止・制限は、一律に見送らず、禁止の範囲を載せて人が決める
@@ -836,7 +876,7 @@ export function queueItemText(i: QueueItem): string {
   if (i.aiRestriction) lines.push(`- AIの使用: ${i.aiRestriction}`);
   if (i.price !== null) lines.push(`- 応募画面に入れる金額: ${i.price.toLocaleString()}円`);
   if (i.checks.length) lines.push(`- 送る前に見ること:`, ...i.checks.map((c) => `  - ${c}`));
-  lines.push("", "提案文:", ...(i.proposal ? i.proposal.split("\n").map((l) => `> ${l}`) : ["> （なし）"]));
+  lines.push("", "提案文:", ...(cleanProposal(i.proposal) ? cleanProposal(i.proposal).split("\n").map((l) => `> ${l}`) : ["> （なし）"]));
   return lines.join("\n");
 }
 

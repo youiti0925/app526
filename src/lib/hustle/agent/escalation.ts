@@ -307,7 +307,9 @@ export function applyVerdicts(verdicts: EscalationVerdict[], runId = "escalation
     }
 
     updateLead(lead.id, {
-      status: verdict === "reject" ? "rejected" : "drafted",
+      // 上位の判定が見送りで提案文を付けず、検算で応募できる側に直した案件は、提案文がまだ無い。
+      // 「triaged」に戻して、下書きの工程が提案文を作れるようにする
+      status: verdict === "reject" ? "rejected" : v.proposal?.trim() ? "drafted" : "triaged",
       score,
       verdict,
       budgetJpy: offered,

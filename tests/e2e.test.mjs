@@ -177,6 +177,29 @@ test("上位モデルの判定は、新しい案件が増えても書き戻せ�
   assert.equal(agentDb.readLeadsByIds([target.id]).get(target.id)?.title, "古い案件");
 });
 
+test("上位の判定が提案文を付けなかった案件(見送りを検算で直したもの)は、下書きの工程で提案文が作られる", async () => {
+  const { applyVerdicts } = require_(path.join(ROOT, "lib/hustle/agent/escalation.js"));
+  const lead = agentDb.insertLead({
+    source: "manual",
+    externalId: "e2e:no-proposal",
+    url: "https://example.test/jobs/np",
+    title: "シナリオの執筆",
+    rawText: "動画のシナリオ執筆をお願いします。7,200文字。報酬は30,000円です。".repeat(5),
+    budgetJpy: 30_000,
+  }).lead;
+  agentDb.updateLead(lead.id, { status: "triaged", verdict: "unknown", triage: { escalationReasons: [{ code: "x", note: "x" }] } });
+  const applied = applyVerdicts([
+    { leadId: lead.id, estimatedHours: { low: 2, high: 3 }, basis: "x", offeredJpy: 30_000, verdict: "verify_first", reason: "確認", risks: [], proposal: "", confidence: "medium" },
+  ]);
+  assert.equal(applied.applied, 1);
+  const after = agentDb.readLeadsByIds([lead.id]).get(lead.id);
+  assert.notEqual(after.verdict, "reject");
+  assert.equal(after.status, "triaged", "提案文が無いまま「下書き済み」にしない");
+  await runAgent({ trigger: "manual", force: true, only: ["draft"] });
+  assert.equal(agentDb.readLeadsByIds([lead.id]).get(lead.id).status, "drafted");
+  assert.ok(agentDb.readInbox(undefined, 300).some((i) => i.leadId === lead.id && i.kind === "proposal"), "提案文が作られていない");
+});
+
 // --- 仕事ライン: DBとのつなぎ目（AIは呼ばない） ---
 
 test("仕事ライン: 依頼は1件ずつ取り合わずに取れ、手順書は版で残り、承認した行が手本になる", () => {
