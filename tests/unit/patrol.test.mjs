@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
+import { classifyLink, collectLinks, newJobs, emptySeen, buildReport, budgetRecord, summarizeBudgets, reachLines, clientRank, jobBodyForJudging, pickJobsRoundRobin, readClientInfo, readJobMeta, extractProposal, buildQueueItem, addToQueue, markQueue, sortQueue, emptyQueue, queueMarkdown, buildMimeMessage, encodeHeader, threadFingerprint } from "../../dist-test/jobs/patrol-core.js";
 import { parseCwThreads, reviewCwThread } from "../../dist-test/jobs/cw-thread.js";
 import { sendMail } from "../../scripts/lib/smtp.mjs";
 
@@ -299,4 +299,53 @@ test("応募の下書き一覧: 依頼者の信頼度順・要確認の印と注
   // 3週間たった未承認は外れ、承認済みは残る
   const old = addToQueue(m.state, [], new Date("2026-12-01T00:00:00Z"));
   assert.deepEqual(old.items.map((i) => i.id), ["2"]);
+});
+
+test("予算の記録: Claude が納品できる募集かと仕事の種類を、Excel に限らず記録する", () => {
+  const article = budgetRecord(
+    { key: "job:21", url: "u" },
+    "【在宅】美容ブログ記事の作成（SEO）",
+    "固定報酬制 報酬 6,000円\nSEOを意識したブログ記事を3本、各2000字で書いてください。キーワードは別途お渡しします。"
+  );
+  assert.equal(article.delivers, true);
+  assert.equal(article.genre, "文章・文書");
+  const py = budgetRecord({ key: "job:22", url: "u" }, "Pythonでスクレイピングツールの開発", "固定報酬制 報酬 30,000円\nPythonで価格を取得するスクリプトを作ってください。");
+  assert.equal(py.delivers, true);
+  assert.equal(py.genre, "コード・スクリプト");
+  // 納品できないもの（電話・撮影）や、AIの利用を禁止しているものは、納品できる側に数えない
+  const phone = budgetRecord({ key: "job:23", url: "u" }, "コールセンター業務", "固定報酬制 報酬 5,000円\nお客様への電話対応をお願いします。");
+  assert.equal(phone.delivers, false);
+  assert.equal(phone.genre, null);
+  const noAi = budgetRecord({ key: "job:24", url: "u" }, "ブログ記事の執筆", "固定報酬制 報酬 6,000円\nブログ記事を書いてください。ChatGPTなどの生成AIの使用は禁止です。");
+  assert.equal(noAi.delivers, false);
+
+  const text = summarizeBudgets([article, py, phone, noAi]);
+  assert.match(text, /Claudeが納品できる募集: 2件 \/ 判定した4件/);
+  assert.match(text, /文章・文書/);
+  assert.match(text, /コード・スクリプト/);
+});
+
+test("判定の順番: 発注の多い依頼者（優良）の募集が先", () => {
+  const good = "仕事の内容\nクライアント情報\nありがとう 20 件\n本人確認 済み\n総合評価 4.8\n募集実績 120 件\nプロジェクト完了率 95 %\n○○の詳細を見る";
+  const first = "仕事の内容\nクライアント情報\nありがとう 0 件\n本人確認 済み\n総合評価 -\n募集実績 0 件\nプロジェクト完了率 -\n○○の詳細を見る";
+  assert.ok(clientRank(good) < clientRank(first));
+});
+
+test("月の目標に何件要るか: 納品できる固定報酬の中央値から、手数料を引いて出す（件数が少ないうちは出さない）", () => {
+  const rec = (n, budgetJpy, payType = "固定報酬", hourlyJpy = null) => ({
+    at: "2026-10-19T00:00:00Z", key: `job:${n}`, title: "t", url: "u", budgetJpy, budgetMaxJpy: budgetJpy, hourlyJpy, hourlyMaxJpy: hourlyJpy,
+    excelVba: false, quality: false, payType, delivers: true, genre: "文章・文書",
+  });
+  assert.deepEqual(reachLines([rec(1, 5000), rec(2, 5000)]), []);
+  // 中央値5,000円 → 手取り3,900円 → 20万円には月52件（週13件）
+  const lines = reachLines([1, 2, 3, 4, 5].map((n) => rec(n, 5000)));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /月20万円の目安/);
+  assert.match(lines[0], /手取り約3,900円/);
+  assert.match(lines[0], /月52件（週13件）/);
+  assert.match(lines[0], /仮に10%なら、週130件の応募/);
+  // 時給の募集は稼働時間で見る（時給1,500円 → 手取り1,170円 → 月171時間）
+  const h = reachLines([1, 2, 3].map((n) => rec(n, null, "時間単価", 1500)));
+  assert.match(h[0], /手取り約1,170円/);
+  assert.match(h[0], /月171時間/);
 });

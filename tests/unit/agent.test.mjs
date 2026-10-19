@@ -559,3 +559,25 @@ test("詐欺判定: 作るホームページの仕様（LINEの友だち追加�
   assert.ok(scoreScam("詳細はLINEでお話しします。友だち追加をお願いします。").signals.some((s) => s.id === "offplatform_link"));
   assert.ok(scoreScam("LINEの友だち追加ページへリンクして連絡ください https://lin.ee/abc").signals.some((s) => s.id === "offplatform_link"));
 });
+
+test("AIの利用を禁止している募集は受けない（使っていいと書いてあるものは落とさない）", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const hit = (t) => JSON.stringify(checkGates(t)).includes("AIの利用を禁止");
+  for (const t of [
+    "ChatGPTなどの生成AIの使用は禁止です。",
+    "AI利用不可です。ご自身の言葉で書いてください。",
+    "生成AIを使った執筆はご遠慮ください。",
+    "AIの使用はNGとさせていただきます",
+    "AIで作った文章は受け取れません。",
+    "※AI禁止",
+    "ＡＩの使用は禁止",
+  ]) assert.ok(hit(t), `落とすべき: ${t}`);
+  for (const t of [
+    "生成AIの使用は禁止しません。むしろ歓迎です。",
+    "ChatGPTを活用できる方歓迎です。",
+    "AI利用OK。納期は厳守でお願いします。",
+    "EMAILの利用は不可です。チャットでお願いします。",
+    "AIの使用を禁止する旨の記載は一切ありません。",
+    "記事を10本書いてください。AIを使えば速いです。",
+  ]) assert.ok(!hit(t), `落としてはいけない: ${t}`);
+});

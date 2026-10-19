@@ -10,6 +10,7 @@
  *   node scripts/cw-patrol.mjs queue-mark approved|sent|skipped 3 5   # 一覧の番号に印を付ける（承認 = approved）
  *   node scripts/cw-patrol.mjs fill --approved             # 承認した件だけ、入力済みの応募画面を開く（最大5件。「応募する」は自分で押す）
  *   node scripts/cw-patrol.mjs survey [--max 30] [--fresh]   # 登録した検索画面の募集の報酬だけを集める（判定・応募はしない）
+ *   node scripts/cw-patrol.mjs add-keyword --defaults       # 探す言葉を足す（Claudeが納品できる仕事は全部。--list で一覧、言葉を並べて個別にも足せる）
  *   node scripts/cw-patrol.mjs schedule    # 自動実行の登録をやり直す（電池でも動く・寝ていた分も回す設定つき）
  *   node scripts/cw-patrol.mjs test-mail   # Gメールに試しの1通を送る
  *   node scripts/cw-patrol.mjs fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数]
@@ -31,6 +32,7 @@ import readline from "node:readline/promises";
 import Module from "node:module";
 import { sendMail } from "./lib/smtp.mjs";
 import { MAX_TABS, applyState, applyUrl, fillProposalForm, jobIdFromUrl, jobUrl, parseList, validateEntry } from "./lib/cw-fill.mjs";
+import { WIDE_KEYWORDS, WIDE_WORD_LIST, keywordOf, rotate, searchUrlFrom } from "./lib/cw-searches.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const DIST = path.join(ROOT, "dist-e2e");
@@ -44,7 +46,7 @@ const LOCK = path.join(HOME, "running.lock");
 const PROFILE = path.join(HOME, "browser-profile");
 
 const MAX_THREADS = 15;
-const MAX_JOBS = 10;
+const MAX_JOBS = 20;
 const LOGIN_URL = "https://crowdworks.jp/login";
 
 const argv = process.argv.slice(2);
@@ -430,7 +432,9 @@ async function run() {
       if (!loginExpired) {
         const perSearch = [];
         // データ入力（category_id=267）の新着は件数が多く枠を使い切るので、最後に回す
-        const searchUrls = [...(config.searchUrls ?? [])].sort((a, b) => Number(/category_id=267\b/.test(a)) - Number(/category_id=267\b/.test(b)));
+        const ordered = [...(config.searchUrls ?? [])].sort((a, b) => Number(/category_id=267\b/.test(a)) - Number(/category_id=267\b/.test(b)));
+        // 検索が多いので、巡回ごとに読み始める検索をずらす（前のほうの新着で枠が埋まり続けないように）
+        const searchUrls = rotate(ordered, Math.floor(Date.now() / (3 * 3600_000)));
         for (const url of searchUrls) {
           try {
             log(`新着を見ています: ${url}`);
@@ -466,6 +470,8 @@ async function run() {
     }
 
     // 判定は、ブラウザを閉じてから（Edge を開いたままだと PC のメモリが足りず、判定の Claude が落ちることがあった）
+    // 時間が足りなくなっても困らないよう、発注の多い依頼者（優良）の募集から先に判定する
+    toJudge.sort((a, b) => core.clientRank(a.pageText) - core.clientRank(b.pageText));
     for (const t of toJudge) {
       log(`判定しています: ${t.title}`);
       let j = judgeJob(t.text, t.title, t.url);
@@ -635,6 +641,69 @@ function addSearch() {
 }
 
 /**
+ * 言葉から検索画面を作って登録する。Claude が作業して納品できる仕事は全部見る（Excel/VBA・品質に絞らない）。
+ *   node scripts/cw-patrol.mjs add-keyword <言葉>… | --defaults | --list
+ *   --defaults: 既定の言葉（文章・文字起こし・翻訳・データ・資料・Web・プログラミング・マニュアル・Excel）を全部
+ * 登録する前に1度だけ開いて、募集が見つかった検索だけを登録する（見つからなければ URL の形が違うので、登録しないで知らせる）。
+ */
+async function addKeyword() {
+  const config = readJson(CONFIG, null);
+  if (!config) die("まだ設定されていません。先に setup を実行してください");
+  if (argv.includes("--list")) {
+    for (const g of WIDE_KEYWORDS) console.log(`${g.group}: ${g.words.join(" / ")}`);
+    console.log(`\n登録済みの検索画面: ${(config.searchUrls ?? []).length}件`);
+    for (const u of config.searchUrls ?? []) console.log(`- ${keywordOf(u) ?? "（言葉なし）"}  ${u}`);
+    return;
+  }
+  const given = argv.slice(1).filter((a) => !a.startsWith("--"));
+  const words = argv.includes("--defaults") ? WIDE_WORD_LIST : given;
+  if (!words.length) die("使い方: node scripts/cw-patrol.mjs add-keyword <言葉>… | --defaults | --list");
+  if (fs.existsSync(LOCK) && Date.now() - fs.statSync(LOCK).mtimeMs < 30 * 60_000) die("巡回が動いています。終わってからもう一度実行してください");
+  const have = new Set((config.searchUrls ?? []).map((u) => keywordOf(u)).filter(Boolean));
+  const todo = [...new Set(words)].filter((w) => !have.has(w));
+  if (!todo.length) return console.log("すべて登録済みです");
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(LOCK, String(process.pid));
+  const touch = setInterval(() => fs.utimesSync(LOCK, new Date(), new Date()), 60_000);
+  try {
+    ensureBuilt();
+    const { core } = loadLib();
+    const { ctx, page } = await openBrowser({ headless: !argv.includes("--show") });
+    const added = [];
+    const failed = [];
+    try {
+      for (const word of todo) {
+        const url = searchUrlFrom(config.searchUrls, word);
+        log(`検索を確かめています: ${word}`);
+        try {
+          const p = await readPage(page, url);
+          if (isLoginPage(p.finalUrl)) die("ログインが切れています。setup でログインし直してください");
+          const n = core.collectLinks(p.hrefs).jobs.length;
+          if (n > 0) {
+            config.searchUrls = [...new Set([...(config.searchUrls ?? []), url])];
+            writeJson(CONFIG, config);
+            added.push(`${word}（${n}件）`);
+          } else {
+            failed.push(`${word}（募集が見つかりません。0件の言葉か、検索画面のURLの形が違います: ${url}）`);
+          }
+        } catch (e) {
+          failed.push(`${word}: ${e.message}`);
+        }
+        await politeWait();
+      }
+    } finally {
+      await ctx.close();
+    }
+    console.log(`\n登録した検索: ${added.length}件\n${added.map((a) => `- ${a}`).join("\n")}`);
+    if (failed.length) console.log(`\n登録しなかった検索: ${failed.length}件\n${failed.map((a) => `- ${a}`).join("\n")}`);
+    console.log(`\n登録済みの検索画面は全${config.searchUrls.length}件です`);
+  } finally {
+    clearInterval(touch);
+    fs.rmSync(LOCK, { force: true });
+  }
+}
+
+/**
  * 募集の予算だけを集める（判定・応募はしない）。登録した検索画面の募集を、既読かどうかに関係なく読んで記録する。
  * Excel/VBA の案件の報酬が実際いくらかを、短時間で確かめるために使う。見るだけ・ゆっくり（巡回と同じ）。
  *   node scripts/cw-patrol.mjs survey [--max 30] [--fresh] [--show]
@@ -679,7 +748,7 @@ async function survey() {
           const client = core.readClientInfo(p.text);
           const meta = core.readJobMeta(p.text);
           const money = rec.hourlyJpy != null ? `時給${rec.hourlyJpy}〜${rec.hourlyMaxJpy}` : rec.budgetJpy != null ? `${rec.budgetJpy}〜${rec.budgetMaxJpy}` : "報酬不明";
-          console.log(`- ${rec.payType} ${money}円 ${rec.excelVba ? "[Excel/VBA]" : ""}${rec.quality ? "[品質]" : ""} ${title.slice(0, 40)}\n    ${link.url}\n    画面の表示: ${pay}\n    依頼者: ${client.tier}｜${client.summary}｜応募${meta.applicants ?? "?"}人・募集${meta.openings ?? "?"}人`);
+          console.log(`- ${rec.payType} ${money}円 ${rec.delivers ? `[Claudeが納品可: ${rec.genre ?? "その他"}]` : "[納品できない/要確認]"}${rec.excelVba ? "[Excel/VBA]" : ""}${rec.quality ? "[品質]" : ""} ${title.slice(0, 40)}\n    ${link.url}\n    画面の表示: ${pay}\n    依頼者: ${client.tier}｜${client.summary}｜応募${meta.applicants ?? "?"}人・募集${meta.openings ?? "?"}人`);
         } catch (e) {
           log(`読めませんでした: ${link.url}  ${e.message}`);
         }
@@ -778,7 +847,7 @@ function budgets() {
   console.log(loadLib().core.summarizeBudgets(records));
 }
 
-const commands = { setup, run, fill, "add-search": addSearch, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, schedule: () => registerSchedule(), "test-mail": () => testMail() };
+const commands = { setup, run, fill, "add-search": addSearch, "add-keyword": addKeyword, budgets, survey, queue: queueShow, "queue-mark": queueMark, "queue-add": queueAdd, schedule: () => registerSchedule(), "test-mail": () => testMail() };
 if (!commands[cmd]) {
   console.log("使い方: node scripts/cw-patrol.mjs setup | run [--always] [--show] | fill <募集URL> --proposal 提案文.txt [--price 金額] [--days 日数] | fill --list 一覧.tsv | add-search <検索結果のURL> | budgets | survey [--max 30] [--fresh] | queue | queue-add <募集URL> --proposal 提案文.txt | queue-mark approved|sent|skipped 番号… | fill --approved | schedule | test-mail");
   process.exit(cmd ? 1 : 0);

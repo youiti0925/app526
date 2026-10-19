@@ -7,6 +7,9 @@
  * 巡回そのもの（ブラウザ操作・メール送信）は scripts/cw-patrol.mjs。
  */
 import type { CwReview } from "./cw-thread";
+import { checkGates } from "../agent/gates";
+import { getCapability, judgeDeliverability } from "../agent/deliverability";
+import { PLATFORM_FEES } from "../payout";
 
 export type LinkKind = "job" | "thread";
 
@@ -254,6 +257,10 @@ export interface BudgetRecord {
   /** 品質・検査・測定・工程の言葉が出てくるか */
   quality: boolean;
   payType: "固定報酬" | "時間単価" | "コンペ" | "タスク" | "不明";
+  /** Claude が作業して納品できる募集か（関門と納品物の判定を通ったか）。古い記録には無い */
+  delivers?: boolean;
+  /** 納品できるときの仕事の種類（文章・文書／コード・スクリプト など）。納品できなければ null */
+  genre?: string | null;
 }
 
 // 「マクロ経済」は Excel のマクロではない
@@ -350,7 +357,16 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
     excelVba: mentions(EXCEL_VBA, `${title}\n${skillsOf(body)}`, body, 6),
     quality: mentions(QUALITY, `${title}\n${skillsOf(body)}`, body, 3),
     payType,
+    ...deliveryOf(body),
   };
+}
+
+/** 募集の本文から、Claude が作業して納品できるか・どんな種類の仕事かを（AIを使わず、ルールだけで）読む */
+function deliveryOf(body: string): { delivers: boolean; genre: string | null } {
+  const d = judgeDeliverability(body);
+  const delivers = d.canDeliver && checkGates(body).passed;
+  const first = d.canDeliver ? d.matched.map((id) => getCapability(id)).find((c) => c && !c.needsPaid) : undefined;
+  return { delivers, genre: delivers ? (first?.label ?? null) : null };
 }
 
 const median = (xs: number[]): number => {
@@ -358,6 +374,41 @@ const median = (xs: number[]): number => {
   const m = Math.floor(a.length / 2);
   return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
 };
+
+/**
+ * 「月の目標を、納品できる募集だけで稼ぐには何件要るか」。思い込みでなく、集めた募集の金額から出す。
+ * 手数料は固定報酬の実効率で引く。応募の通過率はまだ測っていないので、数字は仮置きだと分かるように書く。
+ */
+export function reachLines(delivering: BudgetRecord[], targetJpy = 200_000): string[] {
+  const fee = PLATFORM_FEES.find((f) => f.id === "crowdworks")?.feeRate ?? 0.22;
+  const prices = delivering
+    .filter((r) => r.payType === "固定報酬" && r.budgetJpy !== null && r.budgetJpy >= 1000)
+    .map((r) => r.budgetJpy as number);
+  const hourly = delivering.filter((r) => r.payType === "時間単価" && r.hourlyJpy != null).map((r) => r.hourlyJpy as number);
+  const lines: string[] = [];
+  if (prices.length >= 5) {
+    const mid = median(prices);
+    const net = Math.round(mid * (1 - fee));
+    const need = Math.ceil(targetJpy / net);
+    const perWeek = Math.ceil(need / 4.3);
+    const top = [...prices].sort((a, b) => b - a).slice(0, Math.max(1, Math.ceil(prices.length / 4)));
+    const topMid = median(top);
+    const topNet = Math.round(topMid * (1 - fee));
+    lines.push(
+      `月${(targetJpy / 10_000).toLocaleString()}万円の目安（納品できる固定報酬${prices.length}件の中央値 ${mid.toLocaleString()}円 → 手取り約${net.toLocaleString()}円）: 月${need}件（週${perWeek}件）の受注が要る。` +
+        `金額が上位4分の1の募集だけなら中央値 ${topMid.toLocaleString()}円（手取り約${topNet.toLocaleString()}円）で月${Math.ceil(targetJpy / topNet)}件。` +
+        `応募の通過率はまだ測っていない（仮に10%なら、週${Math.ceil(perWeek / 0.1)}件の応募）`
+    );
+  }
+  if (hourly.length >= 3) {
+    const mid = median(hourly);
+    const net = Math.round(mid * (1 - fee));
+    lines.push(
+      `時給の募集（納品できるもの${hourly.length}件）: 下限の中央値 ${mid.toLocaleString()}円 → 手取り約${net.toLocaleString()}円。月${(targetJpy / 10_000).toLocaleString()}万円には月${Math.ceil(targetJpy / net)}時間の稼働が要る（今の枠は週10時間 = 月約43時間）`
+    );
+  }
+  return lines;
+}
 
 /** 記録をまとめる。同じ募集は最新の1件だけ数える。報酬は固定報酬だけを数え、時給は別に出す。 */
 export function summarizeBudgets(records: BudgetRecord[]): string {
@@ -373,8 +424,21 @@ export function summarizeBudgets(records: BudgetRecord[]): string {
     const over20k = priced.filter((r) => (r.budgetMaxJpy ?? r.budgetJpy ?? 0) >= 20_000).length;
     return `${label}: ${rs.length}件（報酬が読めた固定報酬 ${priced.length}件・下限の中央値 ${median(mins).toLocaleString()}円・最小 ${Math.min(...mins).toLocaleString()}円・最大 ${Math.max(...mins).toLocaleString()}円・上限が2万円以上 ${over20k}件）${hourlyText}`;
   };
+  // Claude が作業して納品できる募集（関門と納品物の判定を通ったもの）。Excel に絞らず、種類ごとに見る
+  const known = latest.filter((r) => r.delivers !== undefined);
+  const delivering = known.filter((r) => r.delivers);
+  const genres = [...new Set(delivering.map((r) => r.genre ?? "その他"))];
+  const deliveryLines = known.length
+    ? [
+        `Claudeが納品できる募集: ${delivering.length}件 / 判定した${known.length}件`,
+        group("納品できる募集（すべて）", delivering),
+        ...genres.map((g) => group(`　${g}`, delivering.filter((r) => (r.genre ?? "その他") === g))),
+      ]
+    : [];
   return [
     `募集の予算の記録（${latest.length}件）`,
+    ...deliveryLines,
+    ...reachLines(delivering),
     group("Excel/VBA・マクロ・スプレッドシート", latest.filter((r) => r.excelVba)),
     group("そのうち品質・検査・測定・工程の言葉あり", latest.filter((r) => r.excelVba && r.quality)),
     group("すべて", latest),
@@ -621,6 +685,11 @@ export function markQueue(state: QueueState, nos: number[], status: QueueStatus)
     return { ...i, status };
   });
   return { state: { ...state, items }, changed, missing: nos.filter((n) => !changed.includes(n)) };
+}
+
+/** 依頼者の信頼度の順（優良が先）。判定の順番を決めるのに使う */
+export function clientRank(pageText: string): number {
+  return TIER_RANK[readClientInfo(pageText).tier];
 }
 
 /** 並べ替え: 依頼者の信頼度 → 判定 → 報酬の大きさ → 応募の少なさ */
