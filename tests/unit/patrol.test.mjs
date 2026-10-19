@@ -316,11 +316,14 @@ test("予算の記録: Claude が納品できる募集かと仕事の種類を�
   const phone = budgetRecord({ key: "job:23", url: "u" }, "コールセンター業務", "固定報酬制 報酬 5,000円\nお客様への電話対応をお願いします。");
   assert.equal(phone.delivers, false);
   assert.equal(phone.genre, null);
+  // AIの使用禁止は見送りにせず、納品できる側に数えたうえで印を付ける（ゆうさんが範囲を見て決める）
   const noAi = budgetRecord({ key: "job:24", url: "u" }, "ブログ記事の執筆", "固定報酬制 報酬 6,000円\nブログ記事を書いてください。ChatGPTなどの生成AIの使用は禁止です。");
-  assert.equal(noAi.delivers, false);
+  assert.equal(noAi.delivers, true);
+  assert.equal(noAi.aiRestricted, true);
+  assert.equal(article.aiRestricted, false);
 
   const text = summarizeBudgets([article, py, phone, noAi]);
-  assert.match(text, /Claudeが納品できる募集: 2件 \/ 判定した4件/);
+  assert.match(text, /Claudeが納品できる募集: 3件 \/ 判定した4件/);
   assert.match(text, /文章・文書/);
   assert.match(text, /コード・スクリプト/);
 });
@@ -348,4 +351,32 @@ test("月の目標に何件要るか: 納品できる固定報酬の中央値か
   const h = reachLines([1, 2, 3].map((n) => rec(n, null, "時間単価", 1500)));
   assert.match(h[0], /手取り約1,170円/);
   assert.match(h[0], /月171時間/);
+});
+
+test("応募の下書き一覧: AIの使用が禁止された募集は、禁止の範囲を載せ、「応募してよい」を「確認してから応募」に下げる", () => {
+  const page = "固定報酬制 報酬 6,000円\nブログ記事を3本書いてください。ChatGPTなどの生成AIの使用は禁止です。\nクライアント情報\nありがとう 20 件\n本人確認 済み\n総合評価 4.8\n募集実績 120 件\nプロジェクト完了率 95 %\n○○の詳細を見る";
+  const item = buildQueueItem({
+    link: { key: "job:31", url: "https://crowdworks.jp/public/jobs/31" },
+    applyUrl: "https://crowdworks.jp/proposals/new?job_offer_id=31",
+    title: "ブログ記事の執筆",
+    pageText: page,
+    judged: { verdict: "応募してよい", detail: "結論: 応募してよい\n--- 提案文 ---\nはじめまして。記事を書きます。" },
+  });
+  assert.equal(item.verdict, "確認してから応募");
+  assert.match(item.aiRestriction, /AI禁止あり/);
+  assert.match(item.checks[0], /手でやれるか/);
+  const text = queueMarkdown(addToQueue(emptyQueue(), [item]));
+  assert.match(text, /〔AI禁止あり〕/);
+  assert.match(text, /- AIの使用: AI禁止あり（全面に見えます）: 「ChatGPTなどの生成AIの使用は禁止です。」/);
+
+  // 禁止が書かれていない募集には、何も足さない
+  const plain = buildQueueItem({
+    link: { key: "job:32", url: "https://crowdworks.jp/public/jobs/32" },
+    applyUrl: "x",
+    title: "記事",
+    pageText: "固定報酬制 報酬 6,000円\nブログ記事を3本書いてください。",
+    judged: { verdict: "応募してよい", detail: "結論: 応募してよい\n--- 提案文 ---\nはじめまして。" },
+  });
+  assert.equal(plain.aiRestriction, undefined);
+  assert.equal(plain.verdict, "応募してよい");
 });

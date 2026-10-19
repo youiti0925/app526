@@ -11,6 +11,7 @@ import { expectedHourly, readCompetition } from "./competition";
 import { checkCapacity, monthlyHourly, readEngagement } from "./engagement";
 import { checkDeadline, readDeadline } from "./deadline";
 import { checkGates, renderGateQuestions } from "./gates";
+import { readAiRestriction } from "./ai-restriction";
 import { buildChecklist } from "./coverage";
 import { buildRenegotiation } from "./renegotiate";
 import { buildListing, listableWorkTypes, renderListing } from "./listing";
@@ -532,6 +533,8 @@ export async function stepTriage(ctx: StepContext): Promise<StepOutcome> {
       fitNotes,
       reason,
       minHourlyJpy: minHourly,
+      // AIの使用を禁じる文（範囲）。一覧（judge・ランサーズ巡回）と承認キューに出す
+      aiBan: readAiRestriction(lead.rawText).scope,
       gates: {
         passed: gates.passed,
         negotiable: gates.negotiable,
@@ -780,7 +783,7 @@ export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
     if (hasApiKey() && ctx.budget.take()) {
       try {
         const result = await generateJson<ProposalOut>(
-          buildProposalPrompt(lead, background, learned, triage.aiBan ?? []),
+          buildProposalPrompt(lead, background, learned),
           { temperature: 0.8, maxOutputTokens: 4096, purpose: "proposal" }
         );
         const best = result?.variants?.find((v) => v?.body?.trim());
@@ -861,7 +864,12 @@ export async function stepDraft(ctx: StepContext): Promise<StepOutcome> {
   return { summary: `${queued}件の提案文を用意`, queued };
 }
 
-function buildProposalPrompt(lead: Lead, background: string, learned: LearnedParams, aiBan: string[] = []): string {
+function buildProposalPrompt(lead: Lead, background: string, learned: LearnedParams): string {
+  // AIの使用が禁止・制限されている募集。禁止の範囲をAIで作る前提では書かない
+  const ai = readAiRestriction(lead.rawText);
+  const aiRule = ai.restricted
+    ? `\n- この募集はAIの使用を禁止・制限しています（${ai.scope.map((s) => `「${s}」`).join("")}）。その範囲は私が手作業で行うと書き、AIで作るとは書かない。「AIを使っていない」とも書かない。`
+    : "";
   const angles = learned.preferredAngles.length
     ? `\n過去に反応が良かった切り口: ${learned.preferredAngles.join(" / ")}。これを優先してください。`
     : "";
@@ -879,14 +887,10 @@ function buildProposalPrompt(lead: Lead, background: string, learned: LearnedPar
 - 事実として確認できないこと（実績数値、資格、経歴）を創作しない。埋める箇所は 【要確認: 何を書くか】 の形で残す。
 - 作業の進め方（生成AIを使うことなど）は、わざわざ書かない。ただし「AIを使っていない」「すべて手作業」とも書かない。募集文がAIの使用の有無を尋ねている場合は、そこに【要確認: AIの使用の有無を聞かれている】を残す（人が答える）。
 - 下の「自分の経歴」にない分野（翻訳・プログラミング・Webなど）の経験があるようには書かない。経験を書かず、進め方・確認の仕方・納期など、できることだけを具体的に書く。
-- 契約や仮払いの前に、無償のサンプルや試作を作ると約束しない。
+- 契約や仮払いの前に、無償のサンプルや試作を作ると約束しない。${aiRule}
 - 冒頭2行で「この募集を読んだ上で書いている」ことが伝わること。
 - 相手が一番不安なこと（納期、途中で消えないか、指示が通じるか）を先回りして潰す。
-- 質問は最後に1〜2個だけ。${
-    aiBan.length
-      ? `\n- この募集はAIの使用を禁じています（「${aiBan.join("」「")}」）。禁止された部分は応募者本人が自分で作業する前提で書き、その部分をAIで作る・AIで効率化するといった内容は書かない。`
-      : ""
-  }${angles}${avoid}
+- 質問は最後に1〜2個だけ。${angles}${avoid}
 
 次のJSONだけを返してください:
 { "variants": [ { "angle": "この案の切り口", "subject": "件名", "body": "提案文の本文" } ] }

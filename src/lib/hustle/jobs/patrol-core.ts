@@ -10,6 +10,7 @@ import type { CwReview } from "./cw-thread";
 import { checkGates } from "../agent/gates";
 import { getCapability, judgeDeliverability } from "../agent/deliverability";
 import { PLATFORM_FEES } from "../payout";
+import { readAiRestriction } from "../agent/ai-restriction";
 
 export type LinkKind = "job" | "thread";
 
@@ -261,6 +262,8 @@ export interface BudgetRecord {
   delivers?: boolean;
   /** 納品できるときの仕事の種類（文章・文書／コード・スクリプト など）。納品できなければ null */
   genre?: string | null;
+  /** 募集文にAIの使用の禁止・制限が書かれているか */
+  aiRestricted?: boolean;
 }
 
 // 「マクロ経済」は Excel のマクロではない
@@ -361,12 +364,16 @@ export function budgetRecord(link: { key: string; url: string }, title: string, 
   };
 }
 
-/** 募集の本文から、Claude が作業して納品できるか・どんな種類の仕事かを（AIを使わず、ルールだけで）読む */
-function deliveryOf(body: string): { delivers: boolean; genre: string | null } {
+/**
+ * 募集の本文から、Claude が作業して納品できるか・どんな種類の仕事か・AIの使用が禁止されていないかを
+ * （AIを使わず、ルールだけで）読む。確認すれば通る関門（AIの禁止・納品形式など）は、納品できる側に数える。
+ */
+function deliveryOf(body: string): { delivers: boolean; genre: string | null; aiRestricted: boolean } {
   const d = judgeDeliverability(body);
-  const delivers = d.canDeliver && checkGates(body).passed;
+  const gates = checkGates(body);
+  const delivers = d.canDeliver && gates.hits.every((h) => h.negotiable);
   const first = d.canDeliver ? d.matched.map((id) => getCapability(id)).find((c) => c && !c.needsPaid) : undefined;
-  return { delivers, genre: delivers ? (first?.label ?? null) : null };
+  return { delivers, genre: delivers ? (first?.label ?? null) : null, aiRestricted: readAiRestriction(body).restricted };
 }
 
 const median = (xs: number[]): number => {
@@ -575,6 +582,8 @@ export interface QueueItem {
   deadline: string | null;
   client: ClientInfo;
   proposal: string;
+  /** 募集文にAIの使用の禁止・制限があるとき、禁止の範囲を抜き出した1行。なければ無い */
+  aiRestriction?: string;
   /** 送る前に見ること */
   checks: string[];
   status: QueueStatus;
@@ -633,6 +642,12 @@ export function buildQueueItem(args: {
   if (!proposal) checks.push("提案文が出ていません。書いてから送ってください");
   const left = proposal.match(/【要確認[^】]*】/g);
   if (left) checks.push(`提案文に【要確認】が${left.length}か所残っています（${left.slice(0, 2).join("、")}）。事実を確かめて直してから送る`);
+  // AIの使用の禁止・制限は、一律に見送らず、禁止の範囲を載せて人が決める
+  const ai = readAiRestriction(jobBodyForJudging(args.pageText));
+  if (ai.restricted) {
+    checks.unshift(`${ai.summary}。この範囲を、ゆうさん自身が手でやれるか決めてください（やれなければ見送り）。提案文が、その範囲を手作業で行う前提になっているかも読んで確かめる`);
+    if (verdict.startsWith("応募してよい")) verdict = "確認してから応募";
+  }
   if (client.tier === "注意") {
     checks.push(`依頼者の評価・完了率に注意（${client.summary}）`);
     if (verdict.startsWith("応募してよい")) verdict = "確認してから応募";
@@ -655,6 +670,7 @@ export function buildQueueItem(args: {
     deadline: meta.deadline,
     client,
     proposal,
+    ...(ai.restricted ? { aiRestriction: ai.summary } : {}),
     checks,
     at: (args.at ?? new Date()).toISOString(),
   };
@@ -706,7 +722,7 @@ export function sortQueue(items: QueueItem[]): QueueItem[] {
 
 export function queueItemText(i: QueueItem): string {
   const lines = [
-    `## 【${i.no}】${shortTitle(i.title)}　〔依頼者: ${i.client.tier}〕`,
+    `## 【${i.no}】${shortTitle(i.title)}　〔依頼者: ${i.client.tier}〕${i.aiRestriction ? "〔AI禁止あり〕" : ""}`,
     `- 応募画面: ${i.applyUrl}`,
     `- 募集ページ: ${i.url}`,
     `- 報酬: ${i.payText}`,
@@ -714,6 +730,7 @@ export function queueItemText(i: QueueItem): string {
     `- 依頼者: ${i.client.summary}`,
     `- 判定: ${i.verdict}${i.reason ? ` — ${i.reason}` : ""}`,
   ];
+  if (i.aiRestriction) lines.push(`- AIの使用: ${i.aiRestriction}`);
   if (i.price !== null) lines.push(`- 応募画面に入れる金額: ${i.price.toLocaleString()}円`);
   if (i.checks.length) lines.push(`- 送る前に見ること:`, ...i.checks.map((c) => `  - ${c}`));
   lines.push("", "提案文:", ...(i.proposal ? i.proposal.split("\n").map((l) => `> ${l}`) : ["> （なし）"]));

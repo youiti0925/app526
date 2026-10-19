@@ -560,9 +560,9 @@ test("詐欺判定: 作るホームページの仕様（LINEの友だち追加�
   assert.ok(scoreScam("LINEの友だち追加ページへリンクして連絡ください https://lin.ee/abc").signals.some((s) => s.id === "offplatform_link"));
 });
 
-test("AIの利用を禁止している募集は受けない（使っていいと書いてあるものは落とさない）", async () => {
+test("AIの使用を禁止している募集は「確認が要る」に回す（見送りにはしない。使っていいと書いてあるものは引っかけない）", async () => {
   const { checkGates } = await import("../../dist-test/agent/gates.js");
-  const hit = (t) => JSON.stringify(checkGates(t)).includes("AIの利用を禁止");
+  const hit = (t) => JSON.stringify(checkGates(t)).includes("AIの使用の禁止");
   for (const t of [
     "ChatGPTなどの生成AIの使用は禁止です。",
     "AI利用不可です。ご自身の言葉で書いてください。",
@@ -580,4 +580,26 @@ test("AIの利用を禁止している募集は受けない（使っていいと
     "AIの使用を禁止する旨の記載は一切ありません。",
     "記事を10本書いてください。AIを使えば速いです。",
   ]) assert.ok(!hit(t), `落としてはいけない: ${t}`);
+});
+
+test("AIの禁止は見送りでなく確認に回し、禁止の範囲を本文から抜き出す", async () => {
+  const { checkGates } = await import("../../dist-test/agent/gates.js");
+  const { readAiRestriction } = await import("../../dist-test/agent/ai-restriction.js");
+  const g = checkGates("ブログ記事を書いてください。ChatGPTなどの生成AIの使用は禁止です。");
+  assert.equal(g.passed, false);
+  assert.equal(g.negotiable, true, "見送り(reject)にせず、確認してから応募に回る");
+
+  const all = readAiRestriction("記事の執筆をお願いします。生成AIの使用は禁止です。納期は1週間です。");
+  assert.equal(all.restricted, true);
+  assert.equal(all.kind, "all");
+  assert.deepEqual(all.scope, ["生成AIの使用は禁止です。"]);
+  assert.match(all.summary, /AI禁止あり（全面に見えます）/);
+
+  const part = readAiRestriction("バナーを作ってください。\n画像生成AIの使用は不可です。文章は自由です。");
+  assert.equal(part.kind, "part");
+  assert.deepEqual(part.scope, ["画像生成AIの使用は不可です。"]);
+  assert.match(part.summary, /一部の範囲/);
+
+  assert.equal(readAiRestriction("AIの使用は禁止しません。歓迎です。").restricted, false);
+  assert.equal(readAiRestriction("記事を10本書いてください。").restricted, false);
 });
