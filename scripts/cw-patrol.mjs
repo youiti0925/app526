@@ -43,6 +43,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import Module from "node:module";
 import { sendMail } from "./lib/smtp.mjs";
+import { deliverDaily } from "./lib/daily-mail.mjs";
 import { MAX_TABS, applyState, applyUrl, cleanJobTitle, fillProposalForm, jobIdFromUrl, jobUrl, parseList, validateEntry } from "./lib/cw-fill.mjs";
 import { SEND_KINDS, isThreadUrl, parseSentLog, pickReplyForm, scanReplyForms, sendGate, sentTextAppears, validateReplyText } from "./lib/cw-reply.mjs";
 import { WIDE_KEYWORDS, WIDE_WORD_LIST, keywordOf, rotate, searchUrlFrom } from "./lib/cw-searches.mjs";
@@ -666,15 +667,24 @@ async function run() {
       log(`見やすい形のメールを作れませんでした（文字だけで送ります）: ${e.message}`);
     }
     log(report.subject);
-    if ((report.worthSending || argv.includes("--always")) && config.mail) {
-      const message = core.buildMimeMessage({ from: config.mail.user, to: config.mail.to, subject: report.subject, body: report.body, html });
-      await sendMail({ user: config.mail.user, pass: config.mail.pass, to: config.mail.to, message });
-      log(`Gメールに送りました（${config.mail.to}）`);
-    } else if (!config.mail) {
+    if (config.mail) {
+      // メールは1日1回（朝8時以降の最初の巡回）にまとめる。今回の分は溜めておく（--always は今すぐ送る）
+      const always = argv.includes("--always");
+      const status = await deliverDaily({
+        source: "CW",
+        entry: report.worthSending || always ? { subject: report.subject, body: report.body, html } : null,
+        from: config.mail.user,
+        to: config.mail.to,
+        send: (message) => sendMail({ user: config.mail.user, pass: config.mail.pass, to: config.mail.to, message }),
+        force: always,
+        log,
+      });
+      if (status === "sent") log(`まとめメールをGメールに送りました（${config.mail.to}）`);
+      else if (status === "held") log("メールは1日1回にまとめるため、朝8時以降の巡回で送ります（今回の分は溜めました）");
+      else if (status === "none") log("新しく知らせることは無いので、メールは送りません");
+    } else {
       log("Gメールが設定されていないので、まとめをここに出します（setup で設定できます）");
       console.log(`\n${report.subject}\n\n${report.body}\n`);
-    } else {
-      log("新しく知らせることは無いので、メールは送りません");
     }
   } finally {
     clearInterval(touch);
