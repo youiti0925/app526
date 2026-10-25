@@ -44,6 +44,7 @@ import {
   buildMail,
 } from "./lib/lancers.mjs";
 import { sendMail } from "./lib/smtp.mjs";
+import { deliverDaily } from "./lib/daily-mail.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const HOME = process.env.LANCERS_PATROL_HOME || path.join(os.homedir(), ".lancers-patrol");
@@ -200,18 +201,23 @@ async function run() {
 
     // 見送り以外があれば、一覧の全文（提案文つき）をGメールに送る。送り先は自分だけ
     const mail = readJson(CW_CONFIG, {})?.mail;
-    if (flag("--no-mail") || !worthMailing(results)) return;
+    if (flag("--no-mail")) return;
     if (!mail?.user || !mail?.pass) {
-      log("Gメールが設定されていないので、メールは送りません（node scripts/cw-patrol.mjs setup で設定）");
+      if (worthMailing(results)) log("Gメールが設定されていないので、メールは送りません（node scripts/cw-patrol.mjs setup で設定）");
       return;
     }
-    const message = buildMail({ from: mail.user, to: mail.to || mail.user, subject: mailSubject(results), body: md });
-    try {
-      await sendMail({ user: mail.user, pass: mail.pass, to: mail.to || mail.user, message });
-      log(`Gメールに送りました（${mail.to || mail.user}）`);
-    } catch (e) {
-      log(`Gメールに送れませんでした（一覧のファイルはできています）: ${e.message}`);
-    }
+    // メールは1日1回（朝8時以降の最初の巡回）にまとめる。今回の分は溜めておく
+    const to = mail.to || mail.user;
+    const status = await deliverDaily({
+      source: "ランサーズ",
+      entry: worthMailing(results) ? { subject: mailSubject(results), body: md } : null,
+      from: mail.user,
+      to,
+      send: (message) => sendMail({ user: mail.user, pass: mail.pass, to, message }),
+      log,
+    });
+    if (status === "sent") log(`まとめメールをGメールに送りました（${to}）`);
+    else if (status === "held") log("メールは1日1回にまとめるため、朝8時以降の巡回で送ります（今回の分は溜めました）");
   } catch (e) {
     await ctx.close().catch(() => {});
     throw e;
